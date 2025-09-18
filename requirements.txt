@@ -1,0 +1,15 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+Pillow>=10.4.0
+requests>=2.32.3
+google-generativeai>=0.7.2
+jinja2>=3.1.0
+python-dotenv>=1.0.1
+layoutparser>=0.3.4 ; platform_system != "Windows" or platform_machine != "ARM64"
+ultralytics>=8.3.50
+opencv-python-headless>=4.10.0.84
+transformers>=4.43.0
+accelerate>=0.33.0
+tensorflow-cpu>=2.15.0 ; platform_system == "Windows"
+tensorflow>=2.15.0 ; platform_system != "Windows"

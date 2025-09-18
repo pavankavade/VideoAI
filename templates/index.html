@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Context-Aware Manga Narrator</title>
+    <style>
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+        h1 { margin-bottom: 8px; }
+        #controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        #imageGallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-top: 12px; }
+        .thumb { border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background: #fafafa; padding: 6px; text-align: center; }
+        .thumb img { width: 100%; height: auto; display: block; }
+        #startButton { padding: 8px 14px; border: none; background: #111827; color: #fff; border-radius: 8px; cursor: pointer; }
+        #startButton[disabled] { opacity: 0.6; cursor: not-allowed; }
+        #status { margin-top: 8px; color: #374151; }
+        #results { margin-top: 24px; }
+        .page { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+        .narration { white-space: pre-wrap; margin: 8px 0; }
+        .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #f3f4f6; padding: 8px; border-radius: 6px; display: block; overflow-x: auto; }
+    </style>
+    <script defer src="/static/script.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style> body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; } </style>
+    <meta name="color-scheme" content="light dark" />
+</head>
+<body>
+    <h1>Context-Aware Manga Narrator</h1>
+    <p>Upload your chapter images, then start narration. Images are processed in order by filename.</p>
+
+    <div id="controls">
+        <input type="file" id="chapterUpload" multiple accept="image/*" />
+        <button id="startButton" disabled>Start Narration</button>
+        <span id="status"></span>
+    </div>
+
+    <div id="imageGallery"></div>
+
+    <div id="results"></div>
+</body>
+</html>
+
+
