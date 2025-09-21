@@ -429,8 +429,7 @@ async function loadExistingTTS() {
     // Load locally saved audio for all pages
     await loadAllSavedAudio();
     
-    // Check initial model status
-    checkModelStatus();
+    // Initial model status check is no longer necessary; server loads models by default
 }
 
 async function loadAllSavedAudio() {
@@ -805,18 +804,38 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Also close JSON upload modal with Escape when open
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const jsonModal = document.getElementById('jsonUploadModal');
+        if (jsonModal && (jsonModal.style.display === 'block' || jsonModal.style.display === 'flex')) {
+            closeJsonUploadModal();
+        }
+    }
+});
+
 // JSON Upload functionality for narrative
 function toggleJsonUpload() {
     const modal = document.getElementById('jsonUploadModal');
+    if (!modal) return;
     modal.style.display = 'block';
-    document.getElementById('jsonTextArea').focus();
+    // Prevent background scrolling
+    document.body.style.overflow = 'hidden';
+    const ta = document.getElementById('jsonTextArea');
+    if (ta) {
+        ta.focus();
+        ta.select();
+    }
 }
 
 function closeJsonUploadModal() {
     const modal = document.getElementById('jsonUploadModal');
     const textArea = document.getElementById('jsonTextArea');
+    if (!modal) return;
     modal.style.display = 'none';
-    textArea.value = '';
+    // Restore background scrolling
+    document.body.style.overflow = '';
+    if (textArea) textArea.value = '';
 }
 
 async function uploadJsonText() {
@@ -951,6 +970,130 @@ window.addEventListener('click', (e) => {
 let currentEditingPage = null;
 let originalPanelTexts = {};
 
+// Helper: convert various stored audio representations to a Blob when possible
+function convertToBlob(maybeAudio) {
+    try {
+        // Already a Blob
+        if (maybeAudio instanceof Blob) return maybeAudio;
+
+        // data URL string: data:audio/wav;base64,...
+        if (typeof maybeAudio === 'string') {
+            if (maybeAudio.startsWith('data:')) {
+                const parts = maybeAudio.split(',');
+                const meta = parts[0];
+                const b64 = parts[1] || '';
+                const contentType = (meta.split(':')[1] || '').split(';')[0] || 'application/octet-stream';
+                const byteChars = atob(b64);
+                const byteNumbers = new Array(byteChars.length);
+                for (let i = 0; i < byteChars.length; i++) {
+                    byteNumbers[i] = byteChars.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                return new Blob([byteArray], { type: contentType });
+            }
+
+            // Plain URL (http/https or relative) - not a Blob, return null to allow using URL directly
+            if (/^https?:\/\//.test(maybeAudio) || maybeAudio.startsWith('/')) {
+                return null;
+            }
+
+            // Possibly a base64 string without data: prefix
+            const maybeB64 = maybeAudio.replace(/\s+/g, '');
+            if (/^[A-Za-z0-9+/=]+$/.test(maybeB64) && maybeB64.length % 4 === 0) {
+                // Heuristic: treat as base64 audio/wav
+                const byteChars = atob(maybeB64);
+                const byteNumbers = new Array(byteChars.length);
+                for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+                return new Blob([new Uint8Array(byteNumbers)], { type: 'audio/wav' });
+            }
+        }
+
+        // If it's an object with a numeric array in `data`
+        if (maybeAudio && typeof maybeAudio === 'object') {
+            if (Array.isArray(maybeAudio.data) && maybeAudio.data.length > 0) {
+                return new Blob([new Uint8Array(maybeAudio.data)], { type: maybeAudio.type || 'audio/wav' });
+            }
+
+            // If it's an object with base64 string in `data`
+            if (maybeAudio.data && typeof maybeAudio.data === 'string') {
+                const b64 = maybeAudio.data.replace(/\s+/g, '');
+                const byteChars = atob(b64);
+                const byteNumbers = new Array(byteChars.length);
+                for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+                return new Blob([new Uint8Array(byteNumbers)], { type: maybeAudio.type || 'audio/wav' });
+            }
+
+            // If it's a plain object that looks like a serialized Blob (has "size" and "type")
+            if ('size' in maybeAudio && 'type' in maybeAudio && maybeAudio._parts) {
+                // Can't reliably reconstruct - return null to avoid throwing
+                return null;
+            }
+        }
+    } catch (e) {
+        console.warn('convertToBlob failed:', e);
+    }
+    return null;
+}
+
+// Helper: get a safe audio src (either object URL, data URL or http URL). Returns empty string if unavailable.
+function getAudioSrc(maybeAudio) {
+    try {
+        if (!maybeAudio) return '';
+
+        // If it's already a Blob -> create object URL
+        if (maybeAudio instanceof Blob) {
+            const url = URL.createObjectURL(maybeAudio);
+            // Track created URLs so we can revoke them later
+            audioObjectURLs.add(url);
+            return url;
+        }
+
+        // If it's a string URL or data URL, return as-is
+        if (typeof maybeAudio === 'string') {
+            if (maybeAudio.startsWith('data:') || /^https?:\/\//.test(maybeAudio) || maybeAudio.startsWith('/')) {
+                return maybeAudio;
+            }
+            // Try to convert base64 / data to Blob
+            const maybeBlob = convertToBlob(maybeAudio);
+            if (maybeBlob) {
+                const url = URL.createObjectURL(maybeBlob);
+                audioObjectURLs.add(url);
+                return url;
+            }
+            return '';
+        }
+
+        // If it's an object, attempt conversion
+        const blob = convertToBlob(maybeAudio);
+        if (blob) {
+            const url = URL.createObjectURL(blob);
+            audioObjectURLs.add(url);
+            return url;
+        }
+
+        // Fallback: if it has a url field, use it
+        if (maybeAudio.url && typeof maybeAudio.url === 'string') return maybeAudio.url;
+
+    } catch (e) {
+        console.warn('getAudioSrc error:', e);
+    }
+    return '';
+}
+
+// Track object URLs we create so they can be revoked on unload
+const audioObjectURLs = new Set();
+
+function revokeAllAudioObjectURLs() {
+    audioObjectURLs.forEach(u => {
+        try { URL.revokeObjectURL(u); } catch (e) { /* ignore */ }
+    });
+    audioObjectURLs.clear();
+}
+
+window.addEventListener('unload', () => {
+    revokeAllAudioObjectURLs();
+});
+
 function openPanelEditor(pageNumber) {
     currentEditingPage = pageNumber;
     const modal = document.getElementById('panelEditorModal');
@@ -1051,7 +1194,7 @@ function openPanelEditor(pageNumber) {
                     hasAudio ? `
                         <div class="audio-controls-container">
                             <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                                <source src="${URL.createObjectURL(ttsData[pageNumber].audioBlob)}" type="audio/wav">
+                                <source src="${getAudioSrc(ttsData[pageNumber].audioBlob)}" type="audio/wav">
                                 Your browser does not support the audio element.
                             </audio>
                             <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
@@ -1288,42 +1431,11 @@ const ngrokHeaders = {
     'ngrok-skip-browser-warning': 'true'
 };
 
+// ensureModelsLoaded removed - server now loads models by default. Keep a stub for compatibility.
 async function ensureModelsLoaded() {
-    try {
-    const r = await fetch('/ngrok/status', { headers: ngrokHeaders });
-        if (!r.ok) { 
-            return false; 
-        }
-        const j = await r.json();
-        
-        if (j.loaded) {
-            modelsLoaded = true;
-            return true;
-        }
-
-        // Models not loaded, start background load
-        const desiredDevice = 'cpu';
-        await fetch(`/ngrok/load_models?device=${encodeURIComponent(desiredDevice)}&force=true`, { 
-            method: 'POST', 
-            headers: ngrokHeaders 
-        });
-        
-        for (let i = 0; i < 600; i++) {
-            await new Promise(res => setTimeout(res, 1000));
-            const s = await fetch('/ngrok/status', { headers: ngrokHeaders });
-            if (s.ok) {
-                const js = await s.json();
-                if (js.loaded) {
-                    modelsLoaded = true;
-                    return true;
-                }
-            }
-        }
-        return false;
-    } catch (e) {
-        console.warn(e);
-        return false;
-    }
+    // Assume models are available on the server by default.
+    modelsLoaded = true;
+    return true;
 }
 
 async function loadTTSModels() {
@@ -1337,68 +1449,15 @@ async function loadTTSModels() {
     if (statusEl) statusEl.classList.remove('hidden');
     if (statusText) statusText.textContent = 'Loading TTS models...';
     
-    try {
-        // Use the reference implementation pattern
-        const desiredDevice = 'cpu'; // Default to CPU
-        const response = await fetch(`/ngrok/load_models?device=${encodeURIComponent(desiredDevice)}&force=true`, {
-            method: 'POST',
-            headers: ngrokHeaders
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Failed to load models: ${response.status}`);
-        }
-        
-        if (statusText) statusText.textContent = 'Models are loading in the background...';
-        
-        // Poll for status using the reference implementation pattern
-        for (let i = 0; i < 600; i++) {
-            await new Promise(res => setTimeout(res, 1000));
-            const statusResponse = await fetch('/ngrok/status', { 
-                headers: ngrokHeaders 
-            });
-            
-            if (statusResponse.ok) {
-                const statusData = await statusResponse.json();
-                
-                if (statusData.loaded) {
-                    modelsLoaded = true;
-                    if (statusText) statusText.textContent = '✅ Models loaded successfully!';
-                    if (statusEl) statusEl.style.borderLeftColor = '#10b981';
-                    if (btn) btn.textContent = '✅ Models Loaded';
-                    if (btn) btn.style.background = '#10b981';
-                    if (spinner) spinner.style.display = 'none';
-                    return;
-                } else if (statusData.loading) {
-                    if (statusText) statusText.textContent = `Loading models... (${i + 1}s)`;
-                } else {
-                    if (statusText) statusText.textContent = '❌ Failed to load models';
-                    if (statusEl) statusEl.style.borderLeftColor = '#dc2626';
-                    if (btn) btn.textContent = '🔧 Load TTS Models';
-                    if (btn) btn.style.background = '';
-                    if (spinner) spinner.style.display = 'none';
-                    return;
-                }
-            }
-        }
-        
-        // Timeout
-        if (statusText) statusText.textContent = '❌ Model loading timed out';
-        if (statusEl) statusEl.style.borderLeftColor = '#dc2626';
-        if (btn) btn.textContent = '🔧 Load TTS Models';
-        if (btn) btn.style.background = '';
-        if (spinner) spinner.style.display = 'none';
-        
-    } catch (error) {
-        console.error('Error loading TTS models:', error);
-        if (statusText) statusText.textContent = `❌ Failed to load models: ${error.message}`;
-        if (statusEl) statusEl.style.borderLeftColor = '#dc2626';
-        if (btn) btn.textContent = '🔧 Load TTS Models';
-        if (btn) btn.style.background = '';
-        if (spinner) spinner.style.display = 'none';
-    } finally {
-        if (btn) btn.disabled = false;
+    // Loading models via UI is no longer required since server preloads them.
+    if (btn) {
+        btn.textContent = '✅ Models Loaded (server)';
+        btn.style.background = '#10b981';
     }
+    if (statusText) statusText.textContent = '✅ Models are loaded on the server by default';
+    if (statusEl) statusEl.style.borderLeftColor = '#10b981';
+    if (spinner) spinner.style.display = 'none';
+    if (btn) btn.disabled = false;
 }
 
 async function synthesizeAllPages() {
@@ -1409,12 +1468,7 @@ async function synthesizeAllPages() {
     const count = document.getElementById('ttsCount');
     const output = document.getElementById('ttsOutput');
     
-    // Check if models are loaded using the reference implementation pattern
-    const loaded = await ensureModelsLoaded();
-    if (!loaded) {
-        alert('Models not available. Try clicking Load Models.');
-        return;
-    }
+    // Models are loaded on the server by default; no client-side validation needed
     
     btn.disabled = true;
     btn.innerHTML = '<span class="loading"></span> Synthesizing...';
@@ -1505,12 +1559,7 @@ async function synthesizePage(pageNumber) {
     const btn = document.getElementById(`synthesize-page-${pageNumber}`);
     if (!btn) return;
     
-    // Check if models are loaded using the reference implementation pattern
-    const loaded = await ensureModelsLoaded();
-    if (!loaded) {
-        alert('Models not available. Try clicking Load Models.');
-        return;
-    }
+    // Models are loaded on the server by default; no client-side validation needed
     
     btn.disabled = true;
     btn.textContent = 'Synthesizing...';
@@ -1581,12 +1630,7 @@ async function synthesizePageFromEditor(pageNumber) {
     const btn = document.getElementById(`synthesize-panel-editor-${pageNumber}`) || document.getElementById(`synthesize-narration-${pageNumber}`);
     if (!btn) return;
     
-    // Check if models are loaded using the reference implementation pattern
-    const loaded = await ensureModelsLoaded();
-    if (!loaded) {
-        alert('Models not available. Try clicking Load Models.');
-        return;
-    }
+    // Models are loaded on the server by default; no client-side validation needed
     
     btn.disabled = true;
     btn.textContent = 'Synthesizing...';
@@ -1594,6 +1638,7 @@ async function synthesizePageFromEditor(pageNumber) {
     try {
         // Get page narration
         const narrativeData = projectData.workflow?.narrative?.data;
+        console.log('Narrative Data:', narrativeData);
         if (!narrativeData || !narrativeData.page_narrations) {
             throw new Error('No page narrations available. Please generate narrative first.');
         }
@@ -1668,7 +1713,7 @@ function updateNarrationActions(pageNumber, hasAudio = false) {
             panelEditorAudioActions.innerHTML = `
                 <div class="audio-controls-container">
                     <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                        <source src="${URL.createObjectURL(ttsData[pageNumber].audioBlob)}" type="audio/wav">
+                        <source src="${getAudioSrc(ttsData[pageNumber].audioBlob)}" type="audio/wav">
                         Your browser does not support the audio element.
                     </audio>
                     <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
@@ -1717,7 +1762,7 @@ function updatePageAudioControls(pageNumber, hasAudio = false) {
         pageAudioActions.innerHTML = `
             <div class="audio-controls-container">
                 <audio controls id="audio-player-page-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                    <source src="${URL.createObjectURL(ttsData[pageNumber].audioBlob)}" type="audio/wav">
+                    <source src="${getAudioSrc(ttsData[pageNumber].audioBlob)}" type="audio/wav">
                     Your browser does not support the audio element.
                 </audio>
                 <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-page-${pageNumber}">
@@ -1741,12 +1786,7 @@ async function resynthesizePage(pageNumber) {
                 document.getElementById(`resynthesize-panel-editor-${pageNumber}`);
     if (!btn) return;
     
-    // Check if models are loaded using the reference implementation pattern
-    const loaded = await ensureModelsLoaded();
-    if (!loaded) {
-        alert('Models not available. Try clicking Load Models.');
-        return;
-    }
+    // Models are loaded on the server by default; no client-side validation needed
     
     btn.disabled = true;
     btn.textContent = 'Re-synthesizing...';
@@ -1784,7 +1824,7 @@ async function resynthesizePage(pageNumber) {
         const ttsAudioPlayer = document.getElementById(`audio-player-${pageNumber}`);
         if (ttsAudioPlayer) {
             ttsAudioPlayer.innerHTML = `
-                <source src="${URL.createObjectURL(audioBlob)}" type="audio/wav">
+                <source src="${getAudioSrc(audioBlob)}" type="audio/wav">
                 Your browser does not support the audio element.
             `;
         }
@@ -1793,7 +1833,7 @@ async function resynthesizePage(pageNumber) {
         const panelEditorAudioPlayer = document.getElementById(`audio-player-panel-editor-${pageNumber}`);
         if (panelEditorAudioPlayer) {
             panelEditorAudioPlayer.innerHTML = `
-                <source src="${URL.createObjectURL(audioBlob)}" type="audio/wav">
+                <source src="${getAudioSrc(audioBlob)}" type="audio/wav">
                 Your browser does not support the audio element.
             `;
         }
@@ -1829,13 +1869,20 @@ async function resynthesizePage(pageNumber) {
 }
 
 async function synthesizeText(text) {
+    if (!text || !text.trim()) {
+        throw new Error('No text provided for TTS synthesis');
+    }
+
     const formData = new FormData();
+    // Keep form data for TTS API but the backend FastAPI endpoint expects
+    // the `text` value as a query parameter, so include it in the URL below.
     formData.append('text', text);
     formData.append('exaggeration', '0.5');
     formData.append('cfg_weight', '0.5');
     formData.append('temperature', '0.8');
     
-    const response = await fetch(`/api/manga/${projectData.id}/tts/synthesize`, {
+    const url = `/api/manga/${projectData.id}/tts/synthesize?text=${encodeURIComponent(text)}`;
+    const response = await fetch(url, {
         method: 'POST',
         body: formData
     });
@@ -1892,7 +1939,7 @@ function displayTTSResults() {
         audioDiv.className = 'audio-controls-container';
         audioDiv.innerHTML = `
             <audio controls id="audio-player-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                <source src="${URL.createObjectURL(data.audioBlob)}" type="audio/wav">
+                <source src="${getAudioSrc(data.audioBlob)}" type="audio/wav">
                 Your browser does not support the audio element.
             </audio>
             <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-tts-${pageNumber}">

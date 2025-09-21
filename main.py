@@ -59,36 +59,6 @@ except Exception:
     logger.exception("Failed to import/configure google-generativeai; will use narration fallback")
 
 REQUIRE_GEMINI = os.environ.get("REQUIRE_GEMINI", "0").lower() in {"1", "true", "yes"}
-# Default to using LayoutParser when available unless explicitly disabled
-_lp_env = os.environ.get("USE_LAYOUTPARSER")
-USE_LAYOUTPARSER = True if _lp_env is None else _lp_env.lower() in {"1", "true", "yes"}
-
-# TTS API endpoint (must be provided via .env as TTS_API_URL)
-# Example in .env: TTS_API_URL=https://your-tts-host.example/synthesize
-TTS_API_URL = os.environ.get("TTS_API_URL", "").strip()
-
-# Local panel detection functions removed - using external API only
-
-
-def merge_overlapping_boxes(boxes: List[Tuple[int, int, int, int]], iou_threshold: float = 0.3) -> List[Tuple[int, int, int, int]]:
-    def iou(a, b):
-        ax1, ay1, aw, ah = a
-        bx1, by1, bw, bh = b
-        ax2, ay2 = ax1 + aw, ay1 + ah
-        bx2, by2 = bx1 + bw, by1 + bh
-        inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
-        inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
-        inter_w, inter_h = max(0, inter_x2 - inter_x1), max(0, inter_y2 - inter_y1)
-        inter_area = inter_w * inter_h
-        area_a, area_b = aw * ah, bw * bh
-        union = area_a + area_b - inter_area
-        return inter_area / union if union > 0 else 0.0
-
-    kept: List[Tuple[int, int, int, int]] = []
-    for box in sorted(boxes, key=lambda b: b[2] * b[3], reverse=True):
-        if all(iou(box, k) < iou_threshold for k in kept):
-            kept.append(box)
-    return kept
 
 app = FastAPI(title="Manga AI Dashboard")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -160,6 +130,7 @@ def normalize_panel_id(panel_id: str) -> str:
     if m2:
         return f"panel{int(m2.group(1))}"
     return s
+
 def extract_page_number(filename: str) -> int:
     """Extract page number from filename like 'image (4).png' or 'image (5).jpg'
     Returns the number found in parentheses, or 0 if no number found.
@@ -317,6 +288,9 @@ full_story_context: str = ""
 # External panel detection API (optional)
 PANEL_API_URL = os.environ.get("PANEL_API_URL", "").strip()
 PANEL_API_MODE = os.environ.get("PANEL_API_MODE", "auto").lower()  # auto|json|zip|image
+
+# External TTS API (optional)
+TTS_API_URL = os.environ.get("TTS_API_URL", "").strip()
 
 def call_external_panel_api(page_path: str) -> Dict[str, Any]:
     if not PANEL_API_URL:
@@ -697,13 +671,12 @@ async def generate_narrative_api(project_id: str):
         "The images are already sorted by page number (1, 2, 3, etc.). "
         "For each page, write a descriptive paragraph with 3-4 sentences that captures the key events, emotions, and story progression. "
         "Be vivid and engaging in your descriptions, focusing on character actions, dialogue, emotions, and visual details. "
-        "Make sure each panel is described in the narration with all details that are visible in the panel."
         "Each page should have its own distinct narrative segment that flows naturally into the next. "
-        "Do not mention the pages or chapters in the narration like `this chapter starts with` it should not feel like you are reading from pages"
-        "IMPORTANT: Return ONLY a JSON array in this exact format: {[[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]} "
+        "Do not mention the pages or chapters in the narration like `this chapter or page starts with` or ` This image is contrasted with a panel ` it should not feel like you are reading from pages"
+        "IMPORTANT: Return ONLY a JSON array in this exact format: [[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...] "
         "Do NOT include any markdown code blocks do NOT include any other text. "
-        "Just return the raw JSON {[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]}"
-        "Example: {[[\"Page1\", \"The story begins with our protagonist...\"], [\"Page2\", \"As the scene continues...\"]]}"
+        "Just return the raw JSON [\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]"
+        "Example: [[\"Page1\", \"The story begins with our protagonist...\"], [\"Page2\", \"As the scene continues...\"]]"
     )
     
     system_prompt = (
@@ -1430,12 +1403,6 @@ async def process_chapter():
         "pages": chapter_results,
         "used_fallback": any(p.get("source") == "fallback" for p in chapter_results),
     })
-
-
-# Old detect-panels endpoint removed - use project-specific panel detection instead
-
-
-# Old process-page endpoint removed - use project-based workflow instead
 
 
 if __name__ == "__main__":

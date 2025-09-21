@@ -579,6 +579,64 @@
             font-size: 16px;
         }
         
+        /* Generic centered modal used for JSON upload and small dialogs */
+        .modal {
+            position: fixed;
+            inset: 0; /* top:0; right:0; bottom:0; left:0 */
+            display: none; /* toggled by JS */
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.45);
+            z-index: 4500; /* above panel editor and other overlays */
+            padding: 24px;
+            overflow: auto;
+        }
+
+        .modal[style*="display: block"],
+        .modal[style*="display:block"] {
+            /* ensure flex layout when shown via inline style */
+            display: flex !important;
+        }
+
+        .modal-content {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            box-shadow: var(--shadow-lg);
+            width: 100%;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .modal .close {
+            background: none;
+            border: none;
+            font-size: 22px;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 6px 8px;
+            border-radius: 6px;
+        }
+
+        .modal .close:hover {
+            background: var(--border-color);
+            color: var(--text-primary);
+        }
+
+        @media (max-width: 640px) {
+            .modal-content { max-width: 94vw; padding: 16px; }
+        }
+
         .fullscreen-modal {
             position: fixed;
             top: 0;
