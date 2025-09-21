@@ -3,42 +3,331 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Context-Aware Manga Narrator</title>
-    <style>
-        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-        h1 { margin-bottom: 8px; }
-        #controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
-        #imageGallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-top: 12px; }
-        .thumb { border: 1px solid #ddd; border-radius: 8px; overflow: hidden; background: #fafafa; padding: 6px; text-align: center; }
-        .thumb img { width: 100%; height: auto; display: block; }
-        #startButton { padding: 8px 14px; border: none; background: #111827; color: #fff; border-radius: 8px; cursor: pointer; }
-        #startButton[disabled] { opacity: 0.6; cursor: not-allowed; }
-        #status { margin-top: 8px; color: #374151; }
-        #results { margin-top: 24px; }
-        .page { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-        .narration { white-space: pre-wrap; margin: 8px 0; }
-        .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #f3f4f6; padding: 8px; border-radius: 6px; display: block; overflow-x: auto; }
-    </style>
-    <script defer src="/static/script.js"></script>
+    <title>Manga AI Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <style> body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; } </style>
-    <meta name="color-scheme" content="light dark" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f1f5f9;
+            --text-primary: #1e293b;
+            --text-secondary: #374151;
+            --text-muted: #6b7280;
+            --border-color: #e5e7eb;
+            --border-light: #f1f5f9;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+            --shadow-lg: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+            --border-light: #475569;
+            --shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --shadow-lg: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; 
+            background: var(--bg-primary); 
+            color: var(--text-primary);
+            line-height: 1.6;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        .header { 
+            background: var(--bg-secondary); 
+            border-radius: 12px; 
+            padding: 24px; 
+            margin-bottom: 24px; 
+            box-shadow: var(--shadow);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }
+        .header h1 { font-size: 28px; font-weight: 700; color: var(--text-primary); }
+        .btn-primary { 
+            background: #3b82f6; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 8px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: all 0.2s;
+        }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { 
+            background: #6b7280; 
+            color: white; 
+            border: none; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: all 0.2s;
+        }
+        .btn-secondary:hover { background: #4b5563; }
+        .btn-danger { 
+            background: #ef4444; 
+            color: white; 
+            border: none; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: all 0.2s;
+        }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-sm { padding: 6px 12px; font-size: 14px; }
+        .table-container { 
+            background: var(--bg-secondary); 
+            border-radius: 12px; 
+            overflow: hidden; 
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th { 
+            background: var(--bg-tertiary); 
+            padding: 16px; 
+            text-align: left; 
+            font-weight: 600; 
+            color: var(--text-secondary); 
+            border-bottom: 1px solid var(--border-color);
+        }
+        td { padding: 16px; border-bottom: 1px solid var(--border-light); }
+        .status-badge { 
+            display: inline-block; 
+            padding: 4px 12px; 
+            border-radius: 20px; 
+            font-size: 12px; 
+            font-weight: 500; 
+            text-transform: uppercase;
+        }
+        .status-uploaded { background: #dbeafe; color: #1e40af; }
+        .status-processing { background: #fef3c7; color: #d97706; }
+        .status-narrative { background: #d1fae5; color: #059669; }
+        .status-panels { background: #e0e7ff; color: #3730a3; }
+        .status-text-matching { background: #fce7f3; color: #be185d; }
+        .status-complete { background: #dcfce7; color: #166534; }
+        .actions { display: flex; gap: 8px; }
+        .modal { 
+            display: none; 
+            position: fixed; 
+            top: 0; left: 0; 
+            width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.5); 
+            z-index: 1000;
+        }
+        .modal-content { 
+            position: absolute; 
+            top: 50%; left: 50%; 
+            transform: translate(-50%, -50%); 
+            background: var(--bg-secondary); 
+            border-radius: 12px; 
+            padding: 24px; 
+            width: 90%; 
+            max-width: 500px; 
+            max-height: 80vh; 
+            overflow-y: auto;
+            transition: all 0.3s ease;
+        }
+        .modal-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 20px; 
+        }
+        .modal-header h2 { font-size: 20px; font-weight: 600; color: var(--text-primary); }
+        .close { 
+            background: none; 
+            border: none; 
+            font-size: 24px; 
+            cursor: pointer; 
+            color: var(--text-muted);
+            transition: color 0.3s ease;
+        }
+        .close:hover { color: var(--text-primary); }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { 
+            display: block; 
+            margin-bottom: 8px; 
+            font-weight: 500; 
+            color: var(--text-secondary);
+        }
+        .form-group input, .form-group textarea { 
+            width: 100%; 
+            padding: 12px; 
+            border: 1px solid var(--border-color); 
+            border-radius: 8px; 
+            font-size: 14px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+        .form-group input:focus, .form-group textarea:focus { 
+            outline: none; 
+            border-color: #3b82f6; 
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+        .file-upload { 
+            border: 2px dashed var(--border-color); 
+            border-radius: 8px; 
+            padding: 20px; 
+            text-align: center; 
+            cursor: pointer; 
+            transition: all 0.2s;
+            background: var(--bg-primary);
+        }
+        .file-upload:hover { border-color: #3b82f6; background: var(--bg-tertiary); }
+        .file-upload.dragover { border-color: #3b82f6; background: #eff6ff; }
+        .empty-state { 
+            text-align: center; 
+            padding: 60px 20px; 
+            color: var(--text-muted);
+        }
+        .empty-state h3 { margin-bottom: 8px; color: var(--text-secondary); }
+        .hidden { display: none; }
+        .loading { 
+            display: inline-block; 
+            width: 20px; height: 20px; 
+            border: 2px solid var(--border-light); 
+            border-top: 2px solid #3b82f6; 
+            border-radius: 50%; 
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .theme-toggle {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        .theme-toggle:hover {
+            background: var(--border-color);
+        }
+        .theme-icon {
+            font-size: 16px;
+        }
+    </style>
+    <script defer src="/static/script.js"></script>
 </head>
 <body>
-    <h1>Context-Aware Manga Narrator</h1>
-    <p>Upload your chapter images, then start narration. Images are processed in order by filename.</p>
+    <div class="container">
+        <div class="header">
+            <h1>Manga AI Dashboard</h1>
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle">
+                    <span class="theme-icon" id="themeIcon">🌙</span>
+                    <span id="themeText">Dark</span>
+                </button>
+                <button class="btn-primary" onclick="openAddModal()">+ Add New Manga</button>
+            </div>
+        </div>
 
-    <div id="controls">
-        <input type="file" id="chapterUpload" multiple accept="image/*" />
-        <button id="startButton" disabled>Start Narration</button>
-        <span id="status"></span>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Status</th>
+                        <th>Chapters</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="mangaTableBody">
+                    <tr>
+                        <td colspan="5" class="empty-state">
+                            <h3>No manga projects yet</h3>
+                            <p>Click "Add New Manga" to get started</p>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
-    <div id="imageGallery"></div>
-
-    <div id="results"></div>
+    <!-- Add Manga Modal -->
+    <div id="addModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add New Manga</h2>
+                <button class="close" onclick="closeAddModal()">&times;</button>
+            </div>
+            <form id="addMangaForm">
+                <div class="form-group">
+                    <label for="mangaTitle">Manga Title</label>
+                    <input type="text" id="mangaTitle" name="title" required placeholder="Enter manga title">
+                </div>
+                <div class="form-group">
+                    <label>Upload Type</label>
+                    <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="radio" name="uploadType" value="images" checked onchange="toggleUploadType()">
+                            <span>Images</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="radio" name="uploadType" value="json" onchange="toggleUploadType()">
+                            <span>JSON Data</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <div class="form-group" id="imageUploadGroup">
+                    <label for="chapterUpload">Upload Chapter Images</label>
+                    <div class="file-upload" id="fileUploadArea">
+                        <input type="file" id="chapterUpload" name="files" multiple accept="image/*" style="display: none;">
+                        <p>Click to select images or drag and drop</p>
+                        <p style="font-size: 12px; color: #6b7280; margin-top: 8px;">Supports PNG, JPG, JPEG, WebP</p>
+                    </div>
+                    <div id="fileList" class="hidden"></div>
+                </div>
+                
+                <div class="form-group hidden" id="jsonUploadGroup">
+                    <label for="jsonUpload">Upload JSON Data</label>
+                    <div class="file-upload" id="jsonUploadArea">
+                        <input type="file" id="jsonUpload" name="jsonFile" accept=".json" style="display: none;">
+                        <p>Click to select JSON file or drag and drop</p>
+                        <p style="font-size: 12px; color: #6b7280; margin-top: 8px;">Supports .json files with narrative data</p>
+                        <details style="margin-top: 12px; text-align: left;">
+                            <summary style="cursor: pointer; font-size: 12px; color: #3b82f6;">Expected JSON format</summary>
+                            <div style="margin-top: 8px; font-size: 11px; color: #6b7280; background: #f8fafc; padding: 8px; border-radius: 4px; font-family: monospace;">
+                                [<br>
+                                &nbsp;&nbsp;["Page1", "Narration text..."],<br>
+                                &nbsp;&nbsp;["Page2", "Narration text..."],<br>
+                                &nbsp;&nbsp;["Page3", "Narration text..."]<br>
+                                ]
+                            </div>
+                        </details>
+                    </div>
+                    <div id="jsonFileInfo" class="hidden"></div>
+                </div>
+                <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
+                    <button type="button" class="btn-secondary" onclick="closeAddModal()">Cancel</button>
+                    <button type="submit" class="btn-primary">Create Manga</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </body>
 </html>
 

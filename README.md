@@ -50,30 +50,81 @@ An AI-powered web application that automatically detects panels in manga/comic p
 
 ## Usage Workflow
 
-### Step 1: Upload Images
+### Option 1: Upload Images and Generate Narration
+
+#### Step 1: Upload Images
+- Click "Add New Manga" and select "Images" upload type
 - Click "Choose Files" and select manga/comic page images
 - Images are uploaded and stored in the `uploads/` directory
 - Supported formats: PNG, JPG, JPEG, WEBP
 
-### Step 2: Detect Panels
+#### Step 2: Detect Panels
 - Click "Start Narration" to begin panel detection
 - The app sends each image to your configured `PANEL_API_URL`
 - Detected panels are cropped and saved as individual images
 - Panel previews are displayed in the UI for review
 
-### Step 3: Generate Narration
+#### Step 3: Generate Narration
 - For each page, click "Generate Narration for This Page"
 - The app sends panel images to Google Gemini with story context
 - Narration is generated and displayed below the panel previews
 - Story context is maintained across all pages
+
+### Option 2: Upload Pre-Generated JSON Data
+
+#### Step 1: Prepare JSON Data
+- Create a JSON file with one of the following structures:
+
+**Option A: Direct array format (matches API response)**
+```json
+[
+  ["Page1", "Narration for page 1..."],
+  ["Page2", "Narration for page 2..."],
+  ["Page3", "Narration for page 3..."]
+]
+```
+
+**Option B: Object format with optional full narration**
+```json
+{
+  "narration": "Full story narration text...",
+  "page_narrations": [
+    ["Page1", "Narration for page 1..."],
+    ["Page2", "Narration for page 2..."],
+    ["Page3", "Narration for page 3..."]
+  ]
+}
+```
+
+#### Step 2: Upload JSON Data
+- Click "Add New Manga" and select "JSON Data" upload type
+- Click "Choose File" and select your JSON file
+- The app validates the JSON structure and creates a project with pre-generated narration
+- You can then proceed to panel detection and text matching steps
+
+#### Step 3: Continue with Panel Detection
+- The project will be created with narrative status "complete"
+- You can proceed to detect panels and match text to panels
+- This is useful when you have pre-generated narration from external sources
 
 ## API Endpoints
 
 ### Frontend Endpoints
 - `GET /` - Main application interface
 - `POST /upload` - Upload manga page images
+- `POST /upload-json` - Upload and validate JSON narrative data
 - `POST /detect-panels` - Detect panels using external API
 - `POST /process-page` - Generate narration for a specific page
+
+### API Endpoints
+- `GET /api/manga` - Get all manga projects
+- `POST /api/manga` - Create new manga project (supports both images and JSON data)
+- `GET /api/manga/{project_id}` - Get specific manga project
+- `PUT /api/manga/{project_id}` - Update manga project
+- `DELETE /api/manga/{project_id}` - Delete manga project
+- `POST /api/manga/{project_id}/narrative` - Generate narrative for project
+- `POST /api/manga/{project_id}/panels` - Detect panels for project
+- `POST /api/manga/{project_id}/text-matching` - Match text to panels
 
 ### Static Files
 - `/uploads/` - Serves uploaded images and generated panel crops

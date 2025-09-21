@@ -1,0 +1,1397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ project.title }} - Manga AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f1f5f9;
+            --text-primary: #1e293b;
+            --text-secondary: #374151;
+            --text-muted: #6b7280;
+            --border-color: #e5e7eb;
+            --border-light: #f1f5f9;
+            --shadow: 0 1px 3px rgba(0,0,0,0.1);
+            --shadow-lg: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+            --border-light: #475569;
+            --shadow: 0 1px 3px rgba(0,0,0,0.3);
+            --shadow-lg: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; 
+            background: var(--bg-primary); 
+            color: var(--text-primary);
+            line-height: 1.6;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+        .header { 
+            background: var(--bg-secondary); 
+            border-radius: 12px; 
+            padding: 24px; 
+            margin-bottom: 24px; 
+            box-shadow: var(--shadow);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }
+        .header h1 { font-size: 28px; font-weight: 700; color: var(--text-primary); }
+        .btn-primary { 
+            background: #3b82f6; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 8px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { 
+            background: #6b7280; 
+            color: white; 
+            border: none; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            font-weight: 500; 
+            cursor: pointer; 
+            transition: all 0.2s;
+        }
+        .btn-secondary:hover { background: #4b5563; }
+        .workflow-container {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .workflow-step {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }
+        .workflow-step h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .status-pending { background: #fef3c7; color: #d97706; }
+        .status-processing { background: #dbeafe; color: #1e40af; }
+        .status-complete { background: #d1fae5; color: #059669; }
+        .status-todo { background: #f3f4f6; color: #6b7280; }
+        .carousel-container {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            transition: all 0.3s ease;
+        }
+        .carousel {
+            position: relative;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .carousel-image {
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+            display: none;
+        }
+        .carousel-image.active {
+            display: block;
+        }
+        .carousel-controls {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .carousel-btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .carousel-btn:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+        }
+        .carousel-indicators {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #d1d5db;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .indicator.active {
+            background: #3b82f6;
+        }
+        .narrative-output {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+        
+        .narration-tabs {
+            width: 100%;
+        }
+        
+        .tab-buttons {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .tab-button {
+            background: none;
+            border: none;
+            padding: 12px 20px;
+            cursor: pointer;
+            font-weight: 500;
+            color: var(--text-muted);
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .tab-button:hover {
+            color: var(--text-primary);
+        }
+        
+        .tab-button.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+        
+        .tab-content {
+            position: relative;
+        }
+        
+        .tab-pane {
+            display: none;
+        }
+        
+        .tab-pane.active {
+            display: block;
+        }
+        
+        .narrative-text {
+            white-space: pre-wrap;
+            line-height: 1.8;
+            font-size: 15px;
+        }
+        
+        .page-sections-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .page-section {
+            display: flex;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+        
+        .page-section:last-child {
+            border-bottom: none;
+        }
+        
+        .page-number {
+            min-width: 80px;
+            font-weight: 600;
+            color: #3b82f6;
+            font-size: 14px;
+        }
+        
+        .section-text {
+            flex: 1;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+        
+        /* Editable page sections */
+        .page-section {
+            position: relative;
+        }
+        
+        .page-section:hover .edit-section-btn {
+            opacity: 1;
+        }
+        
+        .edit-section-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        
+        .edit-section-btn:hover {
+            background: #2563eb;
+        }
+        
+        .section-textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 14px;
+            line-height: 1.6;
+            resize: vertical;
+            font-family: inherit;
+        }
+        
+        .section-textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        
+        .section-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            justify-content: flex-end;
+        }
+        
+        .section-actions button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .btn-save-section {
+            background: #10b981;
+            color: white;
+        }
+        
+        .btn-save-section:hover {
+            background: #059669;
+        }
+        
+        .btn-cancel-section {
+            background: #6b7280;
+            color: white;
+        }
+        
+        .btn-cancel-section:hover {
+            background: #4b5563;
+        }
+        
+        .no-sections {
+            text-align: center;
+            color: var(--text-muted);
+            font-style: italic;
+            padding: 20px;
+        }
+        .page-panels-container {
+            margin-bottom: 32px;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--bg-secondary);
+        }
+        
+        /* Page-level collapsible functionality */
+        .page-panels-container details {
+            width: 100%;
+        }
+        
+        .page-panels-container summary.page-header {
+            cursor: pointer;
+            user-select: none;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .page-panels-container summary.page-header::-webkit-details-marker {
+            display: none;
+        }
+        
+        .page-panels-container summary.page-header .page-title {
+            flex: 1;
+        }
+        
+        .page-panels-container summary.page-header h4 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .page-collapsible-caret {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-muted);
+            transition: transform 0.2s ease;
+        }
+        
+        .page-panels-container details[open] .page-collapsible-caret {
+            transform: rotate(180deg);
+        }
+        
+        .page-collapsible-content {
+            border-top: 1px solid var(--border-color);
+        }
+        
+        .page-header {
+            background: var(--bg-tertiary);
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .page-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .page-title h4 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .panel-count {
+            background: #3b82f6;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .error-message {
+            margin-top: 8px;
+            padding: 8px 12px;
+            background: #fef2f2;
+            color: #dc2626;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .panels-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0;
+            padding: 0 0 20px 0;
+        }
+        
+        .panel-item { display: none; }
+        .panel-item.active { display: block; }
+        
+        .panel-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        
+        .panel-image-container {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .panel-item img {
+            width: 100%;
+            height: 140px;
+            object-fit: cover;
+            display: block;
+            transition: transform 0.3s ease;
+        }
+        
+        .panel-item:hover img {
+            transform: scale(1.05);
+        }
+        
+        .panel-overlay {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .panel-info {
+            padding: 12px;
+        }
+        
+        .panel-filename {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            word-break: break-all;
+        }
+        
+        .panel-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .panel-narration {
+            margin: 12px 0;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            border-left: 3px solid #3b82f6;
+        }
+        
+        .panel-narration strong {
+            color: var(--text-primary);
+            font-size: 13px;
+            display: block;
+            margin-bottom: 6px;
+        }
+        
+        .panel-narration p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+        
+        .no-panels {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+        }
+        .panel-carousel-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px 0 20px;
+        }
+        .panel-carousel-buttons { display: flex; gap: 8px; }
+        .panel-carousel-indicators { display: flex; gap: 6px; align-items: center; }
+        .panel-indicator { width: 8px; height: 8px; border-radius: 50%; background: #d1d5db; cursor: pointer; }
+        .panel-indicator.active { background: #3b82f6; }
+
+        /* Fullscreen panel carousel */
+        .fs-carousel-wrapper { position: relative; display: flex; align-items: center; gap: 16px; }
+        .fs-nav-btn { background: #3b82f6; color: #fff; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+        .fs-nav-btn:disabled { background: #9ca3af; cursor: not-allowed; }
+        
+        .no-panels p {
+            margin: 0 0 8px 0;
+            font-size: 16px;
+        }
+        
+        .no-panels small {
+            font-size: 14px;
+            color: #dc2626;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px; height: 20px;
+            border: 2px solid var(--border-light);
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .hidden { display: none; }
+        
+        .theme-toggle {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        .theme-toggle:hover {
+            background: var(--border-color);
+        }
+        .theme-icon {
+            font-size: 16px;
+        }
+        
+        .fullscreen-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 4000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .fullscreen-content {
+            max-width: 96vw;
+            max-height: 96vh;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        
+        .fullscreen-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .fullscreen-header h3 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 18px;
+        }
+        
+        .close-fullscreen {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 4px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        
+        .close-fullscreen:hover {
+            background: var(--border-color);
+            color: var(--text-primary);
+        }
+        
+        .fullscreen-image-container {
+            padding: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            max-height: calc(96vh - 80px);
+            overflow: auto;
+        }
+        
+        .fullscreen-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        /* Collapsible workflow section */
+        details.collapsible { width: 100%; }
+        .collapsible-summary {
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .collapsible-summary::-webkit-details-marker { display: none; }
+        .collapsible-caret {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-muted);
+            transition: transform 0.2s ease;
+        }
+        details[open] .collapsible-caret { transform: rotate(180deg); }
+        .collapsible-content { margin-top: 12px; }
+        
+        .file-upload:hover { border-color: #3b82f6; background: var(--bg-tertiary); }
+        .file-upload.dragover { border-color: #3b82f6; background: #eff6ff; }
+        
+        /* Panel Text Editor Modal */
+        .panel-editor-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 3000;
+            display: none;
+            overflow-y: auto;
+        }
+        
+        .panel-editor-content {
+            background: var(--bg-secondary);
+            margin: 20px auto;
+            max-width: 99vw;
+            width: 2200px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        
+        .panel-editor-header {
+            background: var(--bg-tertiary);
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .panel-editor-header h2 {
+            margin: 0;
+            color: var(--text-primary);
+            font-size: 20px;
+        }
+        
+        .panel-editor-navigation {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .nav-arrow {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 8px;
+            padding: 12px 16px;
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: bold;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 50px;
+            height: 50px;
+        }
+        
+        .nav-arrow:hover {
+            background: var(--border-color);
+            transform: scale(1.05);
+        }
+        
+        .nav-arrow:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .nav-arrow:disabled:hover {
+            background: var(--bg-tertiary);
+            transform: none;
+        }
+        
+        .page-info {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            min-width: 120px;
+            text-align: center;
+        }
+        
+        .close-panel-editor {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 8px;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+        }
+        
+        .close-panel-editor:hover {
+            background: var(--border-color);
+            color: var(--text-primary);
+        }
+        
+        .panel-editor-body {
+            display: flex;
+            height: calc(100vh - 200px);
+            min-height: 600px;
+        }
+        
+        .panel-editor-sidebar {
+            width: 600px;
+            background: var(--bg-tertiary);
+            border-right: 1px solid var(--border-color);
+            overflow-y: auto;
+            padding: 20px;
+        }
+        
+        .panel-editor-main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        
+        .narration-preview {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .narration-preview h3 {
+            margin: 0 0 12px 0;
+            color: var(--text-primary);
+            font-size: 16px;
+        }
+        
+        .narration-text {
+            white-space: pre-wrap;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+        
+        .page-preview {
+            margin-top: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--bg-primary);
+        }
+        
+        .page-preview h4 {
+            margin: 0;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .page-preview-image {
+            width: 100%;
+            height: auto;
+            max-height: 400px;
+            object-fit: contain;
+            cursor: zoom-in;
+            transition: transform 0.2s ease;
+        }
+        
+        .page-preview-image:hover {
+            transform: scale(1.02);
+        }
+        
+        .page-preview-info {
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        
+        /* All Pages Sidebar */
+        .all-pages-sidebar {
+            height: calc(100vh - 200px); /* Take up most of the viewport height minus header space */
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-primary);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .all-pages-sidebar h3 {
+            margin: 0;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 14px;
+            font-weight: 600;
+            flex-shrink: 0; /* Don't shrink the header */
+        }
+        
+        .pages-container {
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .page-sidebar-item {
+            border-bottom: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        
+        .page-sidebar-item:last-child {
+            border-bottom: none;
+        }
+        
+        .page-sidebar-item:hover {
+            background: var(--bg-tertiary);
+        }
+        
+        .page-sidebar-item.active {
+            background: var(--bg-tertiary);
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .page-sidebar-title {
+            padding: 12px 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 14px;
+            border-bottom: 1px solid var(--border-light);
+        }
+        
+        .page-sidebar-item.active .page-sidebar-title {
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
+        }
+        
+        .page-sidebar-image {
+            width: 100%;
+            height: 350px;
+            object-fit: contain;
+            padding: 8px 16px;
+            cursor: pointer;
+            background: var(--bg-secondary);
+        }
+        
+        .page-sidebar-info {
+            padding: 8px 16px 12px 16px;
+            font-size: 11px;
+            color: var(--text-muted);
+            background: var(--bg-secondary);
+        }
+        
+        .panels-grid-editor {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+        }
+        
+        .panel-editor-item {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .panel-editor-image {
+            width: 100%;
+            height: 250px;
+            object-fit: cover;
+            background: var(--bg-tertiary);
+        }
+        
+        .panel-editor-info {
+            padding: 16px;
+        }
+        
+        .panel-editor-label {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .panel-editor-textarea {
+            width: 100%;
+            min-height: 100px;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 14px;
+            line-height: 1.5;
+            resize: vertical;
+        }
+        
+        .panel-editor-textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        
+        .panel-editor-textarea.has-text {
+            border-color: #10b981;
+        }
+        
+        .panel-editor-textarea.has-text:focus {
+            border-color: #10b981;
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
+        }
+        
+        /* Drag and Drop Styles */
+        .panel-editor-item {
+            cursor: move;
+            transition: all 0.2s ease;
+        }
+        
+        .panel-editor-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        
+        .panel-editor-item.dragging {
+            opacity: 0.5;
+            transform: rotate(5deg);
+            z-index: 1000;
+        }
+        
+        .panel-editor-item.drag-over {
+            border: 2px dashed #3b82f6;
+            background: rgba(59, 130, 246, 0.1);
+        }
+        
+        .drag-handle {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: move;
+            z-index: 10;
+        }
+        
+        .panel-editor-item {
+            position: relative;
+        }
+        
+        .panel-editor-actions {
+            padding: 20px;
+            background: var(--bg-tertiary);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .panel-editor-stats {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .no-panels-message {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+        
+        .no-panels-message h3 {
+            margin: 0 0 8px 0;
+            color: var(--text-secondary);
+        }
+        
+        /* Audio Controls Container */
+        .audio-controls-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+        }
+        
+        .audio-controls-container audio {
+            border-radius: 6px;
+            width: 100%;
+            max-width: 100%;
+        }
+        
+        /* Narration Actions in Panel Editor - Removed as audio controls moved to page bottom */
+        
+        /* Page Audio Controls */
+        .page-audio-controls {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .page-narration-text {
+            margin-bottom: 16px;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 6px;
+            border-left: 3px solid #3b82f6;
+        }
+        
+        .page-narration-text strong {
+            color: var(--text-primary);
+            font-size: 14px;
+            display: block;
+            margin-bottom: 8px;
+        }
+        
+        .page-narration-text p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+        
+        .page-audio-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .page-audio-actions .audio-player {
+            flex: 1;
+            margin: 0;
+        }
+        
+        .page-audio-actions .btn-primary {
+            margin: 0;
+        }
+        
+    </style>
+    <script defer src="/static/manga_view.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{{ project.title }}</h1>
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle">
+                    <span class="theme-icon" id="themeIcon">🌙</span>
+                    <span id="themeText">Dark</span>
+                </button>
+                <a href="/" class="btn-primary">← Back to Dashboard</a>
+            </div>
+        </div>
+
+        <!-- Image Carousel -->
+        <div class="carousel-container">
+            <h2 style="margin-bottom: 16px;">Chapter Images</h2>
+            <div class="carousel" id="imageCarousel">
+                {% for file in project.files %}
+                <img src="/uploads/{{ file }}" alt="Page {{ loop.index }}" class="carousel-image {% if loop.first %}active{% endif %}" data-page="{{ loop.index }}">
+                {% endfor %}
+            </div>
+            <div class="carousel-controls">
+                <button class="carousel-btn" id="prevBtn" onclick="previousImage()">← Previous</button>
+                <span id="pageInfo">Page 1 of {{ project.files|length }}</span>
+                <button class="carousel-btn" id="nextBtn" onclick="nextImage()">Next →</button>
+            </div>
+            <div class="carousel-indicators" id="indicators">
+                {% for file in project.files %}
+                <div class="indicator {% if loop.first %}active{% endif %}" data-index="{{ loop.index - 1 }}" onclick="goToImage(this.dataset.index)"></div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Workflow Steps -->
+        <div class="workflow-container">
+            <!-- Narrative Generation (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 data-step="narrative" style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.narrative.status }}">{{ project.workflow.narrative.status }}</span>
+                            Narrative Story Generation
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Generate a complete narrative story from all chapter images using Google's Gemini API, or upload pre-generated JSON data.</p>
+                        
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+                            <button class="btn-primary" onclick="generateNarrative()" id="narrativeBtn">
+                                Generate Narrative
+                            </button>
+                            <button class="btn-secondary" onclick="toggleJsonUpload()" id="jsonUploadToggleBtn">
+                                Upload JSON Data
+                            </button>
+                        </div>
+                        
+                        
+                        <div id="narrativeOutput" class="narrative-output hidden"></div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Panel Detection (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 data-step="panels" style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.panels.status }}">{{ project.workflow.panels.status }}</span>
+                            Panel Detection & Splicing
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Detect and extract individual panels from each page using AI panel detection.</p>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+                            <button class="btn-primary" onclick="detectPanels()" id="panelsBtn">
+                                Detect Panels
+                            </button>
+                            <button class="btn-secondary" onclick="openPanelEditorFromWorkflow()" id="openPanelEditorBtn">
+                                Open Panel Editor
+                            </button>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Text Matching (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 data-step="text_matching" style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.text_matching.status }}">{{ project.workflow.text_matching.status }}</span>
+                            Text-Panel Matching
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Match narrative text sections to individual panels for each page.</p>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+                            <button class="btn-primary" onclick="matchTextToPanels()" id="textMatchingBtn">
+                                Match Text to Panels
+                            </button>
+                            <button class="btn-secondary" onclick="openPanelEditorFromWorkflow()" id="openPanelEditorBtn2">
+                                Open Panel Editor
+                            </button>
+                        </div>
+                        <div style="display:flex; gap:12px; align-items:center; flex-wrap: wrap; margin-bottom: 8px;">
+                            <label for="tmConcurrency" style="font-size:14px; color: var(--text-secondary);">Concurrency</label>
+                            <input id="tmConcurrency" type="number" value="5" min="1" max="32" step="1" style="width:80px; padding:8px; border:1px solid var(--border-color); border-radius:6px; background: var(--bg-tertiary); color: var(--text-primary);">
+                            <small style="color: var(--text-muted);">How many pages to process in parallel</small>
+                        </div>
+                        <div id="textMatchingProgress" class="hidden" style="margin-top:12px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                <span id="tmpLabel" style="font-size:14px; color: var(--text-secondary);">Matching...</span>
+                                <span id="tmpCount" style="font-size:12px; color: var(--text-muted);"></span>
+                            </div>
+                            <div style="width:100%; background: var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; overflow:hidden; height:12px;">
+                                <div id="tmpBar" style="height:100%; width:0%; background:#3b82f6; transition: width 0.3s ease;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Text-to-Speech (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.tts.status }}">{{ project.workflow.tts.status }}</span>
+                            Text-to-Speech
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Convert matched text to speech for each panel using AI voice synthesis.</p>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+                            <button class="btn-secondary" onclick="loadTTSModels()" id="loadModelsBtn">
+                                🔧 Load TTS Models
+                            </button>
+                            <button class="btn-primary" onclick="synthesizeAllPages()" id="synthesizeAllBtn">
+                                Synthesize All Pages
+                            </button>
+                        </div>
+                        <div id="modelStatus" class="hidden" style="margin-bottom: 16px; padding: 12px; background: var(--bg-tertiary); border-radius: 8px; border-left: 4px solid #3b82f6;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="loading" id="modelLoadingSpinner"></span>
+                                <span id="modelStatusText">Loading models...</span>
+                            </div>
+                        </div>
+                        <div id="ttsProgress" class="hidden" style="margin-top:12px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                <span id="ttsLabel" style="font-size:14px; color: var(--text-secondary);">Synthesizing...</span>
+                                <span id="ttsCount" style="font-size:12px; color: var(--text-muted);"></span>
+                            </div>
+                            <div style="width:100%; background: var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; overflow:hidden; height:12px;">
+                                <div id="ttsBar" style="height:100%; width:0%; background:#3b82f6; transition: width 0.3s ease;"></div>
+                            </div>
+                        </div>
+                        <div id="ttsOutput" class="hidden"></div>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Video Editing (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.video_editing.status }}">{{ project.workflow.video_editing.status }}</span>
+                            Video Editing
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Create final video with panels, text, and audio. (Coming Soon)</p>
+                        <button class="btn-secondary" disabled>Coming Soon</button>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <!-- JSON Upload Modal -->
+    <div id="jsonUploadModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Upload JSON Narrative Data</h2>
+                <button class="close" onclick="closeJsonUploadModal()">&times;</button>
+            </div>
+            <div style="margin-bottom: 16px;">
+                <p style="margin: 0 0 12px 0; color: var(--text-secondary);">Paste your JSON narrative data below. This will overwrite any existing narrative data.</p>
+                <details style="margin-bottom: 12px;">
+                    <summary style="cursor: pointer; font-size: 12px; color: #3b82f6;">Expected JSON format</summary>
+                    <div style="margin-top: 8px; font-size: 11px; color: #6b7280; background: var(--bg-primary); padding: 8px; border-radius: 4px; font-family: monospace; white-space: pre-wrap;">
+[
+  ["Page1", "Narration text for page 1..."],
+  ["Page2", "Narration text for page 2..."],
+  ["Page3", "Narration text for page 3..."]
+]</div>
+                </details>
+            </div>
+            <div class="form-group">
+                <label for="jsonTextArea">JSON Data</label>
+                <textarea id="jsonTextArea" rows="12" placeholder="Paste your JSON data here..." style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; background: var(--bg-primary); color: var(--text-primary); font-family: monospace; resize: vertical;"></textarea>
+            </div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
+                <button type="button" class="btn-secondary" onclick="closeJsonUploadModal()">Cancel</button>
+                <button type="button" class="btn-primary" onclick="uploadJsonText()" id="uploadJsonTextBtn">Upload & Overwrite</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Panel Text Editor Modal -->
+    <div id="panelEditorModal" class="panel-editor-modal">
+        <div class="panel-editor-content">
+            <div class="panel-editor-header">
+                <h2 id="panelEditorTitle">Panel Editor - Page 1</h2>
+                <div class="panel-editor-navigation">
+                    <button class="nav-arrow" id="prevPageBtn" onclick="navigateToPage(-1)">‹</button>
+                    <div class="page-info" id="pageInfo">Page 1 of 1</div>
+                    <button class="nav-arrow" id="nextPageBtn" onclick="navigateToPage(1)">›</button>
+                </div>
+                <button class="close-panel-editor" onclick="closePanelEditor()" title="Close Panel Editor">✕</button>
+            </div>
+            <div class="panel-editor-body">
+                <div class="panel-editor-sidebar">
+                    <div class="narration-preview">
+                        <h3>Full Page Narration</h3>
+                        <div id="panelEditorNarration" class="narration-text">
+                            No narration available
+                        </div>
+                    </div>
+                </div>
+                <div class="panel-editor-main">
+                    <div id="panelEditorContent">
+                        <div class="no-panels-message">
+                            <h3>No panels available</h3>
+                            <p>Please detect panels first before editing text assignments.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="panel-editor-actions">
+                <div class="panel-editor-stats" id="panelEditorStats">
+                    Ready to edit
+                </div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="matchTextToCurrentPage()" id="matchTextToPageBtn">Match Text to Panel</button>
+                    <button class="btn-secondary" onclick="detectPanelsForCurrentPage()" id="detectPanelsForPageBtn">Panel Detection</button>
+                    <button class="btn-secondary" onclick="closePanelEditor()">Cancel</button>
+                    <button class="btn-primary" onclick="savePanelTexts()" id="savePanelTextsBtn">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // Pass project data to JavaScript
+        window.projectData = {{ project | tojson | safe }};
+    </script>
+</body>
+</html>

@@ -1,10 +1,15 @@
 import os
 import io
+import json
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple
+import ast
+from datetime import datetime
+import asyncio
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -27,13 +32,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+MANGA_DIR = os.path.join(BASE_DIR, "manga_projects")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(MANGA_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "cv_model"), exist_ok=True)
 
-# No ONNX path; using LayoutParser if available, else fallback
 
 gemini_available = False
 genai = None
@@ -57,162 +63,11 @@ REQUIRE_GEMINI = os.environ.get("REQUIRE_GEMINI", "0").lower() in {"1", "true", 
 _lp_env = os.environ.get("USE_LAYOUTPARSER")
 USE_LAYOUTPARSER = True if _lp_env is None else _lp_env.lower() in {"1", "true", "yes"}
 
-# Optional LayoutParser (Detectron2) model
-lp_model = None
-lp_available = False
-if USE_LAYOUTPARSER:
-    try:
-        import layoutparser as lp  # type: ignore
+# TTS API endpoint (must be provided via .env as TTS_API_URL)
+# Example in .env: TTS_API_URL=https://your-tts-host.example/synthesize
+TTS_API_URL = os.environ.get("TTS_API_URL", "").strip()
 
-        # PubLayNet Faster R-CNN; label_map documented by layoutparser
-        lp_model = lp.Detectron2LayoutModel(
-            "lp://PubLayNet/faster_rcnn_R_50_FPN_3x/config",
-            extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.5],
-            label_map={0: "Text", 1: "Title", 2: "List", 3: "Table", 4: "Figure"},
-            device="cpu",
-        )
-        lp_available = True
-        logger.info("LayoutParser PubLayNet model initialized (CPU). Using LP path for panel detection.")
-    except Exception as e:
-        lp_model = None
-        lp_available = False
-        logger.warning("LayoutParser not available (%s); will skip LP path", e)
-else:
-    logger.info("USE_LAYOUTPARSER explicitly disabled; skipping LayoutParser path")
-
-# Optional Ultralytics YOLOv8 model (CPU)
-yolo_model = None
-yolo_available = False
-YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
-try:
-    from ultralytics import YOLO  # type: ignore
-
-    # Lazy load later on first use to avoid startup hit; mark available
-    yolo_available = True
-    logger.info("YOLOv8 available; will load model on first use from %s", YOLO_MODEL_PATH)
-except Exception as e:
-    yolo_available = False
-    YOLO = None  # type: ignore
-    logger.info("Ultralytics YOLO not available (%s); skipping YOLO path", e)
-
-# Optional OWL-ViT zero-shot detector (prompt-based)
-USE_OWLVIT = os.environ.get("USE_OWLVIT", "0").lower() in {"1", "true", "yes"}
-OWLVIT_PROMPTS = [s.strip() for s in os.environ.get("OWLVIT_PROMPTS", "comic panel, panel, frame").split(",") if s.strip()]
-owl_model = None
-owl_processor = None
-owl_available = False
-if USE_OWLVIT:
-    try:
-        from transformers import Owlv2ForObjectDetection, Owlv2Processor  # type: ignore
-
-        owl_available = True
-        logger.info("OWL-ViT enabled; will lazy-load model on first use with prompts: %s", OWLVIT_PROMPTS)
-    except Exception as e:
-        owl_available = False
-        logger.info("OWL-ViT transformers not available (%s); skipping OWL path", e)
-
-# Optional DeepPanel (U-Net segmentation) via TensorFlow
-USE_DEEPPANEL = os.environ.get("USE_DEEPPANEL", "0").lower() in {"1", "true", "yes"}
-DEEPPANEL_MODEL_PATH = os.path.join(BASE_DIR, os.environ.get("DEEPPANEL_MODEL_PATH", "deeppanel_model"))
-deeppanel_available = False
-deeppanel_model = None
-if USE_DEEPPANEL:
-    try:
-        import tensorflow as tf  # type: ignore
-        if os.path.isdir(DEEPPANEL_MODEL_PATH):
-            deeppanel_model = tf.saved_model.load(DEEPPANEL_MODEL_PATH)
-            deeppanel_available = True
-            logger.info("DeepPanel model loaded from %s", DEEPPANEL_MODEL_PATH)
-        else:
-            logger.warning("DeepPanel model path not found: %s", DEEPPANEL_MODEL_PATH)
-    except Exception as e:
-        deeppanel_available = False
-        deeppanel_model = None
-        logger.info("DeepPanel unavailable (%s)", e)
-
-def detect_panels_deeppanel(image: Image.Image) -> List[Tuple[int, int, int, int]]:
-    try:
-        import numpy as np  # type: ignore
-        import cv2  # type: ignore
-        import tensorflow as tf  # type: ignore
-        if deeppanel_model is None:
-            return []
-        # DeepPanel examples use 512x512; adjust if your model differs
-        img_rgb = image.convert("RGB").resize((512, 512))
-        arr = np.asarray(img_rgb).astype("float32") / 255.0
-        x = tf.convert_to_tensor(arr[None, ...])
-        outputs = deeppanel_model(x)
-        # Assume single-channel mask in outputs["masks"] or first tensor
-        if isinstance(outputs, dict):
-            y = list(outputs.values())[0]
-        else:
-            y = outputs
-        mask = y[0].numpy()
-        if mask.ndim == 3:
-            mask = mask[..., 0]
-        mask = (mask > 0.5).astype("uint8") * 255
-        # Resize mask to original size
-        mask = cv2.resize(mask, image.size, interpolation=cv2.INTER_NEAREST)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes: List[Tuple[int, int, int, int]] = []
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if w <= 10 or h <= 10:
-                continue
-            boxes.append((int(x), int(y), int(w), int(h)))
-        if boxes:
-            boxes = merge_overlapping_boxes(boxes, iou_threshold=0.2)
-            boxes.sort(key=lambda b: (b[1], b[0]))
-            return boxes
-        return []
-    except Exception as e:
-        logger.info("DeepPanel detection failed (%s)", e)
-        return []
-
-def detect_panels_opencv(image: Image.Image) -> List[Tuple[int, int, int, int]]:
-    """Heuristic panel detection via borders/gutters using OpenCV.
-    Steps: grayscale -> adaptive threshold -> morphology -> find contours -> rectangles.
-    Returns boxes sorted top-to-bottom then left-to-right.
-    """
-    try:
-        import numpy as np  # type: ignore
-        import cv2  # type: ignore
-
-        img = np.array(image.convert("L"))
-        # Adaptive threshold to emphasize borders/gutters
-        th = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY, 35, 10)
-        # Invert so lines are white
-        th_inv = 255 - th
-        # Morph close to connect border lines
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        closed = cv2.morphologyEx(th_inv, cv2.MORPH_CLOSE, kernel, iterations=2)
-        # Find external contours
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes: List[Tuple[int, int, int, int]] = []
-        h_img, w_img = img.shape[:2]
-        min_area = (w_img * h_img) * 0.02  # ignore tiny noise
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            area = w * h
-            if area < min_area:
-                continue
-            # Expand slightly to include borders
-            pad = 4
-            x = max(0, x - pad)
-            y = max(0, y - pad)
-            w = min(w_img - x, w + 2 * pad)
-            h = min(h_img - y, h + 2 * pad)
-            boxes.append((int(x), int(y), int(w), int(h)))
-        if boxes:
-            # Merge overlapping boxes (simple NMS-like)
-            boxes = merge_overlapping_boxes(boxes, iou_threshold=0.2)
-            boxes.sort(key=lambda b: (b[1], b[0]))
-            return boxes
-        return []
-    except Exception as e:
-        logger.info("OpenCV panel detection unavailable or failed (%s)", e)
-        return []
+# Local panel detection functions removed - using external API only
 
 
 def merge_overlapping_boxes(boxes: List[Tuple[int, int, int, int]], iou_threshold: float = 0.3) -> List[Tuple[int, int, int, int]]:
@@ -235,131 +90,229 @@ def merge_overlapping_boxes(boxes: List[Tuple[int, int, int, int]], iou_threshol
             kept.append(box)
     return kept
 
-app = FastAPI(title="Context-Aware Manga Narrator App")
+app = FastAPI(title="Manga AI Dashboard")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_projects")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# Manga project management
+def _normalize_quotes_and_commas(text: str) -> str:
+    """Best-effort cleanup to make loosely JSON-like text parseable.
+    - Convert smart quotes to normal quotes
+    - Remove trailing commas before ] or }
+    - Replace single quotes with double quotes when likely JSON keys/strings
+    """
+    cleaned = text.strip()
+    # Normalize smart quotes
+    cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'")
+    cleaned = cleaned.replace("‚", "'").replace("‛", "'")
+    # Remove trailing commas like ,] or ,}
+    cleaned = re.sub(r",\s*(\]|\})", r"\\1", cleaned)
+    return cleaned
+
+def parse_json_array_from_text(text: str) -> List[Any]:
+    """Extract a JSON array from free-form model output robustly.
+    Returns a Python list on success or raises ValueError.
+    """
+    if not isinstance(text, str):
+        raise ValueError("Input text is not a string")
+    cleaned = text.strip()
+    # Strip common markdown code fences if still present
+    fence_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", cleaned)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    # Prefer the first top-level [...] span
+    array_match = re.search(r"\[[\s\S]*\]", cleaned)
+    candidate = array_match.group(0).strip() if array_match else cleaned
+    attempts: List[str] = [candidate]
+    attempts.append(_normalize_quotes_and_commas(candidate))
+    # Try JSON first
+    last_err: Optional[Exception] = None
+    for attempt in attempts:
+        try:
+            parsed = json.loads(attempt)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception as e:
+            last_err = e
+            continue
+    # Try Python literal eval for arrays that use single quotes or mixed quotes
+    try:
+        py_candidate = _normalize_quotes_and_commas(candidate)
+        parsed_py = ast.literal_eval(py_candidate)
+        if isinstance(parsed_py, list):
+            return parsed_py
+    except Exception as e2:
+        last_err = e2
+    raise ValueError(f"Unable to parse JSON array: {last_err}")
+
+def normalize_panel_id(panel_id: str) -> str:
+    """Normalize variations like 'panel1', 'panel_1', 'panel01', 'Panel 1' to 'panel1'."""
+    s = str(panel_id).strip().lower()
+    s = s.replace("panel_", "panel").replace("panel ", "panel")
+    # Extract number
+    m = re.search(r"panel\s*(\d+)", s)
+    if m:
+        return f"panel{int(m.group(1))}"
+    # As a fallback, if it's just a number
+    m2 = re.search(r"(\d+)$", s)
+    if m2:
+        return f"panel{int(m2.group(1))}"
+    return s
+def extract_page_number(filename: str) -> int:
+    """Extract page number from filename like 'image (4).png' or 'image (5).jpg'
+    Returns the number found in parentheses, or 0 if no number found.
+    """
+    # Look for pattern like "image (4)" or "image (5)"
+    match = re.search(r'image\s*\((\d+)\)', filename, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    
+    # Fallback: look for any number in the filename
+    numbers = re.findall(r'\d+', filename)
+    if numbers:
+        return int(numbers[0])
+    
+    return 0
+
+def sort_files_by_page_number(files: List[str]) -> List[Tuple[str, int]]:
+    """Sort files by their extracted page numbers and return tuples of (filename, page_number)"""
+    file_page_pairs = [(filename, extract_page_number(filename)) for filename in files]
+    # Sort by page number, then by filename for files with same page number
+    file_page_pairs.sort(key=lambda x: (x[1], x[0]))
+    return file_page_pairs
+
+def get_sorted_pages_info(files: List[str]) -> List[Dict[str, Any]]:
+    """Get sorted pages information for debugging/display purposes"""
+    sorted_pairs = sort_files_by_page_number(files)
+    pages_info = []
+    for i, (filename, original_page_num) in enumerate(sorted_pairs, start=1):
+        pages_info.append({
+            "sequential_page": i,
+            "filename": filename,
+            "original_page_num": original_page_num
+        })
+    return pages_info
+
+def get_manga_projects() -> List[Dict[str, Any]]:
+    """Load manga projects from storage"""
+    projects_file = os.path.join(MANGA_DIR, "projects.json")
+    if os.path.exists(projects_file):
+        try:
+            with open(projects_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading manga projects: {e}")
+    return []
+
+def save_manga_projects(projects: List[Dict[str, Any]]) -> None:
+    """Save manga projects to storage"""
+    projects_file = os.path.join(MANGA_DIR, "projects.json")
+    try:
+        with open(projects_file, 'w', encoding='utf-8') as f:
+            json.dump(projects, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving manga projects: {e}")
+
+def create_manga_project(title: str, files: List[str]) -> Dict[str, Any]:
+    """Create a new manga project"""
+    project_id = str(int(datetime.now().timestamp() * 1000))
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+    
+    # Sort files by page number and assign sequential page numbers
+    sorted_file_pairs = sort_files_by_page_number(files)
+    
+    # Create pages list with sequential page numbers starting from 1
+    pages = []
+    for i, (filename, original_page_num) in enumerate(sorted_file_pairs, start=1):
+        pages.append({
+            "page_number": i,  # Sequential page number starting from 1
+            "filename": filename,
+            "original_page_num": original_page_num  # Keep original for reference
+        })
+        
+        # Copy uploaded files to project directory
+        src_path = os.path.join(UPLOAD_DIR, filename)
+        dst_path = os.path.join(project_dir, filename)
+        if os.path.exists(src_path):
+            import shutil
+            shutil.copy2(src_path, dst_path)
+    
+    project = {
+        "id": project_id,
+        "title": title,
+        "status": "uploaded",
+        "chapters": len(files),
+        "createdAt": datetime.now().isoformat(),
+        "files": files,  # Keep original files list for backward compatibility
+        "pages": pages,  # New structured pages with sequential numbering
+        "workflow": {
+            "narrative": {"status": "pending", "data": None},
+            "panels": {"status": "pending", "data": None},
+            "text_matching": {"status": "pending", "data": None},
+            "tts": {"status": "todo", "data": None},
+            "video_editing": {"status": "todo", "data": None}
+        }
+    }
+    
+    # Save to projects list
+    projects = get_manga_projects()
+    projects.append(project)
+    save_manga_projects(projects)
+    
+    return project
+
+def get_manga_project(project_id: str) -> Optional[Dict[str, Any]]:
+    """Get a specific manga project by ID"""
+    projects = get_manga_projects()
+    return next((p for p in projects if p["id"] == project_id), None)
+
+def update_manga_project(project_id: str, updates: Dict[str, Any]) -> bool:
+    """Update a manga project"""
+    projects = get_manga_projects()
+    for i, project in enumerate(projects):
+        if project["id"] == project_id:
+            # Handle nested updates (e.g., "workflow.narrative.status")
+            for key, value in updates.items():
+                if "." in key:
+                    keys = key.split(".")
+                    current = projects[i]
+                    for k in keys[:-1]:
+                        if k not in current:
+                            current[k] = {}
+                        current = current[k]
+                    current[keys[-1]] = value
+                else:
+                    projects[i][key] = value
+            save_manga_projects(projects)
+            return True
+    return False
+
+def delete_manga_project(project_id: str) -> bool:
+    """Delete a manga project and its files"""
+    projects = get_manga_projects()
+    project = next((p for p in projects if p["id"] == project_id), None)
+    if project:
+        # Delete project directory
+        project_dir = os.path.join(MANGA_DIR, project_id)
+        if os.path.exists(project_dir):
+            import shutil
+            shutil.rmtree(project_dir)
+        
+        # Remove from projects list
+        projects = [p for p in projects if p["id"] != project_id]
+        save_manga_projects(projects)
+        return True
+    return False
 
 
 # Story context state (simple in-memory for demo; consider persistence for production)
 full_story_context: str = ""
 
 
-def run_panel_detector(image: Image.Image) -> List[Tuple[int, int, int, int]]:
-    """Return list of panel bounding boxes (x, y, w, h).
-
-    Prefer LayoutParser; otherwise return a single full-page panel as fallback.
-    """
-    # Prefer LayoutParser path if requested and available
-    if USE_LAYOUTPARSER and lp_available and lp_model is not None:
-        try:
-            # LayoutParser expects numpy arrays or PIL images
-            layout = lp_model.detect(image)
-            # Convert to boxes; use all blocks as candidate panels
-            boxes: List[Tuple[int, int, int, int]] = []
-            for b in layout:
-                x_1, y_1, x_2, y_2 = b.block.x_1, b.block.y_1, b.block.x_2, b.block.y_2
-                x, y = int(x_1), int(y_1)
-                w, h = int(x_2 - x_1), int(y_2 - y_1)
-                # Filter tiny boxes
-                if w <= 10 or h <= 10:
-                    continue
-                boxes.append((x, y, w, h))
-            if boxes:
-                # Sort top-to-bottom, then left-to-right
-                boxes.sort(key=lambda b: (b[1], b[0]))
-                logger.info("LayoutParser detected %d regions; using as panels", len(boxes))
-                return boxes
-            logger.warning("LayoutParser returned 0 regions; falling back to full-page panel")
-        except Exception as e:
-            logger.warning("LayoutParser inference failed (%s); using full-page fallback", e)
-
-    # Try YOLOv8 path
-    if yolo_available:
-        try:
-            global yolo_model  # noqa: PLW0603
-            if yolo_model is None:
-                yolo_model = YOLO(YOLO_MODEL_PATH)
-                logger.info("Loaded YOLOv8 model from %s", YOLO_MODEL_PATH)
-
-            # Run prediction (ultralytics auto-handles PIL)
-            results = yolo_model.predict(image, verbose=False, imgsz=960, conf=0.25, device="cpu")
-            boxes: List[Tuple[int, int, int, int]] = []
-            if results:
-                r = results[0]
-                if getattr(r, "boxes", None) is not None:
-                    for b in r.boxes:
-                        # xyxy
-                        import numpy as np  # type: ignore
-
-                        xyxy = b.xyxy.cpu().numpy().astype(int)[0]
-                        x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
-                        w, h = x2 - x1, y2 - y1
-                        if w <= 10 or h <= 10:
-                            continue
-                        boxes.append((x1, y1, w, h))
-            if boxes:
-                boxes.sort(key=lambda b: (b[1], b[0]))
-                logger.info("YOLO detected %d regions; using as panels", len(boxes))
-                return boxes
-            logger.warning("YOLO returned 0 regions; falling back to full-page panel")
-        except Exception as e:
-            logger.warning("YOLO inference failed (%s); using full-page fallback", e)
-
-    # Try DeepPanel segmentation path
-    if deeppanel_available:
-        boxes_dp = detect_panels_deeppanel(image)
-        if boxes_dp:
-            logger.info("DeepPanel detected %d regions; using as panels", len(boxes_dp))
-            return boxes_dp
-
-    # Try OWL-ViT path (prompt-based)
-    if owl_available:
-        try:
-            global owl_model, owl_processor  # noqa: PLW0603
-            if owl_model is None or owl_processor is None:
-                from transformers import Owlv2ForObjectDetection, Owlv2Processor  # type: ignore
-                owl_model = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble")
-                owl_processor = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
-                logger.info("Loaded OWL-ViT model")
-
-            import torch  # type: ignore
-            device = torch.device("cpu")
-            owl_model.to(device)
-
-            texts = [[p for p in OWLVIT_PROMPTS]]
-            inputs = owl_processor(text=texts, images=image, return_tensors="pt").to(device)
-            with torch.no_grad():
-                outputs = owl_model(**inputs)
-            results = owl_processor.post_process_object_detection(outputs=outputs, threshold=0.1, target_sizes=[image.size[::-1]])
-            res = results[0]
-            boxes: List[Tuple[int, int, int, int]] = []
-            for box, score, label in zip(res["boxes"], res["scores"], res["labels"]):
-                if float(score) < 0.3:
-                    continue
-                x1, y1, x2, y2 = [int(v) for v in box.tolist()]
-                w, h = x2 - x1, y2 - y1
-                if w <= 10 or h <= 10:
-                    continue
-                boxes.append((x1, y1, w, h))
-            if boxes:
-                boxes = merge_overlapping_boxes(boxes, iou_threshold=0.2)
-                boxes.sort(key=lambda b: (b[1], b[0]))
-                logger.info("OWL-ViT detected %d regions; using as panels", len(boxes))
-                return boxes
-            logger.warning("OWL-ViT returned 0 regions; continue to OpenCV")
-        except Exception as e:
-            logger.warning("OWL-ViT inference failed (%s); continue to OpenCV", e)
-
-    # Try OpenCV heuristic detector
-    boxes_cv = detect_panels_opencv(image)
-    if boxes_cv:
-        logger.info("OpenCV detected %d regions; using as panels", len(boxes_cv))
-        return boxes_cv
-
-    width, height = image.size
-    logger.warning("Using single full-page panel fallback")
-    return [(0, 0, width, height)]
+# Panel detection is now handled by external API only
 
 # External panel detection API (optional)
 PANEL_API_URL = os.environ.get("PANEL_API_URL", "").strip()
@@ -395,6 +348,15 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
     content = api_result["content"]
     boxes: List[Tuple[int,int,int,int]] = []
     crops_meta: List[Dict[str,str]] = []
+    
+    # Get the project directory from the page path
+    # page_path is like: /path/to/manga_projects/project_id/filename.png
+    project_dir = os.path.dirname(page_path)
+    page_name = os.path.basename(page_path)
+    page_stem, _ = os.path.splitext(page_name)
+    # Normalize to avoid trailing spaces/dots that break Windows paths
+    norm_stem = page_stem.strip().rstrip('.')
+    
     if mode == "json":
         try:
             data = json.loads(content.decode("utf-8"))
@@ -413,13 +375,12 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
                 width, height = img.size
                 tmp_boxes = [(0,0,width,height)]
         boxes = tmp_boxes
-        crops_meta = save_panel_crops(page_path, boxes)
+        crops_meta = save_panel_crops_to_project(page_path, boxes, project_dir)
         return boxes, crops_meta
+        
     if mode == "zip":
         z = ZipFile(BytesIO(content))
-        page_name = os.path.basename(page_path)
-        page_stem, _ = os.path.splitext(page_name)
-        dest_dir = os.path.join(UPLOAD_DIR, "panels", page_stem)
+        dest_dir = os.path.join(project_dir, "panels", norm_stem)
         import shutil
         if os.path.isdir(dest_dir):
             try:
@@ -429,23 +390,19 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
         os.makedirs(dest_dir, exist_ok=True)
         z.extractall(dest_dir)
         for name in sorted(z.namelist()):
-            rel_path = os.path.relpath(os.path.join(dest_dir, name), start=BASE_DIR).replace("\\", "/")
-            url = f"/uploads/{rel_path.split('uploads/', 1)[1]}"
-            crops_meta.append({"filename": os.path.basename(name), "url": url})
+            crops_meta.append({"filename": os.path.basename(name), "url": ""})  # URL will be set by caller
         return boxes, crops_meta
+        
     if mode == "image":
-        page_name = os.path.basename(page_path)
-        page_stem, _ = os.path.splitext(page_name)
-        dest_dir = os.path.join(UPLOAD_DIR, "panels", page_stem)
+        dest_dir = os.path.join(project_dir, "panels", norm_stem)
         os.makedirs(dest_dir, exist_ok=True)
         out_name = "panel_01.png"
         out_path = os.path.join(dest_dir, out_name)
         with open(out_path, "wb") as f:
             f.write(content)
-        rel_path = os.path.relpath(out_path, start=BASE_DIR).replace("\\", "/")
-        url = f"/uploads/{rel_path.split('uploads/', 1)[1]}"
-        crops_meta.append({"filename": out_name, "url": url})
+        crops_meta.append({"filename": out_name, "url": ""})  # URL will be set by caller
         return boxes, crops_meta
+        
     return boxes, crops_meta
 
     # Minimal placeholder pre/post-processing.
@@ -510,9 +467,42 @@ def save_panel_crops(page_path: str, boxes: List[Tuple[int, int, int, int]]) -> 
             crops_meta.append({"filename": out_name, "url": url})
     return crops_meta
 
+def save_panel_crops_to_project(page_path: str, boxes: List[Tuple[int, int, int, int]], project_dir: str) -> List[Dict[str, str]]:
+    """Crop and save panel images under project directory panels/<page_stem>/panel_XX.png
+    Returns list of dicts with filename and url.
+    """
+    import shutil
+    page_name = os.path.basename(page_path)
+    page_stem, _ = os.path.splitext(page_name)
+    norm_stem = page_stem.strip().rstrip('.')
+    dest_dir = os.path.join(project_dir, "panels", norm_stem)
+    # Clean dir for idempotency
+    if os.path.isdir(dest_dir):
+        try:
+            shutil.rmtree(dest_dir)
+        except Exception:
+            logger.warning("Failed to clear existing panels dir %s", dest_dir)
+    os.makedirs(dest_dir, exist_ok=True)
 
-def call_gemini(prompt: str, panel_images: List[Image.Image]) -> Dict[str, Any]:
-    """Call Gemini with text+image prompt. Fallback to deterministic narration if unavailable."""
+    with Image.open(page_path) as img_full:
+        img_full = img_full.convert("RGB")
+        crops_meta: List[Dict[str, str]] = []
+        for idx, (x, y, w, h) in enumerate(boxes, start=1):
+            x2, y2 = x + w, y + h
+            crop = img_full.crop((x, y, x2, y2))
+            out_name = f"panel_{idx:02d}.png"
+            out_path = os.path.join(dest_dir, out_name)
+            crop.save(out_path, format="PNG")
+            crops_meta.append({"filename": out_name, "url": ""})  # URL will be set by caller
+    return crops_meta
+
+
+def call_gemini(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
+    """Call Gemini with text+image prompt.
+    - Accepts optional system_instructions for caller-specific guidance.
+    - Returns a dict with 'text' (markdown code fences removed) and 'source'.
+    Parsing of JSON schemas is handled by callers.
+    """
     if not gemini_available or genai is None:
         if REQUIRE_GEMINI:
             raise HTTPException(status_code=503, detail="Gemini not available and REQUIRE_GEMINI is set.")
@@ -524,13 +514,9 @@ def call_gemini(prompt: str, panel_images: List[Image.Image]) -> Dict[str, Any]:
             )
         )
         logger.warning("Using FAKE narration fallback because Gemini unavailable: %s", reason)
-        # Fallback response structure
+        # Fallback text only; callers decide how to parse
         return {
-            "narration": f"[FAKE] {prompt[:120]}...",
-            "panels": [
-                {"panel_index": i + 1, "summary": "[FAKE] A panel description.", "characters": [], "dialogue": []}
-                for i in range(len(panel_images))
-            ],
+            "text": f"[FAKE] {prompt[:500]}",
             "source": "fallback",
         }
 
@@ -543,38 +529,772 @@ def call_gemini(prompt: str, panel_images: List[Image.Image]) -> Dict[str, Any]:
             buf.seek(0)
             image_parts.append({"mime_type": "image/png", "data": buf.read()})
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        # Ask for JSON-ish output
-        system_prompt = (
-            "You are a manga narrator. Output concise JSON with keys: narration (string), panels (array of objects with panel_index, "
-            "summary, characters (array), dialogue (array of {speaker,text}))."
-        )
-        parts = [system_prompt, prompt]
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        # Build parts: optional system instructions then user prompt and images
+        parts: List[Any] = []
+        if system_instructions:
+            parts.append(system_instructions)
+        parts.append(prompt)
         for ip in image_parts:
             parts.append({"mime_type": ip["mime_type"], "data": ip["data"]})
         response = model.generate_content(parts)
 
-        text = response.text or "{}"
-        import json  # lazy import
-
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                parsed.setdefault("source", "gemini")
-                return parsed
-        except Exception:
-            pass
-        # If not valid JSON, wrap it
-        return {"narration": text, "panels": [], "source": "gemini"}
+        raw = response.text or ""
+        cleaned = raw.strip()
+        # Remove markdown code fences if present
+        if "```json" in cleaned:
+            json_match = re.search(r'```json\s*\n?([\s\S]*?)\n?```', cleaned)
+            if json_match:
+                cleaned = json_match.group(1).strip()
+        elif "```" in cleaned:
+            json_match = re.search(r'```\s*\n?([\s\S]*?)\n?```', cleaned)
+            if json_match:
+                cleaned = json_match.group(1).strip()
+        return {"text": cleaned, "source": "gemini"}
     except Exception as e:
         logger.exception("Gemini call failed; returning error wrapper")
-        return {"narration": f"[ERROR] {e}", "panels": [], "source": "gemini"}
+        return {"text": f"[ERROR] {e}", "source": "gemini"}
 
+
+async def call_gemini_async(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
+    """Run blocking Gemini call in a background thread to avoid blocking the event loop."""
+    return await asyncio.to_thread(call_gemini, prompt, panel_images, system_instructions)
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.get("/manga/{project_id}", response_class=HTMLResponse)
+async def manga_view(request: Request, project_id: str):
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    return templates.TemplateResponse("manga_view.html", {"request": request, "project": project})
+
+@app.get("/api/manga")
+async def get_manga_projects_api():
+    """Get all manga projects"""
+    return {"projects": get_manga_projects()}
+
+@app.get("/api/manga/{project_id}")
+async def get_manga_project_api(project_id: str):
+    """Get a specific manga project"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    return {"project": project}
+
+@app.get("/api/manga/{project_id}/pages")
+async def get_manga_pages_info(project_id: str):
+    """Get page sorting information for a manga project"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    if "pages" in project:
+        # Return the structured pages data
+        return {"pages": project["pages"]}
+    else:
+        # For old projects, generate the pages info
+        pages_info = get_sorted_pages_info(project["files"])
+        return {"pages": pages_info}
+
+@app.post("/api/manga")
+async def create_manga_project_api(request: Request):
+    """Create a new manga project"""
+    try:
+        body = await request.json()
+        title = body.get("title")
+        files = body.get("files", [])
+        json_data = body.get("json_data")  # Optional JSON data for narrative
+        
+        if not title:
+            raise HTTPException(status_code=400, detail="Title is required")
+        
+        if not files and not json_data:
+            raise HTTPException(status_code=400, detail="Either files or json_data is required")
+        
+        project = create_manga_project(title, files)
+        
+        # If JSON data is provided, update the project with narrative data
+        if json_data:
+            update_manga_project(project["id"], {
+                "workflow.narrative.status": "complete",
+                "workflow.narrative.data": {
+                    "narration": json_data.get("narration", ""),
+                    "page_narrations": json_data.get("page_narrations", []),
+                    "page_info": []  # Will be populated when images are processed
+                },
+                "status": "narrative"
+            })
+        
+        return {"project": project}
+    except Exception as e:
+        logger.error(f"Error creating manga project: {e}")
+        raise HTTPException(status_code=400, detail="Invalid request data")
+
+@app.put("/api/manga/{project_id}")
+async def update_manga_project_api(project_id: str, updates: Dict[str, Any]):
+    """Update a manga project"""
+    if update_manga_project(project_id, updates):
+        return {"success": True}
+    else:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+
+@app.delete("/api/manga/{project_id}")
+async def delete_manga_project_api(project_id: str):
+    """Delete a manga project"""
+    if delete_manga_project(project_id):
+        return {"success": True}
+    else:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+
+@app.post("/api/manga/{project_id}/narrative")
+async def generate_narrative_api(project_id: str):
+    """Generate narrative story for all images in the project"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    # Load all images from project directory in the correct page order
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    panel_images = []
+    page_info = []
+    
+    # Use the new pages structure if available, otherwise fall back to files
+    if "pages" in project:
+        for page_data in project["pages"]:
+            filename = page_data["filename"]
+            page_number = page_data["page_number"]
+            image_path = os.path.join(project_dir, filename)
+            if os.path.exists(image_path):
+                with Image.open(image_path) as img:
+                    panel_images.append(img.convert("RGB"))
+                    page_info.append({
+                        "page_number": page_number,
+                        "filename": filename,
+                        "original_page_num": page_data.get("original_page_num", 0)
+                    })
+    else:
+        # Fallback for old projects without pages structure
+        for filename in project["files"]:
+            image_path = os.path.join(project_dir, filename)
+            if os.path.exists(image_path):
+                with Image.open(image_path) as img:
+                    panel_images.append(img.convert("RGB"))
+                    page_info.append({
+                        "page_number": len(page_info) + 1,
+                        "filename": filename,
+                        "original_page_num": extract_page_number(filename)
+                    })
+    
+    if not panel_images:
+        raise HTTPException(status_code=400, detail="No images found in project")
+    
+    # Generate narrative using Gemini
+    prompt = (
+        "You are a manga narrator. Analyze these manga chapter images in order and provide a detailed narrative story. "
+        "The images are already sorted by page number (1, 2, 3, etc.). "
+        "For each page, write a descriptive paragraph with 3-4 sentences that captures the key events, emotions, and story progression. "
+        "Be vivid and engaging in your descriptions, focusing on character actions, dialogue, emotions, and visual details. "
+        "Make sure each panel is described in the narration with all details that are visible in the panel."
+        "Each page should have its own distinct narrative segment that flows naturally into the next. "
+        "Do not mention the pages or chapters in the narration like `this chapter starts with` it should not feel like you are reading from pages"
+        "IMPORTANT: Return ONLY a JSON array in this exact format: {[[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]} "
+        "Do NOT include any markdown code blocks do NOT include any other text. "
+        "Just return the raw JSON {[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]}"
+        "Example: {[[\"Page1\", \"The story begins with our protagonist...\"], [\"Page2\", \"As the scene continues...\"]]}"
+    )
+    
+    system_prompt = (
+        "You are a manga narrator. For narrative generation, return ONLY a JSON array in this format: "
+        "{[[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...] }"
+        "Do NOT include markdown code blocks or any other text. Just return the raw JSON array."
+    )
+    gemini_output = await call_gemini_async(prompt, panel_images, system_instructions=system_prompt)
+    raw_narration = gemini_output.get("text", "")
+    
+    # Parse the response to extract structured data
+    page_narrations = []
+    full_narration = ""
+    
+    # Cleaned by call_gemini already
+    cleaned_response = raw_narration.strip()
+    
+    # Try to extract JSON array from the response
+    try:
+        page_narrations = parse_json_array_from_text(cleaned_response)
+        # Validate the format - should be list of [page_label, narration] pairs
+        if isinstance(page_narrations, list) and all(isinstance(item, list) and len(item) == 2 for item in page_narrations):
+            # Create full narration by combining all page narrations
+            full_narration = "\n\n".join([f"**{item[0]}:** {item[1]}" for item in page_narrations])
+            logger.info(f"Successfully parsed {len(page_narrations)} page narrations")
+        else:
+            # Invalid format, fallback to old format
+            logger.warning("Invalid page narration format, falling back to raw text")
+            page_narrations = []
+            full_narration = raw_narration
+    except Exception as e:
+        logger.warning(f"Failed to parse JSON from narration response: {e}")
+        # Fallback to old format
+        page_narrations = []
+        full_narration = raw_narration
+    
+    # Update project status
+    update_manga_project(project_id, {
+        "workflow.narrative.status": "complete",
+        "workflow.narrative.data": {
+            "narration": full_narration,
+            "page_narrations": page_narrations,
+            "page_info": page_info
+        },
+        "status": "narrative"
+    })
+    
+    return {
+        "narration": full_narration,
+        "page_narrations": page_narrations,
+        "page_info": page_info,
+        "source": gemini_output.get("source", "unknown")
+    }
+
+@app.post("/api/manga/{project_id}/panels")
+async def detect_panels_api(project_id: str, redo: bool = False):
+    """Detect panels for all images in the project using external API"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    
+    # Check if panels already exist and redo is not requested
+    existing_panels_data = project.get("workflow", {}).get("panels", {}).get("data")
+    if existing_panels_data and not redo:
+        # Return existing panels data
+        return {"pages": existing_panels_data, "from_cache": True}
+    
+    # If redo is requested, clean up existing panel files
+    if redo and existing_panels_data:
+        logger.info(f"Redoing panel detection for project {project_id}")
+        for page_data in existing_panels_data:
+            filename = page_data["filename"]
+            page_stem, _ = os.path.splitext(filename)
+            norm_stem = page_stem.strip().rstrip('.')
+            panels_dir = os.path.join(project_dir, "panels", norm_stem)
+            if os.path.exists(panels_dir):
+                import shutil
+                try:
+                    shutil.rmtree(panels_dir)
+                    logger.info(f"Removed existing panels directory: {panels_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove panels directory {panels_dir}: {e}")
+    
+    pages_results = []
+    
+    # Use the new pages structure if available, otherwise fall back to files
+    if "pages" in project:
+        files_to_process = [(page_data["filename"], page_data["page_number"]) for page_data in project["pages"]]
+    else:
+        # Fallback for old projects without pages structure
+        files_to_process = [(filename, i + 1) for i, filename in enumerate(project["files"])]
+    
+    for filename, page_number in files_to_process:
+        image_path = os.path.join(project_dir, filename)
+        if not os.path.exists(image_path):
+            continue
+            
+        try:
+            # Use external panel detection API
+            api_result = call_external_panel_api(image_path)
+            boxes, crops_meta = save_crops_from_external(image_path, api_result)
+            
+            # Build panel URLs relative to the project directory
+            page_stem, _ = os.path.splitext(filename)
+            norm_stem = page_stem.strip().rstrip('.')
+            panels_dir = os.path.join(project_dir, "panels", norm_stem)
+            
+            # Update URLs to be relative to the project structure
+            updated_crops = []
+            for crop in crops_meta:
+                # Convert the URL to be relative to the manga_projects mount
+                rel_path = os.path.relpath(panels_dir, start=MANGA_DIR).replace("\\", "/")
+                url = f"/manga_projects/{rel_path}/{crop['filename']}"
+                updated_crops.append({
+                    "filename": crop["filename"],
+                    "url": url
+                })
+            
+            pages_results.append({
+                "page_number": page_number,
+                "filename": filename,
+                "panels": updated_crops,
+                "boxes": [{"x": x, "y": y, "w": w, "h": h} for (x, y, w, h) in boxes]
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to detect panels for {filename}: {e}")
+            # Add empty result for failed pages
+            pages_results.append({
+                "page_number": page_number,
+                "filename": filename,
+                "panels": [],
+                "boxes": [],
+                "error": str(e)
+            })
+    
+    # Update project status
+    update_manga_project(project_id, {
+        "workflow.panels.status": "complete",
+        "workflow.panels.data": pages_results,
+        "status": "panels"
+    })
+    
+    return {"pages": pages_results, "from_cache": False}
+
+@app.post("/api/manga/{project_id}/panels/redo")
+async def redo_panel_detection_api(project_id: str):
+    """Redo panel detection for a project"""
+    return await detect_panels_api(project_id, redo=True)
+
+@app.post("/api/manga/{project_id}/panels/page/{page_number}/redo")
+async def redo_panel_detection_for_page_api(project_id: str, page_number: int):
+    """Redo panel detection for a single page within a project"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+
+    project_dir = os.path.join(MANGA_DIR, project_id)
+
+    # Determine filename for the given page_number using structured pages if available
+    filename: Optional[str] = None
+    if "pages" in project:
+        for page in project["pages"]:
+            if int(page.get("page_number", 0)) == int(page_number):
+                filename = page.get("filename")
+                break
+    else:
+        # Fallback to positional mapping (1-indexed)
+        idx = max(0, int(page_number) - 1)
+        if 0 <= idx < len(project.get("files", [])):
+            filename = project["files"][idx]
+
+    if not filename:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not found in project")
+
+    image_path = os.path.join(project_dir, filename)
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=404, detail=f"Image file not found for page {page_number}")
+
+    # Remove existing panels for this page (if any)
+    page_stem, _ = os.path.splitext(filename)
+    norm_stem = page_stem.strip().rstrip('.')
+    panels_dir = os.path.join(project_dir, "panels", norm_stem)
+    if os.path.isdir(panels_dir):
+        import shutil
+        try:
+            shutil.rmtree(panels_dir)
+        except Exception as e:
+            logger.warning(f"Failed to clear panels dir for page {page_number}: {e}")
+
+    # Re-run detection for this single page
+    try:
+        api_result = call_external_panel_api(image_path)
+        boxes, crops_meta = save_crops_from_external(image_path, api_result)
+
+        # Build panel URLs relative to the project structure
+        updated_crops = []
+        for crop in crops_meta:
+            rel_path = os.path.relpath(os.path.join(project_dir, "panels", norm_stem), start=MANGA_DIR).replace("\\", "/")
+            url = f"/manga_projects/{rel_path}/{crop['filename']}"
+            updated_crops.append({
+                "filename": crop["filename"],
+                "url": url
+            })
+
+        page_result = {
+            "page_number": int(page_number),
+            "filename": filename,
+            "panels": updated_crops,
+            "boxes": [{"x": x, "y": y, "w": w, "h": h} for (x, y, w, h) in boxes]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to detect panels for page {page_number}: {e}")
+        page_result = {
+            "page_number": int(page_number),
+            "filename": filename,
+            "panels": [],
+            "boxes": [],
+            "error": str(e)
+        }
+
+    # Update project workflow.panels.data by replacing this page's entry or inserting
+    panels_data = project.get("workflow", {}).get("panels", {}).get("data") or []
+    replaced = False
+    for i, p in enumerate(panels_data):
+        if int(p.get("page_number", 0)) == int(page_number):
+            panels_data[i] = page_result
+            replaced = True
+            break
+    if not replaced:
+        panels_data.append(page_result)
+
+    # Persist updates
+    update_manga_project(project_id, {
+        "workflow.panels.status": "complete",
+        "workflow.panels.data": panels_data,
+        "status": "panels"
+    })
+
+    return {"page": page_result}
+
+@app.post("/api/manga/{project_id}/text-matching")
+async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
+    """Match narrative text to panels for each page"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    # Get narrative data
+    narrative_data = project.get("workflow", {}).get("narrative", {}).get("data")
+    if not narrative_data:
+        raise HTTPException(status_code=400, detail="Narrative not generated yet")
+    
+    # Get panels data
+    panels_data = project.get("workflow", {}).get("panels", {}).get("data")
+    if not panels_data:
+        raise HTTPException(status_code=400, detail="Panels not detected yet")
+    
+    # Get page narrations
+    page_narrations = narrative_data.get("page_narrations", [])
+    if not page_narrations:
+        raise HTTPException(status_code=400, detail="Page narrations not available. Please regenerate narrative first.")
+    
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    pages_results: List[Dict[str, Any]] = []
+    total_pages = len(panels_data)
+    # Mark as processing and initialize progress
+    update_manga_project(project_id, {
+        "workflow.text_matching.status": "processing",
+        "workflow.text_matching.progress": {"current": 0, "total": total_pages},
+        "workflow.text_matching.data": pages_results,
+        "status": "text_matching"
+    })
+
+    # Concurrency control and parallel processing
+    concurrency = max(1, min(32, int(concurrency)))
+    sem = asyncio.Semaphore(concurrency)
+
+    async def process_one(page_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        async with sem:
+            filename = page_data["filename"]
+            page_number = page_data.get("page_number", 1)
+            panels = page_data["panels"]
+
+            # Find narration
+            page_narration = ""
+            for page_label, narration in page_narrations:
+                if page_label == f"Page{page_number}":
+                    page_narration = narration
+                    logger.info(f"Narration found for page {page_number}: {narration}")
+
+                    break
+            if not page_narration:
+                logger.warning(f"No narration found for page {page_number}")
+                return None
+
+            # Load panel images
+            page_stem, _ = os.path.splitext(filename)
+            norm_stem = page_stem.strip().rstrip('.')
+            panels_dir = os.path.join(project_dir, "panels", norm_stem)
+            panel_images: List[Image.Image] = []
+            for panel in panels:
+                panel_path = os.path.join(panels_dir, panel["filename"])
+                if os.path.exists(panel_path):
+                    with Image.open(panel_path) as img:
+                        panel_images.append(img.convert("RGB"))
+            if not panel_images:
+                logger.warning(f"Text-matching: no panel images for page {page_number}; returning empty panels with narration")
+                return {
+                    "page_number": page_number,
+                    "filename": filename,
+                    "page_narration": page_narration,
+                    "panels": []
+                }
+
+            # Build prompts and call model
+            prompt = (
+                f"Given this page narration: '{page_narration}'\n\n"
+                f"Match appropriate parts of this narration to each of these {len(panel_images)} panels from page {page_number}. "
+                f"Do not Change the original narration, just match the sentences to the panels.  "
+                f"if some sentences are not matched to any panel, just leave them as is in most close panel"
+                f"We have to make sure original narration is completely available after matching all panels, nothing from original narration should be lost"
+                f"Return ONLY a JSON array in this format: [['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...] "
+                f"Do NOT include markdown code blocks or any other text. Just return the raw JSON array."
+            )
+            system_prompt = (
+                "You are matching narration sentences to panels. Return ONLY a JSON array in this format: "
+                "[['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...]. "
+                "Do NOT include markdown code blocks or any other text."
+            )
+            logger.info(f"Text-matching: invoking model for page {page_number} with {len(panel_images)} panels")
+            gemini_output = await call_gemini_async(prompt, panel_images, system_instructions=system_prompt)
+            raw_response = gemini_output.get("text", "")
+            logger.info(f"Text-matching raw response for page {page_number} (first 800 chars): {raw_response[:800]}")
+
+            # Parse
+            panel_text_pairs: List[List[Any]] = []
+            try:
+                cleaned_response = raw_response.strip()
+                parsed_pairs = parse_json_array_from_text(cleaned_response)
+                if isinstance(parsed_pairs, list):
+                    for item in parsed_pairs:
+                        if isinstance(item, list) and len(item) == 2:
+                            panel_text_pairs.append([str(item[0]), str(item[1])])
+                if not panel_text_pairs:
+                    raise ValueError("Parsed structure not a list of [panel, text] pairs")
+            except Exception as e:
+                logger.warning(f"Failed to parse panel text pairs for page {page_number}: {e}")
+                panel_text_pairs = []
+            else:
+                logger.info(f"Text-matching parsed pairs for page {page_number}: {panel_text_pairs}")
+
+            # Match
+            panel_results: List[Dict[str, Any]] = []
+            matched_count = 0
+            for i, panel in enumerate(panels):
+                panel_id = f"panel{i + 1}"
+                matched_text = ""
+                for pair in panel_text_pairs:
+                    if len(pair) != 2:
+                        continue
+                    if normalize_panel_id(pair[0]) == normalize_panel_id(panel_id):
+                        matched_text = pair[1]
+                        break
+                if matched_text:
+                    matched_count += 1
+                panel_results.append({
+                    "filename": panel["filename"],
+                    "url": panel["url"],
+                    "matched_text": matched_text
+                })
+            logger.info(f"Text-matching results for page {page_number}: matched {matched_count}/{len(panels)} panels")
+
+            return {
+                "page_number": page_number,
+                "filename": filename,
+                "page_narration": page_narration,
+                "panels": panel_results
+            }
+
+    # Launch tasks
+    tasks = [asyncio.create_task(process_one(pd)) for pd in panels_data]
+    completed = 0
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        if result is not None:
+            pages_results.append(result)
+        completed += 1
+        update_manga_project(project_id, {
+            "workflow.text_matching.status": "processing",
+            "workflow.text_matching.progress": {"current": completed, "total": total_pages},
+            "workflow.text_matching.data": pages_results,
+            "status": "text_matching"
+        })
+    
+    # Update project status
+    update_manga_project(project_id, {
+        "workflow.text_matching.status": "complete",
+        "workflow.text_matching.progress": {"current": total_pages, "total": total_pages},
+        "workflow.text_matching.data": pages_results,
+        "status": "text_matching"
+    })
+    
+    # Sort results by page_number to keep UI stable
+    pages_results.sort(key=lambda p: int(p.get("page_number", 0)))
+    return {"pages": pages_results}
+
+
+@app.post("/api/manga/{project_id}/text-matching/page/{page_number}/redo")
+async def redo_text_matching_for_page_api(project_id: str, page_number: int):
+    """Redo text-panel matching for a single page within a project"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+
+    # Narrative data required
+    narrative_data = project.get("workflow", {}).get("narrative", {}).get("data")
+    if not narrative_data:
+        raise HTTPException(status_code=400, detail="Narrative not generated yet")
+
+    panels_data = project.get("workflow", {}).get("panels", {}).get("data") or []
+    if not panels_data:
+        raise HTTPException(status_code=400, detail="Panels not detected yet")
+
+    # Locate target page in panels_data
+    page_entry: Optional[Dict[str, Any]] = None
+    for p in panels_data:
+        if int(p.get("page_number", 0)) == int(page_number):
+            page_entry = p
+            break
+    if not page_entry:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not found in project panels")
+
+    page_narrations = narrative_data.get("page_narrations", [])
+    page_narration = ""
+    for page_label, narration in page_narrations:
+        if page_label == f"Page{int(page_number)}":
+            page_narration = narration
+            break
+    if not page_narration:
+        raise HTTPException(status_code=400, detail=f"No narration found for page {page_number}")
+
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    filename = page_entry.get("filename") or ""
+    panels = page_entry.get("panels", [])
+
+    # Load panel images
+    page_stem, _ = os.path.splitext(filename)
+    norm_stem = page_stem.strip().rstrip('.')
+    panels_dir = os.path.join(project_dir, "panels", norm_stem)
+    panel_images: List[Image.Image] = []
+    for panel in panels:
+        panel_path = os.path.join(panels_dir, panel["filename"])
+        if os.path.exists(panel_path):
+            with Image.open(panel_path) as img:
+                panel_images.append(img.convert("RGB"))
+    if not panel_images:
+        raise HTTPException(status_code=400, detail=f"No panel images found for page {page_number}")
+
+    # Build prompt and call model
+    prompt = (
+        f"Given this page narration: '{page_narration}'\n\n"
+        f"Match appropriate parts of this narration to each of these {len(panel_images)} panels from page {page_number}. "
+        f"Do not Change the original narration, just match the sentences to the panels. "
+        f"Return ONLY a JSON array in this format: [['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...] "
+        f"Do NOT include markdown code blocks or any other text. Just return the raw JSON array."
+    )
+    system_prompt = (
+        "You are matching narration sentences to panels. Return ONLY a JSON array in this format: "
+        "[['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...]. "
+        "Do NOT include markdown code blocks or any other text."
+    )
+    logger.info(f"Redo text-matching: invoking model for page {page_number} with {len(panel_images)} panels")
+    gemini_output = await call_gemini_async(prompt, panel_images, system_instructions=system_prompt)
+    raw_response = gemini_output.get("text", "")
+    logger.info(f"Redo text-matching raw response for page {page_number} (first 800 chars): {raw_response[:800]}")
+
+    # Parse model output
+    panel_text_pairs: List[List[Any]] = []
+    try:
+        cleaned_response = raw_response.strip()
+        parsed_pairs = parse_json_array_from_text(cleaned_response)
+        if isinstance(parsed_pairs, list):
+            for item in parsed_pairs:
+                if isinstance(item, list) and len(item) == 2:
+                    panel_text_pairs.append([str(item[0]), str(item[1])])
+    except Exception as e:
+        logger.warning(f"Redo parse failed for page {page_number}: {e}")
+        # Fallback: attempt manual JSON extraction with normalization
+        try:
+            cleaned = _normalize_quotes_and_commas(cleaned_response)
+            json_match = re.search(r'\[[\s\S]*\]', cleaned)
+            json_str = json_match.group(0) if json_match else cleaned
+            parsed_pairs = json.loads(json_str)
+            if isinstance(parsed_pairs, list):
+                for item in parsed_pairs:
+                    if isinstance(item, list) and len(item) == 2:
+                        panel_text_pairs.append([str(item[0]), str(item[1])])
+        except Exception as e2:
+            logger.warning(f"Redo secondary parse failed for page {page_number}: {e2}")
+            panel_text_pairs = []
+    else:
+        logger.info(f"Redo text-matching parsed pairs for page {page_number}: {panel_text_pairs}")
+
+    # Build result (ensure deterministic order by filename index)
+    panel_results: List[Dict[str, Any]] = []
+    for i, panel in enumerate(panels):
+        panel_id = f"panel{i + 1}"
+        matched_text = ""
+        for pair in panel_text_pairs:
+            if len(pair) != 2:
+                continue
+            if normalize_panel_id(pair[0]) == normalize_panel_id(panel_id):
+                matched_text = pair[1]
+                break
+        panel_results.append({
+            "filename": panel["filename"],
+            "url": panel["url"],
+            "matched_text": matched_text
+        })
+
+    page_result = {
+        "page_number": int(page_number),
+        "filename": filename,
+        "page_narration": page_narration,
+        "panels": panel_results
+    }
+
+    # Persist into workflow.text_matching.data
+    tm_data = project.get("workflow", {}).get("text_matching", {}).get("data") or []
+    replaced = False
+    for i, p in enumerate(tm_data):
+        if int(p.get("page_number", 0)) == int(page_number):
+            tm_data[i] = page_result
+            replaced = True
+            break
+    if not replaced:
+        tm_data.append(page_result)
+
+    update_manga_project(project_id, {
+        "workflow.text_matching.status": project.get("workflow", {}).get("text_matching", {}).get("status", "complete"),
+        "workflow.text_matching.data": tm_data,
+        "status": "text_matching"
+    })
+
+    return {"page": page_result}
+
+@app.post("/api/manga/{project_id}/tts/synthesize")
+async def synthesize_tts_api(project_id: str, text: str):
+    """Synthesize text to speech for a single panel"""
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    try:
+        import requests
+        
+        # Call external TTS API
+        form_data = {
+            'text': text,
+            'exaggeration': '0.5',
+            'cfg_weight': '0.5',
+            'temperature': '0.8'
+        }
+        
+        if not TTS_API_URL:
+            raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
+
+        response = requests.post(
+            TTS_API_URL,
+            data=form_data,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"TTS API error: {response.status_code}")
+        
+        # Return the audio data
+        return StreamingResponse(
+            io.BytesIO(response.content),
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=synthesized_audio.wav"}
+        )
+        
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"TTS API request failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
 @app.post("/upload")
 async def upload_images(files: List[UploadFile] = File(...)):
@@ -588,8 +1308,80 @@ async def upload_images(files: List[UploadFile] = File(...)):
         with open(destination, "wb") as f:
             f.write(contents)
         saved_files.append(file.filename)
-    saved_files.sort()
+    
+    # Sort by page number instead of alphabetically
+    sorted_file_pairs = sort_files_by_page_number(saved_files)
+    saved_files = [filename for filename, _ in sorted_file_pairs]
+    
     return {"filenames": saved_files}
+
+@app.post("/upload-json")
+async def upload_json_data(file: UploadFile = File(...)):
+    """Upload and validate JSON data for manga project"""
+    if not file.filename.lower().endswith('.json'):
+        raise HTTPException(status_code=400, detail="Only JSON files are allowed")
+    
+    try:
+        contents = await file.read()
+        json_data = json.loads(contents.decode('utf-8'))
+        
+        # Handle different JSON formats
+        processed_data = None
+        
+        # Format 1: Direct page_narrations array (from API response)
+        if isinstance(json_data, list):
+            # Validate it's an array of [page_label, narration] pairs
+            if all(isinstance(item, list) and len(item) == 2 for item in json_data):
+                # Transform to internal format
+                page_narrations = json_data
+                full_narration = "\n\n".join([f"**{item[0]}:** {item[1]}" for item in page_narrations])
+                processed_data = {
+                    "narration": full_narration,
+                    "page_narrations": page_narrations
+                }
+            else:
+                raise HTTPException(status_code=400, detail="If JSON is an array, it must contain [page_label, narration] pairs")
+        
+        # Format 2: Object with narrative data
+        elif isinstance(json_data, dict):
+            # Check if it has the expected structure
+            if 'page_narrations' in json_data:
+                page_narrations = json_data.get('page_narrations', [])
+                if not isinstance(page_narrations, list):
+                    raise HTTPException(status_code=400, detail="page_narrations must be an array")
+                
+                # Validate page_narrations format
+                for i, item in enumerate(page_narrations):
+                    if not isinstance(item, list) or len(item) != 2:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"page_narrations[{i}] must be an array with exactly 2 elements [page_label, narration]"
+                        )
+                
+                # Use provided narration or generate from page_narrations
+                full_narration = json_data.get('narration', '')
+                if not full_narration:
+                    full_narration = "\n\n".join([f"**{item[0]}:** {item[1]}" for item in page_narrations])
+                
+                processed_data = {
+                    "narration": full_narration,
+                    "page_narrations": page_narrations
+                }
+            else:
+                raise HTTPException(status_code=400, detail="JSON object must contain 'page_narrations' field")
+        else:
+            raise HTTPException(status_code=400, detail="JSON must be either an array of [page_label, narration] pairs or an object with page_narrations")
+        
+        return {
+            "success": True,
+            "data": processed_data,
+            "filename": file.filename
+        }
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing JSON file: {str(e)}")
 
 
 @app.post("/process-chapter")
@@ -598,9 +1390,10 @@ async def process_chapter():
     # Reset per request; for persistent multi-chapter context, remove this reset.
     full_story_context = ""
 
-    # Gather images from uploads dir, sorted
+    # Gather images from uploads dir, sorted by page number
     filenames = [fn for fn in os.listdir(UPLOAD_DIR) if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
-    filenames.sort()
+    sorted_file_pairs = sort_files_by_page_number(filenames)
+    filenames = [filename for filename, _ in sorted_file_pairs]
 
     chapter_results: List[Dict[str, Any]] = []
 
@@ -639,87 +1432,10 @@ async def process_chapter():
     })
 
 
-@app.post("/detect-panels")
-async def detect_panels():
-    """Detect panels via external API for all images in uploads/, save crops, and return metadata."""
-    filenames = [fn for fn in os.listdir(UPLOAD_DIR) if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
-    filenames.sort()
-    results: List[Dict[str, Any]] = []
-    for filename in filenames:
-        page_path = os.path.join(UPLOAD_DIR, filename)
-        api_result = call_external_panel_api(page_path)
-        with Image.open(page_path) as img:
-            width, height = img.size
-        boxes, crops = save_crops_from_external(page_path, api_result)
-        results.append({
-            "filename": filename,
-            "size": {"width": width, "height": height},
-            "boxes": [{"x": x, "y": y, "w": w, "h": h} for (x, y, w, h) in boxes],
-            "crops": crops,
-        })
-        logger.info("Saved crops from external API for %s", filename)
-        logger.info("results: %s", results)
-    return JSONResponse({"pages": results})
+# Old detect-panels endpoint removed - use project-specific panel detection instead
 
 
-@app.post("/process-page")
-async def process_page(payload: Dict[str, Any]):
-    """Process a single page by filename. Uses saved crops under uploads/panels/<stem>/.
-    Updates rolling story context and returns narration and panel data.
-    Payload: { filename: str, reset_context?: bool }
-    """
-    global full_story_context
-    filename = str(payload.get("filename", "")).strip()
-    if not filename:
-        raise HTTPException(status_code=400, detail="filename is required")
-    if payload.get("reset_context"):
-        full_story_context = ""
-
-    page_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(page_path):
-        raise HTTPException(status_code=404, detail="page not found")
-
-    # Load crops if present; else detect and save
-    page_stem, _ = os.path.splitext(os.path.basename(filename))
-    crops_dir = os.path.join(UPLOAD_DIR, "panels", page_stem)
-    crop_files: List[str] = []
-    if os.path.isdir(crops_dir):
-        crop_files = [os.path.join(crops_dir, f) for f in os.listdir(crops_dir) if f.lower().endswith(".png")]
-        crop_files.sort()
-    if not crop_files:
-        # Use external API to generate crops if not present
-        api_result = call_external_panel_api(page_path)
-        _boxes, _crops = save_crops_from_external(page_path, api_result)
-        crop_files = [os.path.join(crops_dir, f) for f in os.listdir(crops_dir) if f.lower().endswith(".png")]
-        crop_files.sort()
-
-    # Open crops as PIL for Gemini
-    panel_images: List[Image.Image] = []
-    for p in crop_files:
-        with Image.open(p) as im:
-            panel_images.append(im.convert("RGB").copy())
-
-    prompt = (
-        f"Given the story so far: '{full_story_context}'. "
-        f"Continue the narration for page '{filename}'. Provide JSON with narration and per-panel details."
-    )
-    gemini_output = call_gemini(prompt, panel_images)
-    new_narration = str(gemini_output.get("narration", "")).strip()
-    if new_narration:
-        full_story_context = (full_story_context + "\n" + new_narration).strip()
-
-    # Build crop URLs
-    rel_dir = os.path.relpath(crops_dir, start=UPLOAD_DIR).replace("\\", "/")
-    crop_urls = [f"/uploads/{rel_dir}/{os.path.basename(p)}" for p in crop_files]
-
-    return JSONResponse({
-        "filename": filename,
-        "narration": new_narration,
-        "panels": gemini_output.get("panels", []),
-        "story_context": full_story_context,
-        "crops": crop_urls,
-        "source": gemini_output.get("source", "unknown"),
-    })
+# Old process-page endpoint removed - use project-based workflow instead
 
 
 if __name__ == "__main__":

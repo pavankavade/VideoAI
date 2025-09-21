@@ -1,160 +1,387 @@
-(() => {
-  const uploadInput = document.getElementById('chapterUpload');
-  const startButton = document.getElementById('startButton');
-  const statusEl = document.getElementById('status');
-  const galleryEl = document.getElementById('imageGallery');
-  const resultsEl = document.getElementById('results');
-  let detectedPages = [];
+// Manga Dashboard JavaScript
+let mangaProjects = [];
 
-  function setStatus(text) {
-    statusEl.textContent = text || '';
-  }
+// Load manga projects from localStorage on page load
+document.addEventListener('DOMContentLoaded', () => {
+  loadMangaProjects();
+  setupEventListeners();
+  initializeTheme();
+});
 
-  function enableStart(enabled) {
-    startButton.disabled = !enabled;
-  }
+function setupEventListeners() {
+  // Image file upload area
+  const fileUploadArea = document.getElementById('fileUploadArea');
+  const fileInput = document.getElementById('chapterUpload');
+  
+  fileUploadArea.addEventListener('click', () => fileInput.click());
+  fileUploadArea.addEventListener('dragover', handleDragOver);
+  fileUploadArea.addEventListener('dragleave', handleDragLeave);
+  fileUploadArea.addEventListener('drop', handleDrop);
+  
+  fileInput.addEventListener('change', handleFileSelect);
+  
+  // JSON file upload area
+  const jsonUploadArea = document.getElementById('jsonUploadArea');
+  const jsonInput = document.getElementById('jsonUpload');
+  
+  jsonUploadArea.addEventListener('click', () => jsonInput.click());
+  jsonUploadArea.addEventListener('dragover', handleDragOver);
+  jsonUploadArea.addEventListener('dragleave', handleDragLeave);
+  jsonUploadArea.addEventListener('drop', handleJsonDrop);
+  
+  jsonInput.addEventListener('change', handleJsonFileSelect);
+  
+  // Form submission
+  document.getElementById('addMangaForm').addEventListener('submit', handleAddManga);
+}
 
-  function clearResults() {
-    resultsEl.innerHTML = '';
-  }
+function handleDragOver(e) {
+  e.preventDefault();
+  e.currentTarget.classList.add('dragover');
+}
 
-  function renderGallery(filenames) {
-    galleryEl.innerHTML = '';
-    filenames.forEach((name) => {
-      const div = document.createElement('div');
-      div.className = 'thumb';
-      const img = document.createElement('img');
-      // Images live under /uploads on server filesystem; not served statically. We only show client-selected previews.
-      // So use object URLs instead of server path.
-      div.appendChild(img);
-      const cap = document.createElement('div');
-      cap.textContent = name;
-      cap.style.fontSize = '12px';
-      cap.style.color = '#6b7280';
-      cap.style.marginTop = '4px';
-      div.appendChild(cap);
-      galleryEl.appendChild(div);
-    });
-  }
+function handleDragLeave(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+}
 
-  uploadInput.addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) {
-      enableStart(false);
-      setStatus('');
-      galleryEl.innerHTML = '';
-      return;
-    }
+function handleDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const files = Array.from(e.dataTransfer.files);
+  handleFiles(files);
+}
 
-    const form = new FormData();
-    files.forEach((f) => form.append('files', f, f.name));
+function handleFileSelect(e) {
+  const files = Array.from(e.target.files);
+  handleFiles(files);
+}
 
-    setStatus('Uploading...');
-    enableStart(false);
+function handleFiles(files) {
+  const fileList = document.getElementById('fileList');
+  fileList.innerHTML = '';
+  fileList.classList.remove('hidden');
+  
+  files.forEach((file, index) => {
+    const fileItem = document.createElement('div');
+    fileItem.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 8px; background: #f8fafc; border-radius: 6px; margin-bottom: 8px;';
+    
+    const fileName = document.createElement('span');
+    fileName.textContent = file.name;
+    fileName.style.flex = '1';
+    
+    const fileSize = document.createElement('span');
+    fileSize.textContent = `(${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+    fileSize.style.color = '#6b7280';
+    fileSize.style.fontSize = '12px';
+    
+    fileItem.appendChild(fileName);
+    fileItem.appendChild(fileSize);
+    fileList.appendChild(fileItem);
+  });
+}
 
-    try {
-      const res = await fetch('/upload', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('Upload failed');
-      const data = await res.json();
-      const filenames = (data && data.filenames) || [];
-      setStatus(`Uploaded ${filenames.length} file(s).`);
-      enableStart(filenames.length > 0);
-      renderGallery(filenames);
-    } catch (err) {
-      console.error(err);
-      setStatus('Upload error.');
+function handleJsonDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const files = Array.from(e.dataTransfer.files);
+  handleJsonFiles(files);
+}
+
+function handleJsonFileSelect(e) {
+  const files = Array.from(e.target.files);
+  handleJsonFiles(files);
+}
+
+function handleJsonFiles(files) {
+  const jsonFileInfo = document.getElementById('jsonFileInfo');
+  jsonFileInfo.innerHTML = '';
+  jsonFileInfo.classList.remove('hidden');
+  
+  files.forEach((file, index) => {
+    if (file.type === 'application/json' || file.name.toLowerCase().endsWith('.json')) {
+      const fileItem = document.createElement('div');
+      fileItem.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 8px; background: #f0f9ff; border-radius: 6px; margin-bottom: 8px; border: 1px solid #0ea5e9;';
+      
+      const fileName = document.createElement('span');
+      fileName.textContent = file.name;
+      fileName.style.flex = '1';
+      fileName.style.fontWeight = '500';
+      
+      const fileSize = document.createElement('span');
+      fileSize.textContent = `(${(file.size / 1024).toFixed(1)} KB)`;
+      fileSize.style.color = '#6b7280';
+      fileSize.style.fontSize = '12px';
+      
+      fileItem.appendChild(fileName);
+      fileItem.appendChild(fileSize);
+      jsonFileInfo.appendChild(fileItem);
+    } else {
+      alert('Please select a valid JSON file');
     }
   });
+}
 
-  startButton.addEventListener('click', async () => {
-    clearResults();
-    setStatus('Detecting panels and generating crops...');
-    enableStart(false);
-    startButton.textContent = 'Detecting...';
+function toggleUploadType() {
+  const uploadType = document.querySelector('input[name="uploadType"]:checked').value;
+  const imageGroup = document.getElementById('imageUploadGroup');
+  const jsonGroup = document.getElementById('jsonUploadGroup');
+  
+  if (uploadType === 'images') {
+    imageGroup.classList.remove('hidden');
+    jsonGroup.classList.add('hidden');
+    // Clear JSON file selection
+    document.getElementById('jsonUpload').value = '';
+    document.getElementById('jsonFileInfo').classList.add('hidden');
+  } else {
+    imageGroup.classList.add('hidden');
+    jsonGroup.classList.remove('hidden');
+    // Clear image file selection
+    document.getElementById('chapterUpload').value = '';
+    document.getElementById('fileList').classList.add('hidden');
+  }
+}
 
-    try {
-      const res = await fetch('/detect-panels', { method: 'POST' });
-      if (!res.ok) throw new Error('Detection failed');
-      const data = await res.json();
-      detectedPages = data.pages || [];
+function openAddModal() {
+  document.getElementById('addModal').style.display = 'block';
+  document.getElementById('mangaTitle').focus();
+}
 
-      setStatus('Detection completed. Review crops and process pages.');
-      startButton.textContent = 'Re-Detect';
-      enableStart(true);
+function closeAddModal() {
+  document.getElementById('addModal').style.display = 'none';
+  document.getElementById('addMangaForm').reset();
+  document.getElementById('fileList').classList.add('hidden');
+  document.getElementById('jsonFileInfo').classList.add('hidden');
+  // Reset to images upload type
+  document.querySelector('input[name="uploadType"][value="images"]').checked = true;
+  toggleUploadType();
+}
 
-      // Render detection review UI
-      detectedPages.forEach((page, idx) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'page';
+async function handleAddManga(e) {
+  e.preventDefault();
+  
+  const title = document.getElementById('mangaTitle').value.trim();
+  const uploadType = document.querySelector('input[name="uploadType"]:checked').value;
+  
+  if (!title) {
+    alert('Please enter a manga title');
+    return;
+  }
 
-        const title = document.createElement('h3');
-        title.textContent = `Page ${idx + 1} — ${page.filename}`;
-        wrap.appendChild(title);
-
-        const grid = document.createElement('div');
-        grid.style.display = 'grid';
-        grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(120px, 1fr))';
-        grid.style.gap = '8px';
-
-        (page.crops || []).forEach((c) => {
-          const card = document.createElement('div');
-          card.className = 'thumb';
-          const img = document.createElement('img');
-          img.src = c.url;
-          card.appendChild(img);
-          const cap = document.createElement('div');
-          cap.textContent = c.filename;
-          cap.style.fontSize = '12px';
-          cap.style.color = '#6b7280';
-          cap.style.marginTop = '4px';
-          card.appendChild(cap);
-          grid.appendChild(card);
-        });
-
-        wrap.appendChild(grid);
-
-        const btn = document.createElement('button');
-        btn.textContent = 'Generate Narration for This Page';
-        btn.style.marginTop = '10px';
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          btn.textContent = 'Generating...';
-          try {
-            const body = { filename: page.filename };
-            const res = await fetch('/process-page', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-            if (!res.ok) throw new Error('Narration failed');
-            const out = await res.json();
-
-            const narr = document.createElement('div');
-            narr.className = 'narration';
-            narr.textContent = out.narration || '';
-            wrap.appendChild(narr);
-
-            if (Array.isArray(out.panels) && out.panels.length) {
-              const pre = document.createElement('pre');
-              pre.className = 'code';
-              pre.textContent = JSON.stringify(out.panels, null, 2);
-              wrap.appendChild(pre);
-            }
-          } catch (e) {
-            console.error(e);
-            alert('Failed to generate narration for this page.');
-          } finally {
-            btn.disabled = false;
-            btn.textContent = 'Generate Narration for This Page';
-          }
-        });
-        wrap.appendChild(btn);
-
-        resultsEl.appendChild(wrap);
+  try {
+    let projectData;
+    
+    if (uploadType === 'images') {
+      // Handle image upload
+      const files = Array.from(document.getElementById('chapterUpload').files);
+      
+      if (files.length === 0) {
+        alert('Please select at least one image file');
+        return;
+      }
+      
+      // Upload files first
+      const formData = new FormData();
+      files.forEach(file => formData.append('files', file));
+      
+      const uploadResponse = await fetch('/upload', {
+        method: 'POST',
+        body: formData
       });
-    } catch (err) {
-      console.error(err);
-      setStatus('Detection error.');
-      startButton.textContent = 'Start Narration';
-      enableStart(true);
+      
+      if (!uploadResponse.ok) {
+        throw new Error('Upload failed');
+      }
+      
+      const uploadData = await uploadResponse.json();
+      const filenames = uploadData.filenames || [];
+      
+      // Create manga project via API
+      const createResponse = await fetch('/api/manga', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title,
+          files: filenames
+        })
+      });
+      
+      if (!createResponse.ok) {
+        throw new Error('Failed to create manga project');
+      }
+      
+      projectData = await createResponse.json();
+      
+    } else {
+      // Handle JSON upload
+      const jsonFile = document.getElementById('jsonUpload').files[0];
+      
+      if (!jsonFile) {
+        alert('Please select a JSON file');
+        return;
+      }
+      
+      // Upload JSON file first
+      const formData = new FormData();
+      formData.append('file', jsonFile);
+      
+      const jsonUploadResponse = await fetch('/upload-json', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!jsonUploadResponse.ok) {
+        const errorData = await jsonUploadResponse.json();
+        throw new Error(errorData.detail || 'JSON upload failed');
+      }
+      
+      const jsonUploadData = await jsonUploadResponse.json();
+      
+      // Create manga project with JSON data
+      const createResponse = await fetch('/api/manga', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title,
+          files: [], // No image files for JSON upload
+          json_data: jsonUploadData.data
+        })
+      });
+      
+      if (!createResponse.ok) {
+        throw new Error('Failed to create manga project');
+      }
+      
+      projectData = await createResponse.json();
     }
-  });
-})();
+    
+    // Refresh projects list
+    await loadMangaProjects();
+    closeAddModal();
+    
+  } catch (error) {
+    console.error('Error creating manga:', error);
+    alert(`Failed to create manga project: ${error.message}`);
+  }
+}
+
+async function loadMangaProjects() {
+  try {
+    const response = await fetch('/api/manga');
+    if (response.ok) {
+      const data = await response.json();
+      mangaProjects = data.projects || [];
+    } else {
+      mangaProjects = [];
+    }
+  } catch (error) {
+    console.error('Error loading manga projects:', error);
+    mangaProjects = [];
+  }
+  renderMangaTable();
+}
+
+function saveMangaProjects() {
+  // No longer needed - using API
+}
+
+function renderMangaTable() {
+  const tbody = document.getElementById('mangaTableBody');
+  
+  if (mangaProjects.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" class="empty-state">
+          <h3>No manga projects yet</h3>
+          <p>Click "Add New Manga" to get started</p>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+  
+  tbody.innerHTML = mangaProjects.map(manga => `
+    <tr>
+      <td>
+        <strong>${manga.title}</strong>
+      </td>
+      <td>
+        <span class="status-badge status-${manga.status}">${manga.status}</span>
+      </td>
+      <td>${manga.chapters} images</td>
+      <td>${new Date(manga.createdAt).toLocaleDateString()}</td>
+      <td>
+        <div class="actions">
+          <button class="btn-secondary btn-sm" onclick="viewManga('${manga.id}')">View</button>
+          <button class="btn-danger btn-sm" onclick="deleteManga('${manga.id}')">Delete</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function viewManga(mangaId) {
+  const manga = mangaProjects.find(m => m.id === mangaId);
+  if (manga) {
+    // Store current manga in localStorage for the view page
+    localStorage.setItem('currentManga', JSON.stringify(manga));
+    // Redirect to manga view page
+    window.location.href = `/manga/${mangaId}`;
+  }
+}
+
+async function deleteManga(mangaId) {
+  if (confirm('Are you sure you want to delete this manga project?')) {
+    try {
+      const response = await fetch(`/api/manga/${mangaId}`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        await loadMangaProjects();
+      } else {
+        alert('Failed to delete manga project');
+      }
+    } catch (error) {
+      console.error('Error deleting manga:', error);
+      alert('Failed to delete manga project');
+    }
+  }
+}
+
+// Close modal when clicking outside
+window.addEventListener('click', (e) => {
+  const modal = document.getElementById('addModal');
+  if (e.target === modal) {
+    closeAddModal();
+  }
+});
+
+// Dark mode functionality
+function initializeTheme() {
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  setTheme(savedTheme);
+}
+
+function toggleTheme() {
+  const currentTheme = document.documentElement.getAttribute('data-theme');
+  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  setTheme(newTheme);
+  localStorage.setItem('theme', newTheme);
+}
+
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const themeIcon = document.getElementById('themeIcon');
+  const themeText = document.getElementById('themeText');
+  
+  if (theme === 'dark') {
+    themeIcon.textContent = '☀️';
+    themeText.textContent = 'Light';
+  } else {
+    themeIcon.textContent = '🌙';
+    themeText.textContent = 'Dark';
+  }
+}
 
 
