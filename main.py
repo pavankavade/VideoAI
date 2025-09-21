@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from PIL import Image
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -65,6 +66,62 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_projects")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+
+@app.get('/video-editor', response_class=HTMLResponse)
+def video_editor(request: Request):
+    """Render a simple video editor page for a project id query param (optional)."""
+    project_id = request.query_params.get('project_id')
+    project = None
+    if project_id:
+        project = get_manga_project(project_id)
+    # If no project, pass an empty placeholder
+    context = {"request": request, "project": project or {"id": "", "pages": [], "workflow": {}}}
+    return templates.TemplateResponse('video_editor.html', context)
+
+
+@app.post('/save_project')
+async def save_project_endpoint(request: Request):
+    """Save editor state (layers) into the project workflow and persist projects.json.
+    Expects JSON: { project_id: str, layers: [...] }
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid JSON')
+    project_id = payload.get('project_id')
+    layers = payload.get('layers')
+    if not project_id:
+        raise HTTPException(status_code=400, detail='project_id required')
+    if layers is None:
+        raise HTTPException(status_code=400, detail='layers required')
+    # Load project and patch workflow.video_editing.data
+    projects = get_manga_projects()
+    for i, p in enumerate(projects):
+        if p.get('id') == project_id:
+            # store layers under workflow.video_editing.data for later retrieval
+            if 'workflow' not in p:
+                p['workflow'] = {}
+            if 'video_editing' not in p['workflow']:
+                p['workflow']['video_editing'] = {}
+            p['workflow']['video_editing']['status'] = 'edited'
+            p['workflow']['video_editing']['data'] = {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}
+            projects[i] = p
+            save_manga_projects(projects)
+            return JSONResponse({'ok': True, 'project_id': project_id})
+    # If project not found, create a lightweight project entry
+    new_proj = {
+        'id': project_id,
+        'title': project_id,
+        'pages': [],
+        'workflow': {
+            'video_editing': {'status': 'edited', 'data': {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}}
+        },
+        'createdAt': datetime.utcnow().isoformat()
+    }
+    projects.append(new_proj)
+    save_manga_projects(projects)
+    return JSONResponse({'ok': True, 'project_id': project_id, 'created': True})
 
 # Manga project management
 def _normalize_quotes_and_commas(text: str) -> str:
@@ -399,8 +456,134 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
         return [(0, 0, width, height)]
     except Exception:
         logger.exception("ONNX inference failed; returning full-page fallback")
-        width, height = image.size
-        return [(0, 0, width, height)]
+
+
+@app.post('/api/video/render')
+async def api_video_render(request: Request):
+    """Accepts JSON payload: {project_id: str, timeline: [{type, src, duration, id}]} and returns an mp4 file.
+    Timeline image clips must be accessible via HTTP (e.g., /manga_projects/... or /uploads/...). Audio clips should be similarly accessible.
+    """
+    data = await request.json()
+    timeline = data.get('timeline') or []
+    # requested output resolution height (480, 720, 1080). default 720
+    resolution = int(data.get('resolution') or 720)
+    if not isinstance(timeline, list) or len(timeline) == 0:
+        raise HTTPException(status_code=400, detail='Empty or invalid timeline')
+
+    clips = []
+    audio_clips = []
+
+    # Create temporary directory for intermediate files if needed
+    import tempfile
+    import shutil
+    from pathlib import Path
+    from starlette.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    # Create a temporary working directory that we'll clean up after the response completes
+    tmpdir = tempfile.mkdtemp(prefix="video_render_")
+    tmp = Path(tmpdir)
+    out_path = tmp / 'out.mp4'
+
+    try:
+        for item in timeline:
+            ttype = item.get('type')
+            src = item.get('src')
+            dur = float(item.get('duration')) if item.get('duration') else None
+            if ttype == 'image':
+                # Expect src to be a local path or URL
+                if not src:
+                    continue
+                if src.startswith('/'):
+                    local_path = os.path.join(BASE_DIR, src.lstrip('/'))
+                    if not os.path.exists(local_path):
+                        local_path = os.path.join(BASE_DIR, src.replace('/', os.sep).lstrip(os.sep))
+                else:
+                    local_path = src
+
+                if os.path.exists(local_path):
+                    clip = ImageClip(local_path, duration=(dur or 2.0)).set_duration(dur or 2.0)
+                else:
+                    # download into tmp
+                    import requests
+                    r = requests.get(src, timeout=60)
+                    imgfile = tmp / f"img_{len(clips)}.png"
+                    imgfile.write_bytes(r.content)
+                    clip = ImageClip(str(imgfile), duration=(dur or 2.0)).set_duration(dur or 2.0)
+                clips.append(clip)
+            elif ttype == 'audio':
+                srca = src
+                if not srca:
+                    continue
+                if srca.startswith('/'):
+                    local_a = os.path.join(BASE_DIR, srca.lstrip('/'))
+                    if os.path.exists(local_a):
+                        audio_clips.append(AudioFileClip(local_a))
+                    else:
+                        try:
+                            import requests
+                            r = requests.get(srca, timeout=60)
+                            af = tmp / f"audio_{len(audio_clips)}.mp3"
+                            af.write_bytes(r.content)
+                            audio_clips.append(AudioFileClip(str(af)))
+                        except Exception:
+                            logger.exception('Failed to fetch audio %s', srca)
+                else:
+                    try:
+                        import requests
+                        r = requests.get(srca, timeout=60)
+                        af = tmp / f"audio_{len(audio_clips)}.mp3"
+                        af.write_bytes(r.content)
+                        audio_clips.append(AudioFileClip(str(af)))
+                    except Exception:
+                        logger.exception('Failed to fetch audio %s', srca)
+
+        if not clips:
+            # cleanup and return
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail='No image clips in timeline')
+
+        video = concatenate_videoclips(clips, method='compose')
+
+        # Map requested height to standard 16:9 width
+        target_h = 720
+        if resolution in (480, 720, 1080):
+            target_h = resolution
+        else:
+            # fallback
+            target_h = 720
+        target_w = int((16 / 9) * target_h)
+
+        try:
+            video = video.resize(newsize=(target_w, target_h))
+        except Exception:
+            logger.exception('Failed to resize video, continuing with original size')
+
+        if audio_clips:
+            try:
+                if len(audio_clips) == 1:
+                    final_audio = audio_clips[0]
+                else:
+                    from moviepy.editor import concatenate_audioclips
+                    final_audio = concatenate_audioclips(audio_clips)
+                video = video.set_audio(final_audio)
+            except Exception:
+                logger.exception('Failed to attach audio to video')
+
+        # Write file to out_path
+        video.write_videofile(str(out_path), fps=24, codec='libx264', audio_codec='aac', threads=0, verbose=False, logger=None)
+
+        # Return a FileResponse and cleanup tmpdir in background after response is complete
+        return FileResponse(str(out_path), media_type='video/mp4', filename='project_video.mp4', background=BackgroundTask(shutil.rmtree, tmpdir))
+
+    except HTTPException:
+        # re-raise HTTPExceptions (like 400) after ensuring cleanup
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+    except Exception as e:
+        logger.exception('Video render failed')
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def crop_panels(image: Image.Image, boxes: List[Tuple[int, int, int, int]]) -> List[Image.Image]:
@@ -1270,17 +1453,30 @@ async def synthesize_tts_api(project_id: str, text: str):
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
 @app.post("/upload")
-async def upload_images(files: List[UploadFile] = File(...)):
+async def upload_files(files: List[UploadFile] = File(...)):
+    """Upload files (images or audio). Returns a list of saved filenames.
+    Accepts common image and audio extensions (png/jpg/webp/mp3/wav/ogg/m4a).
+    """
     saved_files: List[str] = []
+    allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.mp3', '.wav', '.ogg', '.m4a')
     for file in files:
-        # Basic image guard
-        if not file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+        fname = file.filename or ''
+        lower = fname.lower()
+        # Basic guard on extension
+        if not any(lower.endswith(ext) for ext in allowed_exts):
             continue
-        destination = os.path.join(UPLOAD_DIR, file.filename)
+        # Avoid overwriting existing files with same name by prefixing timestamp if needed
+        dest_name = fname
+        destination = os.path.join(UPLOAD_DIR, dest_name)
+        # If file exists, add timestamp
+        if os.path.exists(destination):
+            base, ext = os.path.splitext(dest_name)
+            dest_name = f"{base}-{int(datetime.utcnow().timestamp())}{ext}"
+            destination = os.path.join(UPLOAD_DIR, dest_name)
         contents = await file.read()
         with open(destination, "wb") as f:
             f.write(contents)
-        saved_files.append(file.filename)
+        saved_files.append(dest_name)
     
     # Sort by page number instead of alphabetically
     sorted_file_pairs = sort_files_by_page_number(saved_files)

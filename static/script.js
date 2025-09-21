@@ -313,6 +313,7 @@ function renderMangaTable() {
       <td>
         <div class="actions">
           <button class="btn-secondary btn-sm" onclick="viewManga('${manga.id}')">View</button>
+          <a class="btn-primary btn-sm" href="/video-editor?project_id=${manga.id}" style="background:#10b981; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center;">Video Editor</a>
           <button class="btn-danger btn-sm" onclick="deleteManga('${manga.id}')">Delete</button>
         </div>
       </td>

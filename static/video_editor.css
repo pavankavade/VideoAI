@@ -1,0 +1,86 @@
+/* Video Editor styles - improved UX */
+:root{
+  --bg:#0f1724; --card:#0b1220; --muted:#9ca3af; --accent:#3b82f6; --accent-2:#10b981;
+  --panel-width:340px; --gutter:16px; --radius:12px;
+}
+body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:#0b1220; color:#e6eef8; margin:0}
+.editor-root{display:flex; gap:var(--gutter); padding:20px; height:calc(100vh - 40px)}
+.left-assets{width:var(--panel-width); background:linear-gradient(180deg,#071226 0,#071a2b 100%); border-radius:var(--radius); padding:14px; box-shadow:0 6px 18px rgba(2,6,23,0.6); display:flex; flex-direction:column; gap:12px; min-height:0}
+.section-title{font-weight:700; color:#dff3ff; margin-bottom:10px}
+.asset-section{display:flex; flex-direction:column; gap:8px; flex:1; min-height:0}
+.assets-list{display:flex; flex-direction:column; gap:10px; overflow:auto; min-height:0}
+
+/* custom scrollbar for asset lists */
+.assets-list::-webkit-scrollbar{width:10px}
+.assets-list::-webkit-scrollbar-track{background:transparent}
+.assets-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.04);border-radius:8px}
+.asset-item{display:flex; gap:10px; align-items:center; padding:8px; border-radius:8px; background:linear-gradient(180deg,#071a2b 0,#061421 100%); border:1px solid rgba(255,255,255,0.03); cursor:grab}
+.asset-item img{width:64px;height:64px;object-fit:cover;border-radius:6px}
+.asset-item .meta{font-size:13px;color:var(--muted)}
+.asset-item .small{font-size:12px;color:#88a6c6}
+.controls{display:flex; gap:8px}
+.btn{background:var(--accent); color:#fff; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600}
+.btn.secondary{background:transparent; border:1px solid rgba(255,255,255,0.06)}
+.player-area{flex:1; display:flex; flex-direction:column; gap:12px}
+.player-top{display:flex; gap:12px}
+/* Standard YouTube-friendly preview size: 1280x720 (16:9). We cap at max-width so it scales down on small screens */
+:root{ --video-width:1280px; --video-height:720px; }
+.preview-player{
+  flex:1;
+  background:#000;
+  border-radius:12px;
+  /* Use aspect-ratio so the preview keeps 16:9 and does not grow beyond max-width */
+  width:100%;
+  max-width:300px;
+  max-height:1080px;
+ /* aspect-ratio: 16 / 9;*/
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.preview-player video{
+  width:100%;
+  height:100%;
+  border-radius:12px;
+  background:#000;
+  /* Ensure the video fills the preview area without stretching images beyond the box */
+  object-fit:cover;
+}
+.inspector{width:320px; background:linear-gradient(180deg,#071226,#061421); border-radius:12px; padding:12px; box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+.inspector h4{margin:0 0 8px 0}
+.timeline{background:linear-gradient(180deg,#020617,#071226); border-radius:12px; padding:12px}
+.timeline{background:linear-gradient(180deg,#020617,#071226); max-width: 1700px; border-radius:12px; padding:12px; display:flex; flex-direction:column; flex:1; min-height:0}
+.timeline-header{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px}
+.timeline-scale-note{font-size:12px;color:#9fbfdc;margin-bottom:6px}
+.timeline-viewport{position:relative; overflow:auto; border-radius:8px; background:transparent; padding:8px; flex:1; min-height:0}
+.timeline-ruler{height:28px; background:linear-gradient(180deg,#061226,#04121a); border-radius:6px; margin-bottom:8px; position:relative}
+.timeline-track-outer{position:relative; min-height:220px;}
+.timeline-track{position:relative; height:auto; min-height:220px}
+.timeline-layer{position:relative; background:#061122; border-radius:8px; padding:8px; display:block; min-height:100px; margin-bottom:12px}
+/* clips will be absolutely positioned within the layer's clips container (.layer-clips) */
+.layer-clips{position:relative; min-height:68px}
+.timeline-layer .clip{position:absolute; left:0; top:0; width:120px; height:68px; cursor:grab}
+.timeline-layer .clip.dragging{opacity:0.7; cursor:grabbing}
+.timeline-ruler .tick{position:absolute; top:0; height:100%; border-right:1px solid rgba(255,255,255,0.04); color:#9fbfdc; font-size:11px; display:flex; align-items:center; justify-content:center}
+.clip-handle{position:absolute; right:0; top:0; width:8px; height:100%; cursor:ew-resize; background:linear-gradient(90deg, rgba(255,255,255,0.02), transparent)}
+.clip-resizing{opacity:0.9}
+.btn.small{padding:4px 8px;font-size:13px}
+.layer-header{display:flex; align-items:center; gap:8px; margin-bottom:6px}
+.layer-chip{background:linear-gradient(180deg,#071226,#081722); padding:6px 8px; border-radius:8px; font-weight:700}
+.timeline-layer{position:relative; background:#061122; border-radius:8px; padding:12px 8px 8px 8px; display:block; min-height:100px; margin-bottom:12px}
+.layer-header{z-index:3; position:relative}
+.clip{display:flex; align-items:center; gap:8px; min-width:120px; height:68px; background:linear-gradient(180deg,#0e2940,#082036); border-radius:8px; padding:8px; border:1px solid rgba(255,255,255,0.03); position:relative; z-index:1}
+.clip img{width:88px; height:68px; object-fit:cover; border-radius:6px}
+.clip .info{display:flex; flex-direction:column}
+.duration-badge{position:absolute; right:8px; top:8px; background:rgba(0,0,0,0.45); padding:4px 8px; border-radius:6px; font-weight:600}
+.clip .remove{position:absolute; left:8px; top:8px; background:rgba(255,0,0,0.18); padding:6px 8px; border-radius:8px; cursor:pointer; color:#fff; font-weight:700; z-index:5; box-shadow:0 4px 10px rgba(0,0,0,0.45)}
+.clip img{display:block}
+/* ensure remove is visible even over images */
+.clip img + .remove, .clip > .remove { z-index:5 }
+/* force pointer events so clicks reach the remove control */
+.clip .remove { pointer-events: auto }
+.start-badge{position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,0.28); padding:4px 6px; border-radius:6px; font-weight:600; font-size:12px}
+.footer-actions{display:flex; gap:8px; justify-content:flex-end; margin-top:8px}
+/* responsive */
+@media(max-width:900px){.editor-root{flex-direction:column;height:auto}.left-assets{width:100%;order:2}.inspector{width:100%}.preview-player{min-height:220px}}

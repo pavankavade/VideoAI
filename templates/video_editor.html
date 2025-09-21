@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Video Editor - Manga AI</title>
+  <link rel="stylesheet" href="/static/video_editor.css" />
+</head>
+<body>
+  <div style="padding:12px 20px; display:flex; justify-content:space-between; align-items:center; background:linear-gradient(90deg,#071226,#08162a);">
+    <div style="color:#dff3ff; font-weight:700; font-size:18px;">Video Editor - {{ project.title or 'Untitled' }}</div>
+    <div style="display:flex; gap:8px;">
+      <label style="display:flex;align-items:center;gap:8px;color:#dff3ff">
+        <span style="font-weight:600">Resolution</span>
+        <select id="resolutionSelect" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#dff3ff;padding:6px;border-radius:6px">
+          <option value="480">480p (test)</option>
+          <option value="720" selected>720p</option>
+          <option value="1080">1080p</option>
+        </select>
+      </label>
+      <button class="btn" id="exportBtnHeader">Render & Export</button>
+    </div>
+  </div>
+  <div class="editor-root">
+    <div class="left-assets">
+      <!-- Split into two equal sections that scroll if content overflows -->
+      <div class="asset-section">
+        <div class="section-title">Panels</div>
+        <div id="panelsList" class="assets-list"></div>
+      </div>
+
+      <div class="asset-section">
+        <div class="section-title">Audio</div>
+        <div id="audioList" class="assets-list"></div>
+        <div style="margin-top:8px;">
+          <input id="audioFileInput" type="file" accept="audio/*" />
+        </div>
+      </div>
+
+      <div style="height:12px"></div>
+      <div class="footer-actions">
+        <select id="resolutionSelectFooter" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#dff3ff;padding:6px;border-radius:6px">
+          <option value="480">480p (test)</option>
+          <option value="720" selected>720p</option>
+          <option value="1080">1080p</option>
+        </select>
+        <button class="btn" id="exportBtn">Render & Export</button>
+        <button class="btn secondary" id="previewTimelineBtn">Preview</button>
+      </div>
+    </div>
+
+    <div class="player-area">
+      <div class="player-top">
+        <div class="preview-player" id="previewPlayer">
+          <video id="previewVideo" controls style="max-width:100%; max-height:100%; background:#000"></video>
+        </div>
+        <div class="inspector">
+          <h4>Inspector</h4>
+          <div id="inspector">Select a clip on the timeline to edit its duration/offset.</div>
+        </div>
+      </div>
+
+      <div class="timeline" id="timelineRoot">
+        <div class="timeline-header">
+          <div style="font-weight:600">Timeline</div>
+          <div class="controls">
+            <button class="btn secondary" id="clearTimeline">Clear</button>
+            <button class="btn" id="playTimeline">Play</button>
+          </div>
+          <div id="timelineControlsExtra" style="display:flex;gap:8px;align-items:center;margin-left:12px">
+            <div class="timeline-scale-note">Zoom</div>
+            <button class="btn" id="zoomOut">-</button>
+            <button class="btn" id="zoomIn">+</button>
+            <label style="color:#9fd2ff">Snap
+              <select id="snapSelect" style="margin-left:6px;background:transparent;border:1px solid rgba(255,255,255,0.06);color:#dff3ff;padding:6px;border-radius:6px">
+                <option value="0.033333">Frame (1/30s)</option>
+                <option value="0.0333333">Frame (1/30s) (alt)</option>
+                <option value="0.1" selected>0.1s</option>
+                <option value="0.5">0.5s</option>
+                <option value="1">1s</option>
+              </select>
+            </label>
+            <label style="color:#9fd2ff;display:flex;align-items:center;gap:6px"><input type="checkbox" id="reflowToggle" checked/>Reflow</label>
+            <button class="btn secondary" id="saveNow">Save</button>
+            <div id="autosaveStatus" style="font-size:12px;color:#9fbfdc">Idle</div>
+          </div>
+        </div>
+        <div class="timeline-viewport">
+          <div class="timeline-ruler" id="timelineRuler"></div>
+          <div class="timeline-track-outer" id="timelineOuter">
+            <div class="timeline-track" id="timelineTrack" ondragover="event.preventDefault()" ondrop="onDropToTimeline(event)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.projectData = {{ project|tojson|safe }};
+  </script>
+  <script src="/static/video_editor.js"></script>
+</body>
+</html>

@@ -1040,6 +1040,30 @@ function getAudioSrc(maybeAudio) {
     try {
         if (!maybeAudio) return '';
 
+        // If it's a full TTS entry object, prefer filename/url/audioBlob
+        if (typeof maybeAudio === 'object' && ! (maybeAudio instanceof Blob)) {
+            // If it has an audioBlob that's a real Blob, use it
+            if (maybeAudio.audioBlob instanceof Blob) {
+                const u = URL.createObjectURL(maybeAudio.audioBlob);
+                audioObjectURLs.add(u);
+                return u;
+            }
+            // If it has a filename saved on the server, return uploads path
+            if (typeof maybeAudio.filename === 'string' && maybeAudio.filename.trim()) {
+                return '/uploads/' + maybeAudio.filename;
+            }
+            // If it has a url, return it
+            if (typeof maybeAudio.url === 'string' && maybeAudio.url.trim()) return maybeAudio.url;
+            // Otherwise attempt to convert the object to a Blob (if it contains raw bytes)
+            const blob = convertToBlob(maybeAudio);
+            if (blob) {
+                const url = URL.createObjectURL(blob);
+                audioObjectURLs.add(url);
+                return url;
+            }
+            return '';
+        }
+
         // If it's already a Blob -> create object URL
         if (maybeAudio instanceof Blob) {
             const url = URL.createObjectURL(maybeAudio);
@@ -1063,21 +1087,46 @@ function getAudioSrc(maybeAudio) {
             return '';
         }
 
-        // If it's an object, attempt conversion
-        const blob = convertToBlob(maybeAudio);
-        if (blob) {
-            const url = URL.createObjectURL(blob);
-            audioObjectURLs.add(url);
-            return url;
-        }
-
-        // Fallback: if it has a url field, use it
-        if (maybeAudio.url && typeof maybeAudio.url === 'string') return maybeAudio.url;
-
     } catch (e) {
         console.warn('getAudioSrc error:', e);
     }
     return '';
+}
+
+// Upload an audio Blob to the server /upload endpoint and return the saved filename (or null)
+async function uploadAudioBlob(blob, suggestedName) {
+    try {
+        const fd = new FormData();
+        // server accepts form field 'file' for single file and 'files' for multiple; include both to be safe
+        fd.append('file', blob, suggestedName || 'audio.wav');
+        fd.append('files', blob, suggestedName || 'audio.wav');
+        const resp = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!data) return null;
+        if (data.filename) return data.filename;
+        if (data.filenames && Array.isArray(data.filenames) && data.filenames.length > 0) return data.filenames[0];
+        return null;
+    } catch (e) {
+        console.error('uploadAudioBlob failed:', e);
+        return null;
+    }
+}
+
+// Prepare a copy of ttsData safe for JSON save (remove raw Blob/audioBuffer objects)
+function sanitizeTTSForSave(tts) {
+    const out = {};
+    try {
+        Object.keys(tts || {}).forEach(k => {
+            const v = tts[k] || {};
+            const entry = {};
+            if (v.filename) entry.filename = v.filename;
+            if (v.url) entry.url = v.url;
+            if (v.text) entry.text = v.text;
+            entry.pageNumber = v.pageNumber || (isNaN(parseInt(k)) ? null : parseInt(k));
+            out[k] = entry;
+        });
+    } catch (e) { console.warn('sanitizeTTSForSave error', e); }
+    return out;
 }
 
 // Track object URLs we create so they can be revoked on unload
@@ -1194,7 +1243,7 @@ function openPanelEditor(pageNumber) {
                     hasAudio ? `
                         <div class="audio-controls-container">
                             <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                                <source src="${getAudioSrc(ttsData[pageNumber].audioBlob)}" type="audio/wav">
+                                <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
                                 Your browser does not support the audio element.
                             </audio>
                             <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
@@ -1506,10 +1555,13 @@ async function synthesizeAllPages() {
                 // Call TTS API
                 const audioBlob = await synthesizeText(narration);
                 
-                // Store audio data
+                // Store audio data: upload to server so we persist filename in project JSON
                 const pageNumber = pageLabel.replace('Page', '');
+                const filename = await uploadAudioBlob(audioBlob, `tts_page_${pageNumber}.wav`);
                 ttsData[pageNumber] = {
+                    // keep the raw blob in-memory for immediate playback, but persist filename for reloads
                     audioBlob: audioBlob,
+                    filename: filename,
                     text: narration,
                     pageNumber: parseInt(pageNumber)
                 };
@@ -1541,7 +1593,7 @@ async function synthesizeAllPages() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 'workflow.tts.status': 'complete',
-                'workflow.tts.data': ttsData
+                'workflow.tts.data': sanitizeTTSForSave(ttsData)
             })
         });
         
@@ -1580,14 +1632,15 @@ async function synthesizePage(pageNumber) {
         // Call TTS API
         const audioBlob = await synthesizeText(narration[1]);
         
-        // Store audio data
+        // Store audio data: upload and persist filename
+        const filename = await uploadAudioBlob(audioBlob, `tts_page_${pageNumber}.wav`);
         ttsData[pageNumber] = {
             audioBlob: audioBlob,
-            text: narration[1],
+            filename: filename,
+            text: narration,
             pageNumber: parseInt(pageNumber)
         };
-        
-        // Save audio locally
+        // Save audio locally as well for offline/cache
         await saveAudioLocally(pageNumber, audioBlob);
         
         // Update UI
@@ -1602,7 +1655,7 @@ async function synthesizePage(pageNumber) {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                'workflow.tts.data': ttsData
+                'workflow.tts.data': sanitizeTTSForSave(ttsData)
             })
         });
         
@@ -1652,14 +1705,15 @@ async function synthesizePageFromEditor(pageNumber) {
         // Call TTS API
         const audioBlob = await synthesizeText(narration[1]);
         
-        // Store audio data
+        // Store audio data: upload and persist filename
+        const filename = await uploadAudioBlob(audioBlob, `tts_page_${pageNumber}.wav`);
         ttsData[pageNumber] = {
             audioBlob: audioBlob,
-            text: narration[1],
+            filename: filename,
+            text: narration,
             pageNumber: parseInt(pageNumber)
         };
-        
-        // Save audio locally
+        // Save audio locally as well for offline/cache
         await saveAudioLocally(pageNumber, audioBlob);
         
         // Update project data
@@ -1673,7 +1727,7 @@ async function synthesizePageFromEditor(pageNumber) {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                'workflow.tts.data': ttsData
+                'workflow.tts.data': sanitizeTTSForSave(ttsData)
             })
         });
         
@@ -1807,14 +1861,15 @@ async function resynthesizePage(pageNumber) {
         // Call TTS API
         const audioBlob = await synthesizeText(narration[1]);
         
-        // Store audio data
+        // Store audio data: upload and persist filename
+        const filename = await uploadAudioBlob(audioBlob, `tts_page_${pageNumber}.wav`);
         ttsData[pageNumber] = {
             audioBlob: audioBlob,
+            filename: filename,
             text: narration[1],
             pageNumber: parseInt(pageNumber)
         };
-        
-        // Save audio locally
+        // Save audio locally as well
         await saveAudioLocally(pageNumber, audioBlob);
         
         // Update page audio controls
@@ -1937,9 +1992,9 @@ function displayTTSResults() {
         // Add default HTML5 audio player
         const audioDiv = document.createElement('div');
         audioDiv.className = 'audio-controls-container';
-        audioDiv.innerHTML = `
+                audioDiv.innerHTML = `
             <audio controls id="audio-player-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                <source src="${getAudioSrc(data.audioBlob)}" type="audio/wav">
+                <source src="${getAudioSrc(data)}" type="audio/wav">
                 Your browser does not support the audio element.
             </audio>
             <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-tts-${pageNumber}">

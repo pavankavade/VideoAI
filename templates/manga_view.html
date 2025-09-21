@@ -1192,6 +1192,9 @@
     <div class="container">
         <div class="header">
             <h1>{{ project.title }}</h1>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <a class="btn-primary" href="/video-editor?project_id={{ project.id }}" style="background:#10b981">Open Video Editor</a>
+            </div>
             <div style="display: flex; align-items: center; gap: 16px;">
                 <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle">
                     <span class="theme-icon" id="themeIcon">🌙</span>
