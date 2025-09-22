@@ -752,11 +752,21 @@ function scheduleAudioForPlayback(){
   clearAudioPlayback();
   const all = flattenLayersToTimeline();
   const auds = all.filter(c=> c.type==='audio' && c.src).sort((a,b)=> (a.startTime||0) - (b.startTime||0));
+  DBG('Scheduling audio - found audio clips:', auds.length);
+  
   if (auds.length === 0) return;
   const clip = findCurrentOrNextAudioClip(auds, playhead);
   if (!clip) return;
+  
+  DBG('Selected audio clip:', { src: clip.src, startTime: clip.startTime, duration: clip.duration });
+  
   const playable = getPlayableSrc(clip.src);
-  if (!playable) return;
+  DBG('Playable src after getPlayableSrc:', playable);
+  
+  if (!playable) {
+    DBG('ERROR: No playable src found for clip:', clip.src);
+    return;
+  }
   // choose element
   let audio;
   if (preloadedAudioEls[playable]){
@@ -896,36 +906,71 @@ function preloadAudioAssets(){
   audioPreloadInProgress = true;
   DBG('Starting audio preload (locked)');
   
-  // Clean up any stale blob URLs from previous sessions
-  try {
-    Object.values(audioObjectUrlMap).forEach(({ url }) => {
-      try { URL.revokeObjectURL(url); } catch(e) {}
-    });
-    Object.keys(audioObjectUrlMap).forEach(key => delete audioObjectUrlMap[key]);
-    Object.keys(preloadedAudioEls).forEach(key => {
-      if (key.startsWith('blob:')) delete preloadedAudioEls[key];
-    });
-    
-    // Also clean up any stale blob URL references in clip data
+  // Clean up any stale blob URLs from previous sessions - ONLY on first run
+  if (!window.audioAssetsCleanedUp) {
     try {
-      layers.forEach(layer => {
-        layer.clips.forEach(clip => {
-          if (clip.type === 'audio' && clip.src && typeof clip.src === 'string' && clip.src.startsWith('blob:')) {
-            // Reset to original source if we have it in meta
-            if (clip.meta && clip.meta.originalSrc) {
-              clip.src = clip.meta.originalSrc;
-              DBG('Reset clip from stale blob URL to original:', clip.meta.originalSrc);
-            }
-          }
-        });
+      DBG('Starting aggressive cleanup of stale blob URLs...');
+      
+      // First revoke old blob URLs
+      Object.values(audioObjectUrlMap).forEach(({ url }) => {
+        try { URL.revokeObjectURL(url); } catch(e) {}
       });
+      Object.keys(audioObjectUrlMap).forEach(key => delete audioObjectUrlMap[key]);
+      Object.keys(preloadedAudioEls).forEach(key => {
+        if (key.startsWith('blob:')) delete preloadedAudioEls[key];
+      });
+      
+      // More aggressive cleanup of clip data - check ALL clips for blob URLs
+      try {
+        layers.forEach((layer, layerIndex) => {
+          layer.clips.forEach((clip, clipIndex) => {
+            if (clip.type === 'audio' && clip.src) {
+              const src = String(clip.src);
+              if (src.startsWith('blob:')) {
+                DBG(`Found stale blob URL in layer[${layerIndex}].clips[${clipIndex}]:`, src);
+                // Reset to original source if we have it in meta
+                if (clip.meta && clip.meta.originalSrc) {
+                  clip.src = clip.meta.originalSrc;
+                  DBG('Reset to originalSrc:', clip.meta.originalSrc);
+                } else {
+                  // Try to find a reasonable fallback from meta
+                  if (clip.meta && clip.meta.filename) {
+                    clip.src = '/uploads/' + clip.meta.filename;
+                    DBG('Reset to filename-based URL:', clip.src);
+                  } else {
+                    DBG('ERROR: No fallback found for stale blob URL, keeping as-is');
+                  }
+                }
+              }
+            }
+          });
+        });
+        
+        // Also check the flattened timeline if it exists
+        if (window.timeline && Array.isArray(timeline)) {
+          timeline.forEach((clip, index) => {
+            if (clip.type === 'audio' && clip.src) {
+              const src = String(clip.src);
+              if (src.startsWith('blob:')) {
+                DBG(`Found stale blob URL in timeline[${index}]:`, src);
+                if (clip.meta && clip.meta.originalSrc) {
+                  clip.src = clip.meta.originalSrc;
+                  DBG('Reset timeline clip to originalSrc:', clip.meta.originalSrc);
+                }
+              }
+            }
+          });
+        }
+        
+      } catch(e) {
+        DBG('Error cleaning clip blob references:', e);
+      }
+      
+      window.audioAssetsCleanedUp = true; // Mark as cleaned up
+      DBG('Aggressive cleanup completed');
     } catch(e) {
-      DBG('Error cleaning clip blob references:', e);
+      DBG('Error during blob cleanup:', e);
     }
-    
-    DBG('Cleaned up stale blob URLs and audio elements');
-  } catch(e) {
-    DBG('Error during blob cleanup:', e);
   }
   
   try{
