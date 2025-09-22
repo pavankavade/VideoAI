@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import ast
 from datetime import datetime
 import asyncio
+import time
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from PIL import Image
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -66,6 +67,72 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_projects")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# -------------------- In-memory SSE progress channels --------------------
+# Simple per-job pubsub so the UI can subscribe to step-by-step progress.
+from typing import Deque
+from collections import deque
+
+ProgressEvent = Dict[str, Any]
+_PROGRESS_CHANNELS: Dict[str, Dict[str, Any]] = {}
+
+def _get_progress_channel(job_id: str) -> Dict[str, Any]:
+    """Get or create a progress channel for a job_id.
+    Structure: { 'queue': asyncio.Queue[str], 'last': dict, 'created': float }
+    """
+    ch = _PROGRESS_CHANNELS.get(job_id)
+    if ch is None:
+        ch = {"queue": asyncio.Queue(), "last": None, "created": time.time()}
+        _PROGRESS_CHANNELS[job_id] = ch
+    return ch
+
+def _sse_format(payload: Dict[str, Any]) -> str:
+    return f"event: progress\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+def push_progress(job_id: Optional[str], stage: str, status: str = "running", pct: Optional[float] = None, **extra: Any) -> None:
+    if not job_id:
+        return
+    ch = _get_progress_channel(job_id)
+    evt: Dict[str, Any] = {
+        "job_id": job_id,
+        "stage": stage,
+        "status": status,
+        "pct": float(pct) if pct is not None else None,
+        "ts": time.time(),
+    }
+    if extra:
+        evt.update(extra)
+    msg = _sse_format(evt)
+    # store last and enqueue without blocking
+    ch["last"] = evt
+    try:
+        ch["queue"].put_nowait(msg)
+    except Exception:
+        pass
+
+@app.get("/api/progress/stream/{job_id}")
+async def stream_progress(job_id: str):
+    """Server-Sent Events (SSE) stream of progress for a given job_id."""
+    ch = _get_progress_channel(job_id)
+
+    async def event_gen():
+        # send last known immediately (if any)
+        last = ch.get("last")
+        if last:
+            yield _sse_format(last)
+        try:
+            while True:
+                msg = await ch["queue"].get()
+                yield msg
+        except asyncio.CancelledError:
+            return
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # disable buffering on some proxies
+    }
+    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
 
 @app.get('/video-editor', response_class=HTMLResponse)
@@ -464,14 +531,20 @@ async def api_video_render(request: Request):
     Timeline image clips must be accessible via HTTP (e.g., /manga_projects/... or /uploads/...). Audio clips should be similarly accessible.
     """
     data = await request.json()
+    project_id = data.get('project_id') or ''
+    job_id = data.get('job_id') or f"render-{int(datetime.utcnow().timestamp()*1000)}"
     timeline = data.get('timeline') or []
     # requested output resolution height (480, 720, 1080). default 720
     resolution = int(data.get('resolution') or 720)
+    # If downloadMode == 'link' or return_url true, return a JSON with a URL to the rendered file (faster on UI)
+    download_mode = (data.get('downloadMode') or data.get('mode') or '').strip().lower() if isinstance(data.get('downloadMode') or data.get('mode'), str) else (data.get('return_url') is True)
+    return_link = (download_mode == 'link') or (data.get('return_url') is True)
     if not isinstance(timeline, list) or len(timeline) == 0:
         raise HTTPException(status_code=400, detail='Empty or invalid timeline')
 
     clips = []
-    audio_clips = []
+    fg_clips = []  # foreground image clips (non-background)
+    audio_clips = []  # list of (AudioFileClip, start_time)
 
     # Create temporary directory for intermediate files if needed
     import tempfile
@@ -486,10 +559,14 @@ async def api_video_render(request: Request):
     out_path = tmp / 'out.mp4'
 
     try:
+        push_progress(job_id, stage="parse_timeline", status="start")
         for item in timeline:
             ttype = item.get('type')
             src = item.get('src')
             dur = float(item.get('duration')) if item.get('duration') else None
+            start_time = float(item.get('startTime') or item.get('start_time') or 0.0)
+            is_bg = bool(item.get('_isBackground'))
+            layer_index = int(item.get('_layerIndex')) if item.get('_layerIndex') is not None else None
             if ttype == 'image':
                 # Expect src to be a local path or URL
                 if not src:
@@ -510,79 +587,232 @@ async def api_video_render(request: Request):
                     imgfile = tmp / f"img_{len(clips)}.png"
                     imgfile.write_bytes(r.content)
                     clip = ImageClip(str(imgfile), duration=(dur or 2.0)).set_duration(dur or 2.0)
-                clips.append(clip)
+
+                # Annotate with timing and z info
+                if is_bg:
+                    # Background may span the whole video; set start
+                    clip = clip.set_start(start_time)
+                    # Attach transform/crop data
+                    clip._layerIndex = layer_index if layer_index is not None else 0
+                    clip._transform = item.get('transform') or None
+                    clip._crop = item.get('crop') or None
+                    clips.append(clip)
+                else:
+                    # Foreground clips: set start and collect for compositing
+                    clip = clip.set_start(start_time)
+                    # Store layer index for z-order: higher index should be on top
+                    clip._layerIndex = layer_index if layer_index is not None else 999
+                    clip._transform = item.get('transform') or None
+                    clip._crop = item.get('crop') or None
+                    fg_clips.append(clip)
             elif ttype == 'audio':
                 srca = src
                 if not srca:
                     continue
+                # default to provided start_time if any
+                astart = start_time
                 if srca.startswith('/'):
                     local_a = os.path.join(BASE_DIR, srca.lstrip('/'))
                     if os.path.exists(local_a):
-                        audio_clips.append(AudioFileClip(local_a))
+                        try:
+                            ac = AudioFileClip(local_a)
+                            audio_clips.append((ac, astart))
+                        except Exception:
+                            logger.exception('Failed to open local audio %s', local_a)
                     else:
                         try:
                             import requests
                             r = requests.get(srca, timeout=60)
-                            af = tmp / f"audio_{len(audio_clips)}.mp3"
+                            # preserve original extension when possible
+                            ext = os.path.splitext(srca)[1] or '.wav'
+                            af = tmp / f"audio_{len(audio_clips)}{ext}"
                             af.write_bytes(r.content)
-                            audio_clips.append(AudioFileClip(str(af)))
+                            ac = AudioFileClip(str(af))
+                            audio_clips.append((ac, astart))
                         except Exception:
                             logger.exception('Failed to fetch audio %s', srca)
                 else:
                     try:
                         import requests
                         r = requests.get(srca, timeout=60)
-                        af = tmp / f"audio_{len(audio_clips)}.mp3"
+                        ext = os.path.splitext(srca)[1] or '.wav'
+                        af = tmp / f"audio_{len(audio_clips)}{ext}"
                         af.write_bytes(r.content)
-                        audio_clips.append(AudioFileClip(str(af)))
+                        ac = AudioFileClip(str(af))
+                        audio_clips.append((ac, astart))
                     except Exception:
                         logger.exception('Failed to fetch audio %s', srca)
+        push_progress(job_id, stage="parse_timeline", status="complete")
 
-        if not clips:
+        if not clips and not fg_clips:
             # cleanup and return
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise HTTPException(status_code=400, detail='No image clips in timeline')
 
-        video = concatenate_videoclips(clips, method='compose')
-
-        # Map requested height to standard 16:9 width
+    # Determine target size from requested resolution (16:9)
         target_h = 720
         if resolution in (480, 720, 1080):
             target_h = resolution
         else:
-            # fallback
             target_h = 720
         target_w = int((16 / 9) * target_h)
 
+        # Build a black base for the whole timeline duration
+        push_progress(job_id, stage="build_base", status="start")
+        total_end = 0.0
+        for c in clips + fg_clips:
+            total_end = max(total_end, float(getattr(c, 'start', 0) or 0) + float(c.duration or 0))
+        from moviepy.editor import ColorClip
+        base_video = ColorClip((target_w, target_h), color=(0,0,0), duration=(total_end or 2.0))
+        push_progress(job_id, stage="build_base", status="complete")
+
+        # Apply canvas-like transform (crop -> resize -> rotate -> position) to all image clips
+        push_progress(job_id, stage="process_foreground", status="start")
+        processed_all = []
+        scale_x = target_w / 1920.0
+        scale_y = target_h / 1080.0
+        # Helper to process a single clip
+        from moviepy.video.fx import all as vfx
+        def process_image_clip(iclip: ImageClip) -> ImageClip:
+            tr = getattr(iclip, '_transform', None)
+            cr = getattr(iclip, '_crop', None)
+            out = iclip
+            # Crop first (coordinates in source image pixels)
+            try:
+                if isinstance(cr, dict):
+                    cx = float(cr.get('x', 0)); cy = float(cr.get('y', 0))
+                    cw = float(cr.get('w', 0)); ch = float(cr.get('h', 0))
+                    if cw > 0 and ch > 0:
+                        out = out.fx(vfx.crop, x1=max(0, int(cx)), y1=max(0, int(cy)), x2=max(1, int(cx+cw)), y2=max(1, int(cy+ch)))
+            except Exception:
+                logger.exception('Failed to apply crop; skipping')
+            # Transform defaults (center full screen)
+            tx = 1920/2.0; ty = 1080/2.0; tw = 1920.0; th = 1080.0; rot = 0.0
+            if isinstance(tr, dict):
+                tx = float(tr.get('x', tx)); ty = float(tr.get('y', ty));
+                tw = float(tr.get('w', tw)); th = float(tr.get('h', th));
+                rot = float(tr.get('rotation', 0.0) or 0.0)
+            # Resize to target transform size (scaled to output resolution)
+            dw = max(1, int(tw * scale_x)); dh = max(1, int(th * scale_y))
+            try:
+                out = out.resize(newsize=(dw, dh))
+            except Exception:
+                logger.exception('Failed to resize image clip; leaving original size')
+            # Rotate around center (no expand to mimic canvas clipping)
+            try:
+                if abs(rot) > 1e-3:
+                    out = out.rotate(rot, unit='deg', resample='bilinear')
+            except Exception:
+                logger.exception('Failed to rotate clip; skipping rotation')
+            # Position: convert center (tx,ty) to top-left in output coordinates
+            dx = int((tx - tw/2.0) * scale_x); dy = int((ty - th/2.0) * scale_y)
+            out = out.set_position((dx, dy))
+            # preserve timing and z
+            out = out.set_start(getattr(iclip, 'start', 0))
+            out = out.set_duration(iclip.duration)
+            out._layerIndex = getattr(iclip, '_layerIndex', 999)
+            return out
+
+        for ic in clips + fg_clips:
+            try:
+                processed_all.append(process_image_clip(ic))
+            except Exception:
+                logger.exception('Failed to process image clip; using original placement')
+                processed_all.append(ic)
+        # Sort by z so later entries are on top
+        processed_all.sort(key=lambda c: getattr(c, '_layerIndex', 999))
+        push_progress(job_id, stage="process_foreground", status="complete")
+
         try:
-            video = video.resize(newsize=(target_w, target_h))
+            push_progress(job_id, stage="composite", status="start")
+            video = CompositeVideoClip([base_video] + processed_all, size=(target_w, target_h))
+            push_progress(job_id, stage="composite", status="complete")
         except Exception:
-            logger.exception('Failed to resize video, continuing with original size')
+            logger.exception('Composite assembly failed; falling back to base only')
+            video = base_video
 
         if audio_clips:
             try:
-                if len(audio_clips) == 1:
-                    final_audio = audio_clips[0]
-                else:
-                    from moviepy.editor import concatenate_audioclips
-                    final_audio = concatenate_audioclips(audio_clips)
-                video = video.set_audio(final_audio)
+                push_progress(job_id, stage="attach_audio", status="start")
+                # Place audio clips on their timeline positions and mix
+                from moviepy.editor import CompositeAudioClip as MPCompositeAudioClip
+                placed = []
+                for ac, st in audio_clips:
+                    try:
+                        placed.append(ac.set_start(float(st or 0.0)))
+                    except Exception:
+                        logger.exception('Failed to set audio start; using 0')
+                        placed.append(ac)
+                if placed:
+                    final_audio = MPCompositeAudioClip(placed)
+                    video = video.set_audio(final_audio)
+                push_progress(job_id, stage="attach_audio", status="complete")
             except Exception:
                 logger.exception('Failed to attach audio to video')
 
-        # Write file to out_path
-        video.write_videofile(str(out_path), fps=24, codec='libx264', audio_codec='aac', threads=0, verbose=False, logger=None)
+        # Write file to out_path with console progress bar
+        try:
+            logger.info("[render] Starting video write: %s", str(out_path))
+            # Use MoviePy's built-in progress bar (printed to console)
+            push_progress(job_id, stage="encode", status="start")
+            video.write_videofile(
+                str(out_path),
+                fps=24,
+                codec='libx264',
+                audio_codec='aac',
+                threads=0,
+                verbose=True,
+                logger='bar'
+            )
+            push_progress(job_id, stage="encode", status="complete")
+            logger.info("[render] Video write complete: %s", str(out_path))
+        except Exception:
+            logger.exception("[render] Video write failed")
+            push_progress(job_id, stage="encode", status="error")
+            raise
 
-        # Return a FileResponse and cleanup tmpdir in background after response is complete
+        # If caller requested a link instead of streaming the whole file back, move it to uploads/renders and return JSON
+        if return_link:
+            renders_dir = os.path.join(UPLOAD_DIR, 'renders')
+            os.makedirs(renders_dir, exist_ok=True)
+            ts = int(datetime.utcnow().timestamp())
+            safe_pid = re.sub(r"[^A-Za-z0-9_-]", "_", str(project_id) or "project")
+            dest_name = f"{safe_pid}-{ts}.mp4"
+            dest_path = os.path.join(renders_dir, dest_name)
+            try:
+                shutil.move(str(out_path), dest_path)
+            except Exception:
+                logger.exception("[render] Move failed; attempting copy->remove fallback")
+                try:
+                    shutil.copyfile(str(out_path), dest_path)
+                    try:
+                        os.remove(str(out_path))
+                    except Exception:
+                        logger.warning("[render] Failed to remove temp out after copy")
+                except Exception:
+                    logger.exception("[render] Copy fallback failed; will return direct download response")
+                    push_progress(job_id, stage="finalize", status="link_error")
+                    return FileResponse(str(out_path), media_type='video/mp4', filename='project_video.mp4', background=BackgroundTask(shutil.rmtree, tmpdir))
+            rel_url = f"/uploads/renders/{dest_name}"
+            logger.info("[render] Returning link: %s", rel_url)
+            push_progress(job_id, stage="finalize", status="complete", url=rel_url)
+            return JSONResponse({"ok": True, "url": rel_url, "filename": dest_name, "job_id": job_id}, background=BackgroundTask(shutil.rmtree, tmpdir))
+
+        # Default: stream file back to client and cleanup tmpdir in background after response is complete
+        push_progress(job_id, stage="finalize", status="complete", url=None)
         return FileResponse(str(out_path), media_type='video/mp4', filename='project_video.mp4', background=BackgroundTask(shutil.rmtree, tmpdir))
 
-    except HTTPException:
+    except HTTPException as e:
         # re-raise HTTPExceptions (like 400) after ensuring cleanup
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        raise
+        try:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        finally:
+            push_progress(job_id, stage="error", status="error", detail=str(e))
+            raise
     except Exception as e:
         logger.exception('Video render failed')
         shutil.rmtree(tmpdir, ignore_errors=True)
+        push_progress(job_id, stage="error", status="error", detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -653,6 +883,17 @@ def save_panel_crops_to_project(page_path: str, boxes: List[Tuple[int, int, int,
             crops_meta.append({"filename": out_name, "url": ""})  # URL will be set by caller
     return crops_meta
 
+
+def run_panel_detector(image: Image.Image) -> List[Tuple[int, int, int, int]]:
+    """Fallback panel detector used by legacy /process-chapter.
+    Returns one full-page box so downstream code continues to work.
+    """
+    try:
+        w, h = image.size
+        return [(0, 0, int(w), int(h))]
+    except Exception:
+        logger.exception("run_panel_detector fallback failed; returning empty boxes")
+        return []
 
 def call_gemini(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
     """Call Gemini with text+image prompt.

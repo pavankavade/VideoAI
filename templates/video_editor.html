@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Video Editor - Manga AI</title>
+  <link rel="icon" href="/static/blur_glitch_background.png" />
   <link rel="stylesheet" href="/static/video_editor.css" />
 </head>
 <body>
@@ -36,23 +37,23 @@
           <input id="audioFileInput" type="file" accept="audio/*" />
         </div>
       </div>
-
-      <div style="height:12px"></div>
-      <div class="footer-actions">
-        <select id="resolutionSelectFooter" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#dff3ff;padding:6px;border-radius:6px">
-          <option value="480">480p (test)</option>
-          <option value="720" selected>720p</option>
-          <option value="1080">1080p</option>
-        </select>
-        <button class="btn" id="exportBtn">Render & Export</button>
-        <button class="btn secondary" id="previewTimelineBtn">Preview</button>
-      </div>
     </div>
 
     <div class="player-area">
       <div class="player-top">
         <div class="preview-player" id="previewPlayer">
-          <video id="previewVideo" controls style="max-width:100%; max-height:100%; background:#000"></video>
+          <div class="canvas-wrap">
+            <canvas id="editorCanvas"></canvas>
+            <div class="preview-overlay" id="previewOverlay">
+              <div class="preview-toolbar">
+                <button class="btn small" id="togglePlay">Play</button>
+                <button class="btn small secondary" id="toggleCrop">Crop: Off</button>
+                <div class="time-readout" id="timeReadout">0:00</div>
+                <input type="range" id="seekSlider" min="0" max="1" value="0" step="0.001" style="width:260px"/>
+                <div class="time-readout" id="totalTimeReadout">/ 0:00</div>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="inspector">
           <h4>Inspector</h4>
@@ -95,9 +96,59 @@
     </div>
   </div>
 
+  <script type="application/json" id="__project_data__">{{ project|tojson|safe }}</script>
   <script>
-    window.projectData = {{ project|tojson|safe }};
+    try { const el = document.getElementById('__project_data__'); window.projectData = JSON.parse(el.textContent || '{}'); } catch(e){ window.projectData = {}; }
   </script>
   <script src="/static/video_editor.js"></script>
+  <script>
+    // Simple optional progress UI; video_editor.js will set window.__renderJobId
+    (function(){
+      const bar = document.createElement('div');
+      bar.id = 'renderProgressBar';
+      bar.style.position='fixed'; bar.style.left='20px'; bar.style.bottom='20px'; bar.style.minWidth='320px';
+      bar.style.padding='10px 12px'; bar.style.borderRadius='8px'; bar.style.background='rgba(7,18,38,0.9)'; bar.style.color='#dff3ff'; bar.style.fontSize='12px';
+      bar.style.boxShadow='0 6px 22px rgba(0,0,0,0.35)'; bar.style.backdropFilter='blur(6px)'; bar.style.display='none';
+      bar.innerHTML = '<div style="font-weight:700;margin-bottom:6px">Render Progress</div><div id="rpStage">—</div><div id="rpDetail" style="opacity:0.8"></div>';
+      document.body.appendChild(bar);
+      function connect(jobId){
+        if (!jobId) return;
+        bar.style.display='block';
+        const es = new EventSource('/api/progress/stream/' + encodeURIComponent(jobId));
+        const stEl = bar.querySelector('#rpStage');
+        const dtEl = bar.querySelector('#rpDetail');
+        
+        // Auto-close connection after 30 seconds to prevent infinite loading
+        const autoCloseTimeout = setTimeout(() => {
+          try { es.close(); } catch(_) {}
+          bar.style.display = 'none';
+        }, 30000);
+        
+        es.addEventListener('progress', (ev)=>{
+          try{
+            const d = JSON.parse(ev.data||'{}');
+            if (stEl) stEl.textContent = (d.stage||'') + ' – ' + (d.status||'');
+            if (dtEl) dtEl.textContent = (d.url ? ('URL: ' + d.url) : '') + (d.detail? (' ' + d.detail) : '');
+            if (d.stage === 'finalize' && (d.status==='complete' || d.status==='link_error')){
+              clearTimeout(autoCloseTimeout);
+              setTimeout(()=>{ bar.style.display='none'; try{ es.close(); }catch(_){} }, 1200);
+            }
+          }catch(e){}
+        });
+        
+        es.addEventListener('open', () => {
+          console.log('Progress stream connected');
+        });
+        
+        es.onerror = (e) => {
+          console.warn('Progress stream error:', e);
+          clearTimeout(autoCloseTimeout);
+          try { es.close(); } catch(_e) {}
+          setTimeout(() => { bar.style.display = 'none'; }, 1000);
+        };
+      }
+      Object.defineProperty(window, '__renderJobId', { set: (v)=>{ try{ connect(v); }catch(_){}; } });
+    })();
+  </script>
 </body>
 </html>

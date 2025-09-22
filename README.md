@@ -199,6 +199,10 @@ async def split_panels(file: UploadFile = File(...)):
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GOOGLE_API_KEY` | Yes | - | Google Gemini API key for narration generation |
+
+## Video Editor - Background Button
+
+The video editor UI includes an "Add Background" button in the timeline layer controls. Clicking it inserts a default 1920x1080 background image (`static/blur_glitch_background.png`) as the bottom-most layer so all other layers remain on top. The background clip will have a duration that covers the current project length (minimum 60s) and includes metadata marking it as 1920x1080.
 | `PANEL_API_URL` | Yes | - | URL of external panel detection API |
 | `PANEL_API_MODE` | No | `auto` | Response format: `auto`, `json`, `zip`, or `image` |
 

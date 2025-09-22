@@ -2,6 +2,9 @@
 // Layered timeline model: layers is array of {id, name, clips: []}
 let timeline = []; // legacy flat timeline kept for compatibility but UI shows layers
 let layers = [ { id: 'layer-1', name: 'Layer 1', clips: [] } ];
+// Background config
+const DEFAULT_BG_SRC = '/static/blur_glitch_background.png';
+const BACKGROUND_LAYER_ID = 'background';
 let activeLayerId = 'layer-1';
 let panels = [];
 let audios = [];
@@ -16,12 +19,62 @@ let viewPxPerSec = pxPerSec;
 let previewControllers = []; // store audio/video controllers to stop preview
 let audioCtx = null;
 let audioBufferCache = {}; // keyed by src -> AudioBuffer
+let audioFetchControllers = {}; // keyed by src -> AbortController
+let audioPreloadInProgress = false; // Flag to prevent duplicate calls
+const DBG = (...args)=>{ try{ console.log('[editor]', ...args); }catch(e){} };
+const preloadedAudioEls = {}; // src -> HTMLAudioElement (preloaded)
+// Simplified preview audio state (HTMLAudio-only)
+let activeAudio = null; // current HTMLAudio element in use
+let activeAudioTimeout = null; // timeout id for scheduling next clip
+// Cache mapping of original URLs to object URLs so we can reuse and revoke later
+const audioObjectUrlMap = {}; // originalSrc -> { url: objectURL, blob: Blob }
 let autosaveTimer = null;
 let autosavePending = false;
+let isExporting = false; // suppress autosave and UI side-work during export
+// Canvas preview state
+let canvas = null, ctx = null, overlayEl = null;
+let isPlaying = false; // paused by default
+let playhead = 0; // seconds
+let rafId = null; let lastTs = 0;
+let selectedLayerId = null; let selectedIndex = -1; // current selection for canvas
+let interaction = null; // active transform/crop interaction
+let cropMode = false;
+
+// Add page load state tracking
+window.addEventListener('load', () => {
+  DBG('Window load event fired - page fully loaded');
+});
+
+// Track readyState changes
+document.addEventListener('readystatechange', () => {
+  DBG('Document readyState changed to:', document.readyState);
+});
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Prevent re-initialization if already loaded
+  if (window.videoEditorLoaded) {
+    DBG('Video editor already loaded, skipping re-initialization');
+    return;
+  }
+  
+  DBG('DOMContentLoaded fired - starting video editor initialization');
   const data = window.projectData || {};
   const project = data;
+  // Ensure a hidden audio pool exists for preloading
+  try{
+    let pool = document.getElementById('hidden-audio-pool');
+    if (!pool){
+      pool = document.createElement('div');
+      pool.id = 'hidden-audio-pool';
+      pool.style.position = 'absolute';
+      pool.style.left = '-10000px';
+      pool.style.top = '-10000px';
+      pool.style.width = '1px';
+      pool.style.height = '1px';
+      pool.setAttribute('aria-hidden','true');
+      document.body.appendChild(pool);
+    }
+  }catch(e){}
   // load panels from project.pages
   const panelsList = document.getElementById('panelsList');
   const audioList = document.getElementById('audioList');
@@ -36,7 +89,8 @@ document.addEventListener('DOMContentLoaded', () => {
     el.draggable = true;
     el.dataset.id = id;
     el.dataset.type = 'image';
-    el.innerHTML = `<img src="${url}" alt="${p.filename}"/><div class="meta">${p.filename}</div>`;
+    // Lazy-load thumbnails to avoid keeping the tab in a perpetual "loading" state
+    el.innerHTML = `<img src="${url}" alt="${p.filename}" loading="lazy" decoding="async"/><div class="meta">${p.filename}</div>`;
     el.addEventListener('dragstart', onDragStartAsset);
     panelsList.appendChild(el);
   });
@@ -57,6 +111,11 @@ document.addEventListener('DOMContentLoaded', () => {
       console.info('[editor] restored saved layers from project.workflow.video_editing');
     }
   } catch (e) { console.warn('[editor] failed to restore saved layers', e); }
+
+  // If a background layer exists in saved data, ensure it's at index 0
+  if (layers.some(l=> l.id === BACKGROUND_LAYER_ID)){
+    ensureBackgroundLayer(false);
+  }
 
   // existing audio from project.workflow.tts.data may contain audio blobs or urls
   let maybeAudio = project.workflow?.tts?.data;
@@ -86,12 +145,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // preserve original meta and try to derive a playable src immediately
     const meta = a;
     let srcCandidate = null;
+    const guessMime = (metaLike, fallback='audio/wav') => {
+      try{
+        if (!metaLike) return fallback;
+        const name = (typeof metaLike === 'string') ? metaLike : (metaLike.filename || metaLike.name || metaLike.file || metaLike.url || metaLike.src || '');
+        const mime = (typeof metaLike === 'object') ? (metaLike.mime || metaLike.mimetype || (metaLike.type && String(metaLike.type))) : '';
+        const lowerName = String(name||'').toLowerCase();
+        const lowerMime = String(mime||'').toLowerCase();
+        if (lowerMime.includes('wav') || lowerName.endsWith('.wav')) return 'audio/wav';
+        if (lowerMime.includes('mpeg') || lowerMime.includes('mp3') || lowerName.endsWith('.mp3')) return 'audio/mpeg';
+        if (lowerMime.includes('ogg') || lowerName.endsWith('.ogg')) return 'audio/ogg';
+        return fallback;
+      }catch(e){ return fallback; }
+    };
     // prefer explicit fields
     if (meta && typeof meta === 'object'){
       srcCandidate = meta.url || meta.audio || meta.src || meta.filename || meta.file || null;
       // If meta contains raw base64 or data, try to build a data URI
       if (!srcCandidate && meta.base64 && typeof meta.base64 === 'string'){
-        srcCandidate = 'data:audio/mpeg;base64,' + meta.base64.replace(/\s+/g,'');
+        const mime = guessMime(meta, 'audio/wav');
+        srcCandidate = `data:${mime};base64,` + meta.base64.replace(/\s+/g,'');
       }
       // audioBlob may be a serialized object (from server) containing base64/data/url/filename
       if (!srcCandidate && meta.audioBlob){
@@ -103,12 +176,18 @@ document.addEventListener('DOMContentLoaded', () => {
             // sometimes stored as base64 string
             const t = ab.trim();
             if (t.startsWith('data:audio')) srcCandidate = t;
-            else if (t.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(t)) srcCandidate = 'data:audio/mpeg;base64,' + t.replace(/\s+/g,'');
+            else if (t.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(t)) {
+              const mime = guessMime(meta, 'audio/wav');
+              srcCandidate = `data:${mime};base64,` + t.replace(/\s+/g,'');
+            }
           } else if (typeof ab === 'object'){
             // try common fields
             if (ab.url && typeof ab.url === 'string') srcCandidate = ab.url;
             else if (ab.filename && typeof ab.filename === 'string') srcCandidate = '/uploads/' + ab.filename;
-            else if (ab.base64 && typeof ab.base64 === 'string') srcCandidate = 'data:audio/mpeg;base64,' + ab.base64.replace(/\s+/g,'');
+            else if (ab.base64 && typeof ab.base64 === 'string') {
+              const mime = guessMime(ab, 'audio/wav');
+              srcCandidate = `data:${mime};base64,` + ab.base64.replace(/\s+/g,'');
+            }
             else if (ab.data && typeof ab.data === 'string'){
               const t = ab.data.trim(); if (t.startsWith('data:audio')) srcCandidate = t; else if (t.length>100 && /^[A-Za-z0-9+/=\s]+$/.test(t)) srcCandidate = 'data:audio/mpeg;base64,' + t.replace(/\s+/g,'');
             }
@@ -127,23 +206,27 @@ document.addEventListener('DOMContentLoaded', () => {
       const keys = (ab && typeof ab === 'object') ? Object.keys(ab) : [];
       // If audioBlob contains base64
       if (!finalPlayable && ab && typeof ab.base64 === 'string' && ab.base64.length>100){
-        finalPlayable = 'data:audio/mpeg;base64,' + ab.base64.replace(/\s+/g,'');
+        const mime = guessMime(ab, 'audio/wav');
+        finalPlayable = `data:${mime};base64,` + ab.base64.replace(/\s+/g,'');
       }
       // If audioBlob contains raw numeric array in 'data' or 'bytes'
       if (!finalPlayable && ab && Array.isArray(ab.data) && ab.data.length>0){
         const arr = new Uint8Array(ab.data);
-        const blob = new Blob([arr], { type: 'audio/mpeg' });
+        const mime = guessMime(ab, 'audio/wav');
+        const blob = new Blob([arr], { type: mime });
         finalPlayable = URL.createObjectURL(blob);
       }
       if (!finalPlayable && ab && Array.isArray(ab.bytes) && ab.bytes.length>0){
         const arr = new Uint8Array(ab.bytes);
-        const blob = new Blob([arr], { type: 'audio/mpeg' });
+        const mime = guessMime(ab, 'audio/wav');
+        const blob = new Blob([arr], { type: mime });
         finalPlayable = URL.createObjectURL(blob);
       }
       // If audioBlob has .data.buffer-like structure
       if (!finalPlayable && ab && ab.data && ab.data.data && Array.isArray(ab.data.data)){
         const arr = new Uint8Array(ab.data.data);
-        const blob = new Blob([arr], { type: 'audio/mpeg' });
+        const mime = guessMime(ab, 'audio/wav');
+        const blob = new Blob([arr], { type: mime });
         finalPlayable = URL.createObjectURL(blob);
       }
       // If no enumerable keys were present (Blob-like object from deserialization), attempt blob/arraybuffer/typedarray handling
@@ -158,7 +241,8 @@ document.addEventListener('DOMContentLoaded', () => {
           // If it's an ArrayBuffer or a typed array
           if (!finalPlayable && ab && (ab instanceof ArrayBuffer || typeof ab.byteLength === 'number')){
             const arr = ab instanceof ArrayBuffer ? new Uint8Array(ab) : (ab.buffer ? new Uint8Array(ab.buffer) : new Uint8Array(ab));
-            const blob = new Blob([arr], { type: 'audio/mpeg' });
+            const mime = guessMime(ab, 'audio/wav');
+            const blob = new Blob([arr], { type: mime });
             finalPlayable = URL.createObjectURL(blob);
           }
         }catch(e){ console.warn('[audio-load] blob-like fallback error', e); }
@@ -166,7 +250,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }catch(e){ console.warn('[audio-load] error inspecting audioBlob', e); }
   }
     // store playable (or empty) but keep original meta for later upload/inspection
-  audios.push({id, src: finalPlayable || '', filename: `audio-${i}.mp3`, meta});
+  const fname = (meta && (meta.filename || meta.file || meta.name)) || `audio-${i}.wav`;
+  audios.push({id, src: finalPlayable || '', filename: fname, meta});
     const el = document.createElement('div');
     el.className = 'asset-item';
     el.draggable = true;
@@ -177,30 +262,38 @@ document.addEventListener('DOMContentLoaded', () => {
     if (audioList) audioList.appendChild(el);
   });
 
-  document.getElementById('audioFileInput').addEventListener('change', async (e) => {
+  const audioFileInputEl = document.getElementById('audioFileInput');
+  if (audioFileInputEl) audioFileInputEl.addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
     // Upload to server uploads/ and add to audio list
     const fd = new FormData();
-    fd.append('file', f);
-    const resp = await fetch('/upload', {method:'POST', body: fd});
-    const dataResp = await resp.json();
-      if (dataResp.filename) {
-      const src = `/uploads/${dataResp.filename}`;
-      const id = `audio-upload-${Date.now()}`;
-        audios.push({id, src, filename: dataResp.filename, meta: { uploaded: true }});
-      const el = document.createElement('div');
-      el.className = 'asset-item'; el.draggable = true; el.dataset.id = id; el.dataset.type = 'audio';
-      el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">${dataResp.filename}</div>`;
-      el.addEventListener('dragstart', onDragStartAsset);
-      audioList.appendChild(el);
+    fd.append('files', f, f.name || `audio-${Date.now()}.mp3`);
+    try {
+      const resp = await fetch('/upload', {method:'POST', body: fd});
+      if (!resp.ok) throw new Error('Upload failed: ' + resp.status);
+      const dataResp = await resp.json();
+      const filenames = (dataResp && Array.isArray(dataResp.filenames)) ? dataResp.filenames : [];
+      filenames.forEach((fn) => {
+        const src = `/uploads/${fn}`;
+        const id = `audio-upload-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+        audios.push({id, src, filename: fn, meta: { uploaded: true }});
+        const el = document.createElement('div');
+        el.className = 'asset-item'; el.draggable = true; el.dataset.id = id; el.dataset.type = 'audio';
+        el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">${fn}</div>`;
+        el.addEventListener('dragstart', onDragStartAsset);
+        audioList && audioList.appendChild(el);
+      });
+    } catch (err) {
+      console.error('Audio upload error', err);
+      alert('Audio upload failed. See console for details.');
     }
   });
 
-  document.getElementById('exportBtn').addEventListener('click', onExport);
-  document.getElementById('previewTimelineBtn').addEventListener('click', onPreviewTimeline);
-  document.getElementById('clearTimeline').addEventListener('click', () => { layers.forEach(l=> l.clips = []); timeline = []; renderTimeline(); });
-  document.getElementById('playTimeline').addEventListener('click', playTimelineSequence);
+  const exportBtnEl = document.getElementById('exportBtn'); if (exportBtnEl) exportBtnEl.addEventListener('click', onExport);
+  const previewTimelineBtnEl = document.getElementById('previewTimelineBtn'); if (previewTimelineBtnEl) previewTimelineBtnEl.addEventListener('click', onPreviewTimeline);
+  const clearTimelineEl = document.getElementById('clearTimeline'); if (clearTimelineEl) clearTimelineEl.addEventListener('click', () => { layers.forEach(l=> l.clips = []); timeline = []; renderTimeline(); });
+  const playTimelineEl = document.getElementById('playTimeline'); if (playTimelineEl) playTimelineEl.addEventListener('click', ()=>{ onPreviewTimeline(); });
   // Load persisted zoom (pxPerSec) if available
   try{
     const saved = window.localStorage.getItem('video_editor_pxPerSec');
@@ -229,15 +322,33 @@ document.addEventListener('DOMContentLoaded', () => {
   const previewTop = document.getElementById('previewTimelineBtnTop');
   if (previewTop) previewTop.addEventListener('click', onPreviewTimeline);
 
+  // Initialize canvas-based preview
+  DBG('Initializing canvas preview');
+  initCanvasPreview();
+
+  DBG('Rendering timeline and components');
   renderTimeline();
   renderLayerControls();
   renderRuler();
+  
+  // Preload after initial render so timeline clips are present
+  DBG('Starting image preloading');
+  try{ preloadImageAssets(); }catch(e){ DBG('preloadImageAssets error', e); }
+  DBG('Starting audio preloading');
+  try{ preloadAudioAssets(); }catch(e){ DBG('preloadAudioAssets error', e); }
+  DBG('Audio preloading initiated');
+
+  // Mark initialization complete
+  DBG('Video editor initialization complete');
+
+  // Disable proactive audio duration prefetch on load to avoid long-running network/audio decode operations.
+  // Durations will be computed lazily when audio is added or explicitly requested.
 
   // Recompute timeline layout on window resize so min width follows the visible viewport width
-  let resizeTimer = null;
+  window.resizeTimer = null;
   window.addEventListener('resize', () => {
-    if (resizeTimer) clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(()=>{ try{ renderTimeline(); renderRuler(); }catch(e){} }, 120);
+    if (window.resizeTimer) clearTimeout(window.resizeTimer);
+    window.resizeTimer = setTimeout(()=>{ try{ renderTimeline(); renderRuler(); }catch(e){} }, 120);
   });
 
   // Delegated click handler for remove buttons inside timeline (works across re-renders)
@@ -284,6 +395,803 @@ document.addEventListener('DOMContentLoaded', () => {
   }, true);
 });
 
+// ------------------ Canvas Preview Engine (16:9) ------------------
+function initCanvasPreview(){
+  canvas = document.getElementById('editorCanvas');
+  overlayEl = document.getElementById('previewOverlay');
+  const playBtn = document.getElementById('togglePlay');
+  const cropBtn = document.getElementById('toggleCrop');
+  const seekSlider = document.getElementById('seekSlider');
+  const toolbar = overlayEl ? overlayEl.querySelector('.preview-toolbar') : null;
+  if (!canvas) return;
+  canvas.width = 1920; canvas.height = 1080; // 16:9 backing resolution
+  ctx = canvas.getContext('2d');
+  if (playBtn) playBtn.addEventListener('click', togglePlayback);
+  if (cropBtn) cropBtn.addEventListener('click', ()=>{ if (isPlaying) return; cropMode = !cropMode; cropBtn.textContent = 'Crop: ' + (cropMode? 'On' : 'Off'); renderOverlays(); });
+  if (seekSlider){
+    let scrubbing = false;
+    const applySeek = () => {
+      const total = computeTotalDuration() || 0;
+      const frac = Math.max(0, Math.min(1, Number(seekSlider.value)));
+      const t = frac * total;
+      playhead = t; drawFrame(playhead);
+      if (isPlaying){
+        // restart audio chain from new position
+        scheduleAudioForPlayback();
+      }
+    };
+    // Ensure toolbar and slider eat pointer events so canvas isn't selected/moved
+    const stop = (e)=>{ e.stopPropagation(); };
+    seekSlider.addEventListener('pointerdown', (e)=>{ stop(e); scrubbing = true; stopRaf(); });
+    seekSlider.addEventListener('mousedown', stop);
+    seekSlider.addEventListener('touchstart', (e)=>{ stop(e); scrubbing = true; stopRaf(); }, {passive:false});
+    seekSlider.addEventListener('input', ()=>{ applySeek(); });
+    seekSlider.addEventListener('change', (e)=>{ stop(e); scrubbing = false; applySeek(); });
+    seekSlider.addEventListener('pointerup', (e)=>{ stop(e); scrubbing = false; drawFrame(playhead); });
+    seekSlider.addEventListener('click', stop);
+    // Expose scrubbing flag for drawFrame to respect
+    seekSlider._scrubbing = () => scrubbing;
+  }
+  if (toolbar){
+    const eat = (e)=>{ e.stopPropagation(); };
+    ['pointerdown','pointerup','click','mousedown','mouseup','touchstart','touchend'].forEach(evt=> toolbar.addEventListener(evt, eat, {passive:false}));
+    try{ toolbar.style.pointerEvents = 'auto'; }catch(e){}
+  }
+  // Ensure overlay doesn't leak clicks to canvas except for explicit interactive elements
+  try{ overlayEl.style.pointerEvents = 'auto'; }catch(e){}
+  // Add a transparent shield region behind toolbar to make near-clicks safe
+  try{
+    const shield = document.createElement('div');
+    shield.style.position = 'absolute';
+    shield.style.left = '0';
+    shield.style.right = '0';
+    shield.style.top = '0';
+    shield.style.height = '64px';
+    shield.style.pointerEvents = 'auto';
+    shield.style.background = 'transparent';
+    const stopAll = (e)=>{ e.stopPropagation(); };
+    ['pointerdown','pointerup','click','mousedown','mouseup','touchstart','touchend'].forEach(evt=> shield.addEventListener(evt, stopAll, {passive:false}));
+    // Insert shield as first child so toolbar remains above visually
+    overlayEl && overlayEl.insertBefore(shield, overlayEl.firstChild || null);
+  }catch(e){ DBG('shield setup failed', e); }
+  // Pointer interactions (only honored when paused)
+  canvas.addEventListener('pointerdown', onCanvasPointerDown);
+  if (overlayEl) overlayEl.addEventListener('pointerdown', onCanvasPointerDown);
+  window.addEventListener('pointermove', onCanvasPointerMove);
+  window.addEventListener('pointerup', onCanvasPointerUp);
+  drawFrame(0);
+}
+
+function togglePlayback(){
+  isPlaying = !isPlaying;
+  const btn = document.getElementById('togglePlay'); if (btn) btn.textContent = isPlaying ? 'Pause' : 'Play';
+  const cropBtn = document.getElementById('toggleCrop'); if (cropBtn) cropBtn.disabled = isPlaying;
+  if (isPlaying){
+    // If no audio is currently active at playhead, jump to next audio start to avoid waiting long delays
+    try{
+      const all = flattenLayersToTimeline();
+      const auds = all.filter(c=> c.type==='audio' && c.src);
+      const now = playhead;
+      const active = auds.some(c=> (now >= (c.startTime||0)) && (c.duration!=null ? (now <= (c.startTime||0) + Number(c.duration||0)) : true));
+      if (!active && auds.length){
+        const next = auds
+          .map(c=> Number(c.startTime||0))
+          .filter(s=> s >= now)
+          .sort((a,b)=> a-b)[0];
+        if (next != null && isFinite(next)){
+          DBG('Auto-jump to next audio start', { from: now.toFixed(2), to: next.toFixed(2) });
+          playhead = next; drawFrame(playhead);
+        }
+      }
+    }catch(e){ DBG('auto-jump failed', e); }
+    // Ensure audio context is resumed (autoplay policies)
+    ensureAudioContext().then(ctx=>{ try{ if (ctx && ctx.state === 'suspended') ctx.resume(); }catch(e){} });
+    DBG('Play pressed at', playhead.toFixed(2));
+    scheduleAudioForPlayback(); startRaf();
+  } else { stopRaf(); clearAudioPlayback(); }
+}
+
+function startRaf(){
+  lastTs = performance.now();
+  if (rafId) cancelAnimationFrame(rafId);
+  const total = computeTotalDuration();
+  const step = (ts) => {
+    const dt = (ts - lastTs) / 1000; lastTs = ts;
+    playhead = Math.min(total, playhead + dt);
+    drawFrame(playhead);
+    if (playhead >= total){ isPlaying = false; const btn = document.getElementById('togglePlay'); if (btn) btn.textContent = 'Play'; return; }
+    rafId = requestAnimationFrame(step);
+  };
+  rafId = requestAnimationFrame(step);
+}
+
+function stopRaf(){ if (rafId){ cancelAnimationFrame(rafId); rafId = null; } drawFrame(playhead); }
+
+function drawFrame(timeSec){
+  if (!ctx || !canvas) return;
+  // background
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // draw background image if present
+  const all = flattenLayersToTimeline();
+  const bg = all.find(c=> c.type==='image' && c._isBackground);
+  if (bg) { renderClipToCanvas(bg, timeSec); }
+  // draw image clips in ascending layer order
+  const imgs = all.filter(c=> c.type==='image' && !c._isBackground).sort((a,b)=> (a._layerIndex||0) - (b._layerIndex||0));
+  for (const c of imgs){ renderClipToCanvas(c, timeSec); }
+  // overlays (selection/crop) when paused
+  if (!isPlaying) renderOverlays();
+  const tr = document.getElementById('timeReadout'); if (tr) tr.textContent = formatTime(timeSec);
+  const total = computeTotalDuration();
+  const ttr = document.getElementById('totalTimeReadout'); if (ttr) ttr.textContent = '/ ' + formatTime(total);
+  const seek = document.getElementById('seekSlider'); if (seek){
+    const frac = total>0 ? (timeSec / total) : 0;
+    const isScrubbing = typeof seek._scrubbing === 'function' ? seek._scrubbing() : false;
+    if (!isScrubbing){ seek.value = String(Math.max(0, Math.min(1, frac))); }
+  }
+}
+
+function renderClipToCanvas(clip, t){
+  const st = clip.startTime || 0; const dur = (clip.duration!=null)? Number(clip.duration) : (clip.type==='image'?2:0);
+  if (t < st || t > st + dur + 1e-4) return;
+  
+  // If image is not loaded yet, start loading but don't render
+  if (!clip._img && !clip._imgLoading){ 
+    clip._imgLoading = true;
+    const im = new Image(); 
+    im.crossOrigin='anonymous'; 
+    im.onload = ()=>{ 
+      clip._imgLoading = false;
+      clip._imgLoaded = true; // Mark as successfully loaded
+      DBG('Image loaded for clip:', clip.src || clip);
+    }; 
+    im.onerror = () => {
+      clip._imgLoading = false;
+      clip._imgError = true; // Mark as failed to load
+      DBG('Image load error for:', clip.src);
+    };
+    im.src = normalizeSrc(clip.src || clip); 
+    clip._img = im; 
+    return; // Don't try to render while still loading
+  }
+  
+  // Only render if image is fully loaded and ready
+  const img = clip._img; 
+  if (!img || !img.complete || !img.naturalWidth || clip._imgLoading) {
+    return; // Image not ready yet, skip this frame
+  }
+  // defaults
+  clip.transform = clip.transform || { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
+  clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+  const dx = Math.round(clip.transform.x - clip.transform.w/2);
+  const dy = Math.round(clip.transform.y - clip.transform.h/2);
+  const dw = Math.max(1, Math.round(clip.transform.w));
+  const dh = Math.max(1, Math.round(clip.transform.h));
+  const sx = Math.max(0, Math.min(clip.crop.x, img.naturalWidth-1));
+  const sy = Math.max(0, Math.min(clip.crop.y, img.naturalHeight-1));
+  const sw = Math.max(1, Math.min(clip.crop.w, img.naturalWidth - sx));
+  const sh = Math.max(1, Math.min(clip.crop.h, img.naturalHeight - sy));
+  try{
+    ctx.save();
+    if (clip.transform.rotation){
+      ctx.translate(clip.transform.x, clip.transform.y);
+      ctx.rotate((clip.transform.rotation || 0) * Math.PI/180);
+      ctx.translate(-clip.transform.x, -clip.transform.y);
+    }
+    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+    ctx.restore();
+  }catch(e){ /* ignore draw errors */ }
+}
+
+function renderOverlays(){
+  if (!overlayEl) return;
+  // remove previous overlays except toolbar
+  Array.from(overlayEl.children).forEach(ch => { if (!ch.classList.contains('preview-toolbar')) overlayEl.removeChild(ch); });
+  const sel = getSelectedClip();
+  if (!sel){
+    // Helpful hint when nothing is selected
+    const hint = document.createElement('div');
+    hint.className = 'hint-bubble';
+    hint.innerHTML = '<strong>Tip</strong>: Select a clip on the timeline (or click on the canvas) to edit. When paused:<br/>• Drag white corners to resize<br/>• Drag the center dot to move<br/>• Toggle \'Crop\' to adjust the green crop box';
+    overlayEl.appendChild(hint);
+    return;
+  }
+  const r = getClipRectOnCanvas(sel); if (!r) return;
+  // Convert canvas-space rect to CSS pixels based on current canvas display size
+  const canvasRect = canvas.getBoundingClientRect();
+  const sx = canvasRect.width / canvas.width; const sy = canvasRect.height / canvas.height;
+  const css = { x: Math.round(r.x * sx), y: Math.round(r.y * sy), w: Math.round(r.w * sx), h: Math.round(r.h * sy) };
+  const box = document.createElement('div'); box.className='selection-box'; box.style.left=css.x+'px'; box.style.top=css.y+'px'; box.style.width=css.w+'px'; box.style.height=css.h+'px';
+  box.appendChild(makeHandle('nw')); box.appendChild(makeHandle('ne')); box.appendChild(makeHandle('sw')); box.appendChild(makeHandle('se')); box.appendChild(makeHandle('move'));
+  overlayEl.appendChild(box);
+  if (cropMode){
+    const cr = getCropRectOnCanvas(sel);
+    const crCss = { x: Math.round(cr.x * sx), y: Math.round(cr.y * sy), w: Math.round(cr.w * sx), h: Math.round(cr.h * sy) };
+    const cbox = document.createElement('div'); cbox.className='crop-box'; cbox.style.left=crCss.x+'px'; cbox.style.top=crCss.y+'px'; cbox.style.width=crCss.w+'px'; cbox.style.height=crCss.h+'px';
+    cbox.appendChild(makeCropHandle('nw')); cbox.appendChild(makeCropHandle('ne')); cbox.appendChild(makeCropHandle('sw')); cbox.appendChild(makeCropHandle('se')); cbox.appendChild(makeCropHandle('move'));
+    overlayEl.appendChild(cbox);
+  }
+}
+
+function makeHandle(anchor){ const d=document.createElement('div'); d.className='handle '+anchor; d.dataset.role='transform'; d.dataset.anchor=anchor; return d; }
+function makeCropHandle(anchor){ const d=document.createElement('div'); d.className='crop-handle '+anchor; d.dataset.role='crop'; d.dataset.anchor=anchor; return d; }
+
+function getSelectedClip(){ if (selectedLayerId && selectedIndex>=0){ const l = layers.find(x=>x.id===selectedLayerId); if (l && l.clips[selectedIndex]) return l.clips[selectedIndex]; } return selectedClip; }
+
+function getClipRectOnCanvas(clip){ if (!clip || !clip.transform) return null; return { x: Math.round(clip.transform.x - clip.transform.w/2), y: Math.round(clip.transform.y - clip.transform.h/2), w: Math.round(clip.transform.w), h: Math.round(clip.transform.h) }; }
+
+function getCropRectOnCanvas(clip){ const img = clip._img; if (!img) return {x:0,y:0,w:0,h:0}; const imgW = img.naturalWidth || 1, imgH = img.naturalHeight || 1; const scaleX = (clip.transform?.w || canvas.width) / imgW; const scaleY = (clip.transform?.h || canvas.height) / imgH; const r = getClipRectOnCanvas(clip); return { x: Math.round(r.x + clip.crop.x * scaleX), y: Math.round(r.y + clip.crop.y * scaleY), w: Math.round(clip.crop.w * scaleX), h: Math.round(clip.crop.h * scaleY) };
+}
+
+function canvasToImageDelta(clip, dxCanvas, dyCanvas){ const img = clip._img; if (!img) return {dx:0,dy:0}; const imgW = img.naturalWidth || 1, imgH = img.naturalHeight || 1; const scaleX = (clip.transform?.w || canvas.width) / imgW; const scaleY = (clip.transform?.h || canvas.height) / imgH; return { dx: dxCanvas/scaleX, dy: dyCanvas/scaleY };
+}
+
+function canvasPt(ev){
+  if (!canvas) return { x: 0, y: 0, cssX: 0, cssY: 0 };
+  const r = canvas.getBoundingClientRect();
+  // Prefer pointer event coords; fallback to touch/mouse
+  let clientX = ev.clientX, clientY = ev.clientY;
+  if ((clientX == null || clientY == null) && ev.touches && ev.touches[0]){
+    clientX = ev.touches[0].clientX; clientY = ev.touches[0].clientY;
+  }
+  if (clientX == null || clientY == null){
+    try { clientX = ev.pageX; clientY = ev.pageY; } catch(e) { clientX = 0; clientY = 0; }
+  }
+  return {
+    x: (clientX - r.left) * (canvas.width / r.width),
+    y: (clientY - r.top) * (canvas.height / r.height),
+    cssX: clientX - r.left,
+    cssY: clientY - r.top
+  };
+}
+
+// Hit-test: return topmost visible clip at point (canvas coords) for time t
+function pickClipAtPoint(x, y, t){
+  try{
+    const all = flattenLayersToTimeline().filter(c=> c.type==='image');
+    // Only consider clips active at time t
+    const active = all.filter(c=>{
+      const st = c.startTime||0; const dur = (c.duration!=null)? Number(c.duration):(c.type==='image'?2:0);
+      return t >= st && t <= st + dur + 1e-4;
+    });
+    // Sort by layer index (higher on top)
+    active.sort((a,b)=> (a._layerIndex||0) - (b._layerIndex||0));
+    // Iterate from topmost to bottom-most
+    for (let i = active.length - 1; i >= 0; i--){
+      const c = active[i];
+      // Ensure transform defaults
+      c.transform = c.transform || { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
+      const r = getClipRectOnCanvas(c);
+      if (!r) continue;
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return c;
+    }
+  }catch(e){ /* ignore */ }
+  return null;
+}
+
+function onCanvasPointerDown(ev){ if (isPlaying) return; let sel = getSelectedClip(); const ptCssX = (ev.clientX!=null? ev.clientX : (ev.touches&&ev.touches[0]&&ev.touches[0].clientX)||0); const ptCssY = (ev.clientY!=null? ev.clientY : (ev.touches&&ev.touches[0]&&ev.touches[0].clientY)||0); let elAt = document.elementFromPoint(ptCssX, ptCssY); const pt = canvasPt(ev);
+  // If we clicked a child, walk up to see if it's a transform or crop handle
+  let role = null, anchor = null;
+  // Ignore clicks originating from toolbar or its children
+  try{ if (ev.target && (ev.target.closest && ev.target.closest('.preview-toolbar'))){ ev.preventDefault(); ev.stopPropagation(); return; } }catch(e){}
+  if (elAt){
+    const handleEl = elAt.closest ? elAt.closest('.handle, .crop-handle') : null;
+    elAt = handleEl || elAt;
+    role = elAt && elAt.dataset && elAt.dataset.role;
+    anchor = elAt && elAt.dataset && elAt.dataset.anchor;
+  }
+  // If nothing is selected, or click is outside current selection, try selecting the topmost clip under the cursor at current playhead
+  if (!sel || (sel && role !== 'transform' && role !== 'crop')){
+    const pick = pickClipAtPoint(pt.x, pt.y, playhead);
+    if (pick){
+      selectedLayerId = pick._layerId; selectedIndex = pick._clipIndex; selectedClip = pick; sel = pick; renderOverlays();
+    }
+  }
+  if (role==='transform'){ interaction = { from:'canvas', mode: anchor==='move'?'move':'resize', anchor, start: pt, orig: JSON.parse(JSON.stringify(sel.transform)) }; ev.preventDefault(); ev.stopPropagation(); return; }
+  if (role==='crop'){ interaction = { from:'canvas', mode: anchor==='move'?'crop-move':'crop-resize', anchor, start: pt, orig: JSON.parse(JSON.stringify(sel.crop)) }; ev.preventDefault(); ev.stopPropagation(); return; }
+  // click inside selection to move
+  const r = getClipRectOnCanvas(sel); if (r && pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h){ interaction = { from:'canvas', mode: 'move', anchor: 'move', start: pt, orig: JSON.parse(JSON.stringify(sel.transform)) }; ev.preventDefault(); ev.stopPropagation(); }
+}
+
+function onCanvasPointerMove(ev){
+  try{
+    if (!interaction || interaction.from !== 'canvas') return;
+    const sel = getSelectedClip(); if (!sel) { interaction=null; return; }
+    const pt = canvasPt(ev); const dx = pt.x - interaction.start.x; const dy = pt.y - interaction.start.y;
+    if (interaction.mode === 'move'){
+      sel.transform = sel.transform || { x: 0, y: 0, w: canvas.width, h: canvas.height, rotation: 0 };
+      sel.transform.x = interaction.orig.x + dx; sel.transform.y = interaction.orig.y + dy;
+    }
+    else if (interaction.mode === 'resize'){
+      sel.transform = sel.transform || { x: 0, y: 0, w: canvas.width, h: canvas.height, rotation: 0 };
+      const start = { x: interaction.orig.x - interaction.orig.w/2, y: interaction.orig.y - interaction.orig.h/2, w: interaction.orig.w, h: interaction.orig.h };
+      let nx = start.x, ny = start.y, nw = start.w, nh = start.h;
+      if (interaction.anchor==='nw'){ nx += dx; ny += dy; nw -= dx; nh -= dy; }
+      if (interaction.anchor==='ne'){ ny += dy; nw += dx; nh -= dy; }
+      if (interaction.anchor==='sw'){ nx += dx; nw -= dx; nh += dy; }
+      if (interaction.anchor==='se'){ nw += dx; nh += dy; }
+      nw = Math.max(40, nw); nh = Math.max(40, nh); sel.transform.x = nx + nw/2; sel.transform.y = ny + nh/2; sel.transform.w = nw; sel.transform.h = nh;
+    }
+    else if (interaction.mode === 'crop-move' || interaction.mode === 'crop-resize'){
+      sel.crop = sel.crop || { x: 0, y: 0, w: 10, h: 10 };
+      const start = interaction.orig; let cx = start.x, cy = start.y, cw = start.w, ch = start.h; if (interaction.mode==='crop-move'){ const d = canvasToImageDelta(sel, dx, dy); cx += d.dx; cy += d.dy; } else {
+        const d = canvasToImageDelta(sel, dx, dy);
+        if (interaction.anchor==='nw'){ cx += d.dx; cy += d.dy; cw -= d.dx; ch -= d.dy; }
+        if (interaction.anchor==='ne'){ cy += d.dy; cw += d.dx; ch -= d.dy; }
+        if (interaction.anchor==='sw'){ cx += d.dx; cw -= d.dx; ch += d.dy; }
+        if (interaction.anchor==='se'){ cw += d.dx; ch += d.dy; }
+        cw = Math.max(10, cw); ch = Math.max(10, ch);
+      }
+      // clamp to image bounds
+      const img = sel._img; const w = (img && img.naturalWidth) || 1, h = (img && img.naturalHeight) || 1; cx = Math.max(0, Math.min(cx, w-1)); cy = Math.max(0, Math.min(cy, h-1)); if (cx+cw> w) cw = w - cx; if (cy+ch> h) ch = h - cy; sel.crop = { x: cx, y: cy, w: cw, h: ch };
+    }
+    drawFrame(playhead);
+  }catch(e){
+    // Avoid breaking other interactions (like timeline drags) if an unexpected event bubbles here
+    console.warn('[canvas] pointer move ignored due to error:', e);
+    try { interaction = null; } catch(_e){}
+  }
+}
+
+function onCanvasPointerUp(){ if (interaction && interaction.from === 'canvas'){ interaction = null; scheduleAutosave(); } }
+
+// ------------------ Audio scheduling during canvas playback (HTMLAudio only) ------------------
+function findCurrentOrNextAudioClip(auds, t){
+  // Prefer the clip active at time t; otherwise the next one after t
+  let current = null;
+  let next = null;
+  for (const c of auds){
+    const st = Number(c.startTime||0);
+    const dur = (c.duration!=null)? Number(c.duration) : null;
+    if (dur != null && t >= st && t < st + dur){ current = c; break; }
+    if (st >= t){ if (!next || st < Number(next.startTime||0)) next = c; }
+  }
+  return current || next;
+}
+
+function scheduleAudioForPlayback(){
+  clearAudioPlayback();
+  const all = flattenLayersToTimeline();
+  const auds = all.filter(c=> c.type==='audio' && c.src).sort((a,b)=> (a.startTime||0) - (b.startTime||0));
+  if (auds.length === 0) return;
+  const clip = findCurrentOrNextAudioClip(auds, playhead);
+  if (!clip) return;
+  const playable = getPlayableSrc(clip.src);
+  if (!playable) return;
+  // choose element
+  let audio;
+  if (preloadedAudioEls[playable]){
+    audio = preloadedAudioEls[playable];
+  } else {
+    audio = new Audio(playable);
+    try{ audio.crossOrigin = 'anonymous'; }catch(e){}
+    audio.preload = 'auto';
+    preloadedAudioEls[playable] = audio;
+  }
+  activeAudio = audio;
+  // Reset handlers to avoid stacking
+  audio.onended = null; audio.onerror = null; audio.onstalled = null; audio.onwaiting = null; audio.onloadedmetadata = null;
+  // Attach basic logs for diagnostics
+  audio.onerror = ()=>{ const err = audio.error ? audio.error.code : 'unknown'; DBG('HTMLAudio error', { src: playable, code: err, readyState: audio.readyState }); };
+  audio.onstalled = ()=>{ DBG('HTMLAudio stalled', { src: playable }); };
+  audio.onwaiting = ()=>{ DBG('HTMLAudio waiting', { src: playable }); };
+  // Chain to the next clip when this one ends
+  audio.onended = ()=>{
+    const curEnd = (clip.startTime||0) + (clip.duration!=null? Number(clip.duration):0);
+    const nextClip = findCurrentOrNextAudioClip(auds, curEnd + 0.001);
+    if (!isPlaying || !nextClip) return;
+    playhead = Math.max(playhead, curEnd);
+    // Schedule next immediately
+    window.activeAudioTimeout = setTimeout(()=>{ scheduleAudioForPlayback(); }, 0);
+  };
+  // Seek to offset within the clip
+  if (playhead < (clip.startTime||0)){
+    playhead = (clip.startTime||0);
+    try{ drawFrame(playhead); }catch(e){}
+  }
+  const offset = Math.max(0, playhead - (clip.startTime||0));
+  const seekAndPlay = ()=>{
+    try{
+      if (offset>0 && isFinite(audio.duration)){
+        audio.currentTime = Math.min(audio.duration-0.05, Math.max(0, offset));
+      }
+    }catch(e){}
+    audio.play().then(()=>{ DBG('HTMLAudio play started', { src: playable, at: playhead.toFixed(2) }); }).catch(err=>{ DBG('HTMLAudio play error', err); });
+  };
+  if (audio.readyState >= 1){ seekAndPlay(); } else { audio.onloadedmetadata = seekAndPlay; try{ audio.load(); }catch(e){} }
+  // Ensure playback element exists in DOM to align with some browsers (not strictly required)
+}
+
+function clearAudioPlayback(){
+  try{
+    // Stop any pending schedule
+    if (activeAudioTimeout){ clearTimeout(activeAudioTimeout); activeAudioTimeout = null; }
+    // Stop active audio element
+    if (activeAudio){
+      try{ activeAudio.pause(); }catch(e){}
+      try{ if (isFinite(activeAudio.duration)) activeAudio.currentTime = 0; }catch(e){}
+      activeAudio = null;
+    }
+    // Abort any WebAudio fetches (legacy)
+    Object.values(audioFetchControllers).forEach(ctrl=>{ try{ ctrl.abort(); }catch(e){} });
+    audioFetchControllers = {};
+  }catch(e){}
+  previewControllers = [];
+}
+
+// Preload all images used in the timeline to prevent loading during playback
+function preloadImageAssets(){
+  try {
+    const all = flattenLayersToTimeline();
+    const imageClips = all.filter(c => c.type === 'image' && c.src);
+    
+    DBG('Preloading images:', imageClips.length);
+    
+    imageClips.forEach(clip => {
+      if (!clip._img && !clip._imgLoading) {
+        clip._imgLoading = true;
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => {
+          clip._imgLoading = false;
+          clip._imgLoaded = true;
+          
+          // Also set the cache on the original clip in layers to ensure persistence
+          const originalClip = findOriginalClip(clip);
+          if (originalClip) {
+            originalClip._img = im;
+            originalClip._imgLoading = false;
+            originalClip._imgLoaded = true;
+          }
+          
+          DBG('Preloaded image:', clip.src);
+        };
+        im.onerror = () => {
+          clip._imgLoading = false;
+          clip._imgError = true;
+          
+          // Also set error on original clip
+          const originalClip = findOriginalClip(clip);
+          if (originalClip) {
+            originalClip._imgLoading = false;
+            originalClip._imgError = true;
+          }
+          
+          DBG('Failed to preload image:', clip.src);
+        };
+        im.src = normalizeSrc(clip.src);
+        clip._img = im;
+        
+        // Also set on original clip immediately
+        const originalClip = findOriginalClip(clip);
+        if (originalClip) {
+          originalClip._img = im;
+          originalClip._imgLoading = true;
+        }
+      }
+    });
+  } catch(e) {
+    DBG('Error preloading images:', e);
+  }
+}
+
+// Helper function to find the original clip in layers based on flattened clip metadata
+function findOriginalClip(flattenedClip) {
+  try {
+    if (typeof flattenedClip._layerIndex === 'number' && typeof flattenedClip._clipIndex === 'number') {
+      return layers[flattenedClip._layerIndex]?.clips[flattenedClip._clipIndex];
+    }
+  } catch(e) {
+    DBG('Error finding original clip:', e);
+  }
+  return null;
+}
+
+// Preload audio elements by src and keep them around for playback
+function preloadAudioAssets(){
+  if (audioPreloadInProgress) {
+    DBG('Audio preload already in progress, skipping duplicate call');
+    return;
+  }
+  
+  audioPreloadInProgress = true;
+  DBG('Starting audio preload (locked)');
+  
+  // Clean up any stale blob URLs from previous sessions
+  try {
+    Object.values(audioObjectUrlMap).forEach(({ url }) => {
+      try { URL.revokeObjectURL(url); } catch(e) {}
+    });
+    Object.keys(audioObjectUrlMap).forEach(key => delete audioObjectUrlMap[key]);
+    Object.keys(preloadedAudioEls).forEach(key => {
+      if (key.startsWith('blob:')) delete preloadedAudioEls[key];
+    });
+    
+    // Also clean up any stale blob URL references in clip data
+    try {
+      layers.forEach(layer => {
+        layer.clips.forEach(clip => {
+          if (clip.type === 'audio' && clip.src && typeof clip.src === 'string' && clip.src.startsWith('blob:')) {
+            // Reset to original source if we have it in meta
+            if (clip.meta && clip.meta.originalSrc) {
+              clip.src = clip.meta.originalSrc;
+              DBG('Reset clip from stale blob URL to original:', clip.meta.originalSrc);
+            }
+          }
+        });
+      });
+    } catch(e) {
+      DBG('Error cleaning clip blob references:', e);
+    }
+    
+    DBG('Cleaned up stale blob URLs and audio elements');
+  } catch(e) {
+    DBG('Error during blob cleanup:', e);
+  }
+  
+  try{
+    const all = flattenLayersToTimeline();
+    const clipAuds = all.filter(c=> c.type==='audio' && c.src).map(c=> c.src);
+    const assetAuds = (audios||[]).map(a=> a.src || a.meta).filter(Boolean);
+    const combined = [...clipAuds, ...assetAuds];
+    const seen = new Set();
+    const toProcess = [];
+    combined.forEach(entry=>{
+      const src = getPlayableSrc(entry);
+      if (!src || seen.has(src)) return; seen.add(src);
+      toProcess.push({ clipRef: entry, src });
+    });
+
+    const isBlobLike = (s)=> typeof s === 'string' && (s.startsWith('blob:') || s.startsWith('data:'));
+    const isHttpLike = (s)=> typeof s === 'string' && (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('/'));
+    const guessMime = (s)=> s && s.toLowerCase().includes('.mp3') ? 'audio/mpeg' : 'audio/wav';
+    const fileNameFromPath = (s)=>{ try{ const u = new URL(s, window.location.origin); return (u.pathname.split('/').pop()) || 'audio.wav'; }catch(_e){ const parts = String(s).split('/'); return parts[parts.length-1] || 'audio.wav'; } };
+
+    toProcess.forEach(({clipRef, src})=>{
+      if (preloadedAudioEls[src]) return; // already prepped
+      if (isBlobLike(src)){
+        // Directly create audio element
+        const a = new Audio();
+        try{ a.crossOrigin = 'anonymous'; }catch(e){}
+        a.preload = 'auto'; a.src = src;
+        
+        // Add timeout for audio loading to prevent hanging
+        const loadTimeout = setTimeout(() => {
+          DBG('audio load timeout', { src });
+          try { a.src = ''; } catch(e) {}
+        }, 5000);
+        
+        a.addEventListener('loadedmetadata', ()=>{ 
+          clearTimeout(loadTimeout);
+          DBG('audio preloaded metadata', { src, duration: a.duration }); 
+        }, { once: true });
+        
+        a.addEventListener('canplaythrough', ()=>{ 
+          clearTimeout(loadTimeout);
+          DBG('audio canplaythrough', { src }); 
+          if (window.__audioCompletionCallback) window.__audioCompletionCallback(src);
+        }, { once: true });
+        
+        a.addEventListener('error', ()=>{ 
+          clearTimeout(loadTimeout);
+          DBG('audio preload error', { src, code: a.error && a.error.code }); 
+          if (window.__audioCompletionCallback) window.__audioCompletionCallback(src);
+        });
+        
+        preloadedAudioEls[src] = a; try{ a.load(); }catch(e){ clearTimeout(loadTimeout); }
+        try{ const pool = document.getElementById('hidden-audio-pool'); if (pool) pool.appendChild(a); }catch(e){}
+        return;
+      }
+      if (isHttpLike(src)){
+        // Fetch once, create object URL, update clip meta so export can upload the blob
+        DBG('Starting HTTP fetch for audio:', src);
+        (async()=>{
+          try{
+            if (!audioObjectUrlMap[src]){
+              DBG('Fetching audio from:', src);
+              // Add timeout to fetch to prevent hanging
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => {
+                DBG('Audio fetch timeout for:', src);
+                controller.abort();
+              }, 10000); // 10 second timeout
+              
+              const resp = await fetch(src, { signal: controller.signal });
+              clearTimeout(timeoutId);
+              DBG('Audio fetch response received:', src, resp.status);
+              
+              if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+              }
+              
+              const blob = await resp.blob();
+              DBG('Audio blob created:', src, blob.size, 'bytes');
+              const objUrl = URL.createObjectURL(blob);
+              audioObjectUrlMap[src] = { url: objUrl, blob };
+              DBG('Audio object URL created:', src, objUrl);
+            }
+            const { url: objUrl, blob } = audioObjectUrlMap[src];
+            // Attach to preloader element (key both original and blob URL for lookup)
+            const a = new Audio();
+            DBG('Creating audio element for:', objUrl);
+            try{ a.crossOrigin = 'anonymous'; }catch(e){}
+            a.preload = 'auto'; a.src = objUrl;
+            
+            // Add timeout for audio loading to prevent hanging
+            const loadTimeout = setTimeout(() => {
+              DBG('audio load timeout', { src: objUrl });
+              try { a.src = ''; } catch(e) {}
+            }, 5000);
+            
+            a.addEventListener('loadedmetadata', ()=>{ 
+              clearTimeout(loadTimeout);
+              DBG('audio preloaded metadata', { src: objUrl, duration: a.duration }); 
+            }, { once: true });
+            
+            a.addEventListener('canplaythrough', ()=>{ 
+              clearTimeout(loadTimeout);
+              DBG('audio canplaythrough', { src: objUrl }); 
+              if (window.__audioCompletionCallback) window.__audioCompletionCallback(src);
+            }, { once: true });
+            
+            a.addEventListener('error', ()=>{ 
+              clearTimeout(loadTimeout);
+              DBG('audio preload error', { src: objUrl, code: a.error && a.error.code }); 
+              if (window.__audioCompletionCallback) window.__audioCompletionCallback(src);
+            });
+            
+            preloadedAudioEls[src] = a; preloadedAudioEls[objUrl] = a;
+            DBG('Starting audio load for:', objUrl);
+            try{ a.load(); }catch(e){ 
+              clearTimeout(loadTimeout); 
+              DBG('Audio load() failed:', e);
+            }
+            try{ const pool = document.getElementById('hidden-audio-pool'); if (pool) pool.appendChild(a); }catch(e){}
+            // Update original layer clip to use blob URL for instant local playback and store blob in meta
+            const applyToClip = (cl)=>{
+              if (!cl || cl.type!=='audio') return;
+              const norm = getPlayableSrc(cl.src);
+              if (norm === src){
+                cl.meta = Object.assign({}, cl.meta||{}, {
+                  audioBlob: blob,
+                  filename: cl.meta?.filename || fileNameFromPath(src),
+                  mime: cl.meta?.mime || guessMime(src),
+                  originalSrc: src
+                });
+                cl.src = objUrl;
+              }
+            };
+            try{
+              layers.forEach(l=> l.clips.forEach(applyToClip));
+              timeline = flattenLayersToTimeline();
+            }catch(_e){}
+          }catch(err){ 
+            DBG('preload fetch error', { src, err }); 
+          } finally {
+            DBG('Audio preload attempt completed for:', src);
+          }
+        })();
+      }
+    });
+    if (toProcess.length){ 
+      DBG('preload queued', { count: toProcess.length }); 
+      
+      // Track completion of all audio operations
+      let completedAudio = 0;
+      const totalAudio = toProcess.length;
+      const completedSources = new Set(); // Track which sources have completed
+      
+      const checkAllComplete = (src) => {
+        if (completedSources.has(src)) return; // Prevent double counting
+        completedSources.add(src);
+        completedAudio++;
+        DBG(`Audio completed: ${completedAudio}/${totalAudio} (${src})`);
+        if (completedAudio >= totalAudio) {
+          DBG('All audio preloading completed!');
+          audioPreloadInProgress = false;
+          
+          // Only stop operations if we're still loading the page
+          if (document.readyState !== 'complete') {
+            DBG('Page still loading - stopping operations to help completion');
+            stopRaf(); // Stop animation if running
+            clearAudioPlayback(); // Stop audio if playing
+          } else {
+            DBG('Page already loaded - keeping animation system active for playback');
+          }
+          
+          // Force page completion immediately
+          setTimeout(() => {
+            DBG('Checking document readyState after audio completion:', document.readyState);
+            if (document.readyState !== 'complete') {
+              DBG('Signaling page completion without re-initialization');
+              
+              // Method 1: Stop the monitoring interval
+              if (window.pageMonitorInterval) {
+                clearInterval(window.pageMonitorInterval);
+                DBG('Stopped page monitor interval');
+              }
+              
+              // Method 2: Create a completion flag to prevent future operations
+              window.videoEditorLoaded = true;
+              
+              // Stop any ongoing operations that might keep the page loading
+              // Only do this if we're still in loading state
+              try {
+                stopRaf(); // Stop animation frame loop
+                // Don't clear audio playback - we want to keep preloaded audio
+                DBG('Stopped animation operations during loading (kept audio preloaded)');
+              } catch (e) {
+                DBG('Error stopping operations:', e);
+              }
+              
+              // Clear any pending timeouts
+              if (window.resizeTimer) {
+                clearTimeout(window.resizeTimer);
+                window.resizeTimer = null;
+                DBG('Cleared resize timer');
+              }
+              if (window.activeAudioTimeout) {
+                clearTimeout(window.activeAudioTimeout);
+                window.activeAudioTimeout = null;
+                DBG('Cleared audio timeout');
+              }
+              
+              // Close any potential EventSource connections
+              try {
+                window.__renderJobId = null; // This should prevent new EventSource connections
+                DBG('Cleared render job ID to prevent EventSource connections');
+              } catch (e) {
+                DBG('Error clearing EventSource:', e);
+              }
+              
+              // Clear any pending timeouts
+              if (window.resizeTimer) {
+                clearTimeout(window.resizeTimer);
+                window.resizeTimer = null;
+              }
+              if (window.activeAudioTimeout) {
+                clearTimeout(window.activeAudioTimeout);
+                window.activeAudioTimeout = null;
+              }
+              
+              // Method 3: Use a more subtle approach - just signal completion
+              try {
+                // Set readyState to complete
+                Object.defineProperty(document, 'readyState', {
+                  value: 'complete',
+                  writable: false,
+                  configurable: true
+                });
+                
+                // Dispatch a custom completion event instead of browser events
+                window.dispatchEvent(new CustomEvent('videoEditorComplete', {
+                  detail: { message: 'Video editor initialization complete' }
+                }));
+                
+                DBG('Page completion signaled successfully');
+              } catch (e) {
+                DBG('Error during completion signaling:', e);
+              }
+            } else {
+              DBG('Page already complete, no action needed');
+            }
+          }, 100);
+        }
+      };
+      
+      // Override the completion tracking in blob and HTTP handlers
+      window.__audioCompletionCallback = checkAllComplete;
+      
+    } else {
+      DBG('No audio assets to preload');
+      audioPreloadInProgress = false;
+    }
+    DBG('Audio preload function completed');
+  }catch(e){ 
+    DBG('preload error', e); 
+    audioPreloadInProgress = false;
+  }
+}
+
 function renderRuler(){
   const ruler = document.getElementById('timelineRuler');
   if (!ruler) return;
@@ -329,7 +1237,12 @@ function onDropToTimeline(e) {
   const payload = JSON.parse(e.dataTransfer.getData('text/plain'));
   const {id, type} = payload;
   // Drop into active layer at end
-  const layer = layers.find(l => l.id === activeLayerId) || layers[0];
+  let layer = layers.find(l => l.id === activeLayerId) || layers[0];
+  if (isBackgroundLayer(layer)){
+    // pick first non-background or create one
+    layer = layers.find(l=> !isBackgroundLayer(l));
+    if (!layer){ addLayer(); layer = layers[layers.length-1]; }
+  }
   if (!layer) return;
   // compute drop position seconds
   const dropSec = computeDropSecondsFromEvent(e);
@@ -371,15 +1284,20 @@ function renderTimeline() {
     header.appendChild(chip);
     const addBtn = document.createElement('button'); addBtn.className = 'btn secondary'; addBtn.textContent = 'Select';
     addBtn.addEventListener('click', () => { activeLayerId = layer.id; renderTimeline(); renderLayerControls(); });
-    const removeBtn = document.createElement('button'); removeBtn.className = 'btn secondary'; removeBtn.textContent = 'Remove Layer';
-    removeBtn.addEventListener('click', ()=>{ removeLayer(layer.id); });
-    header.appendChild(addBtn); header.appendChild(removeBtn);
+    // Prevent removing the background layer
+    if (!isBackgroundLayer(layer)) {
+      const removeBtn = document.createElement('button'); removeBtn.className = 'btn secondary'; removeBtn.textContent = 'Remove Layer';
+      removeBtn.addEventListener('click', ()=>{ removeLayer(layer.id); });
+      header.appendChild(addBtn); header.appendChild(removeBtn);
+    } else {
+      header.appendChild(addBtn);
+    }
     const container = document.createElement('div'); container.style.display='flex'; container.style.flexDirection='column'; container.appendChild(header);
 
   const clipsContainer = document.createElement('div'); clipsContainer.className = 'layer-clips'; clipsContainer.style.position='relative'; clipsContainer.style.minHeight='84px'; clipsContainer.dataset.layerId = layer.id;
     // allow dropping directly onto a layer
     clipsContainer.ondragover = (ev)=> ev.preventDefault();
-    clipsContainer.ondrop = (ev)=> { ev.stopPropagation(); onDropToLayer(ev, layer.id); };
+    clipsContainer.ondrop = (ev)=> { ev.stopPropagation(); if (!isBackgroundLayer(layer)) onDropToLayer(ev, layer.id); };
 
     layer.clips.forEach((clip, idx) => {
       const el = document.createElement('div');
@@ -387,7 +1305,7 @@ function renderTimeline() {
       el.dataset.idx = idx; el.dataset.layerId = layer.id; el.draggable = false;
       // render content and include a resize handle at the right edge
       if (clip.type === 'image') {
-        el.innerHTML = `<img src="${clip.src}" alt="clip-${idx}"/><div class="info"><div style=\"font-weight:700\">Image</div><div class=\"small\">${clip.id || ''}</div></div><div class="duration-badge">${(clip.duration||2).toFixed(1)}s</div><div class="start-badge">${formatTime(clip.startTime||0)}</div><div class="remove" title="Remove">✕</div><div class="clip-handle" title="Resize"></div>`;
+        el.innerHTML = `<img src="${clip.src}" alt="clip-${idx}" loading="lazy" decoding="async"/><div class="info"><div style=\"font-weight:700\">Image</div><div class=\"small\">${clip.id || ''}</div></div><div class="duration-badge">${(clip.duration||2).toFixed(1)}s</div><div class="start-badge">${formatTime(clip.startTime||0)}</div><div class="remove" title="Remove">✕</div><div class="clip-handle" title="Resize"></div>`;
       } else {
         el.innerHTML = `<div style=\"width:88px;height:68px;background:#071226;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;color:#9fc0ff\">AUD</div><div class=\"info\"><div style=\"font-weight:700\">Audio</div><div class=\"small\">${clip.id || ''}</div></div><div class=\"duration-badge\">${clip.duration? (clip.duration.toFixed(1)+"s") : '—'}</div><div class=\"start-badge\">${formatTime(clip.startTime||0)}</div><div class=\"remove\" title=\"Remove\">✕</div><div class=\"clip-handle\" title=\"Resize\"></div>`;
       }
@@ -396,19 +1314,26 @@ function renderTimeline() {
   // Use viewPxPerSec for rendering so the DOM widths remain reasonable when clamped
   el.style.left = (st * viewPxPerSec) + 'px'; el.style.width = Math.max(88, dur * viewPxPerSec) + 'px';
       // enable horizontal dragging to reposition startTime
-      el.addEventListener('mousedown', onClipDragStart);
-      el.addEventListener('touchstart', onClipDragStart, {passive:false});
+      if (!isBackgroundLayer(layer)){
+        el.addEventListener('mousedown', onClipDragStart);
+        el.addEventListener('touchstart', onClipDragStart, {passive:false});
+      }
       // attach resize handle listeners
       const handle = el.querySelector('.clip-handle');
-      if (handle){ handle.addEventListener('mousedown', onClipResizeStart); handle.addEventListener('touchstart', onClipResizeStart, {passive:false}); }
+      if (handle && !isBackgroundLayer(layer)){ handle.addEventListener('mousedown', onClipResizeStart); handle.addEventListener('touchstart', onClipResizeStart, {passive:false}); }
       el.addEventListener('click', ()=> selectLayerClip(layer.id, idx));
       // Prevent remove control from triggering clip drag: intercept mousedown/touchstart
       const removeBtns = el.querySelectorAll('.remove');
       removeBtns.forEach(btn => {
-        btn.addEventListener('mousedown', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); removeClipFromLayer(layer.id, idx); });
-        btn.addEventListener('touchstart', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); removeClipFromLayer(layer.id, idx); }, {passive:false});
-        // keep click as fallback
-        btn.addEventListener('click', (ev) => { ev.stopPropagation(); removeClipFromLayer(layer.id, idx); });
+        if (!isBackgroundLayer(layer)){
+          btn.addEventListener('mousedown', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); removeClipFromLayer(layer.id, idx); });
+          btn.addEventListener('touchstart', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); removeClipFromLayer(layer.id, idx); }, {passive:false});
+          // keep click as fallback
+          btn.addEventListener('click', (ev) => { ev.stopPropagation(); removeClipFromLayer(layer.id, idx); });
+        } else {
+          // disable remove for background clip
+          btn.style.display = 'none';
+        }
       });
       clipsContainer.appendChild(el);
     });
@@ -417,6 +1342,9 @@ function renderTimeline() {
     layerRoot.appendChild(container);
     track.appendChild(layerRoot);
   });
+  // After rendering timeline, refresh preloaded assets
+  try{ preloadImageAssets(); }catch(e){}
+  try{ preloadAudioAssets(); }catch(e){}
 }
 
 // Drag-to-position implementation
@@ -561,10 +1489,22 @@ function onClipResizeEnd(ev){
 
 // ------------------ AUTOSAVE ------------------
 function scheduleAutosave(){
+  if (isExporting) return; // skip autosave while exporting
   autosavePending = true;
   const autosaveEl = document.getElementById('autosaveStatus'); if (autosaveEl) autosaveEl.textContent = 'Pending...';
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(()=>{ saveProject(false); }, 2000);
+  
+  // Mark initialization complete
+  DBG('Video editor initialization completed');
+  
+  // Check if page is still loading after our initialization
+  setTimeout(() => {
+    DBG('Post-init check - document.readyState:', document.readyState);
+    if (document.readyState !== 'complete') {
+      DBG('WARNING: Page still not in complete state after initialization');
+    }
+  }, 1000);
 }
 
 async function saveProject(force=false){
@@ -572,7 +1512,25 @@ async function saveProject(force=false){
   const autosaveEl = document.getElementById('autosaveStatus'); if (autosaveEl) autosaveEl.textContent = 'Saving...';
   try{
     const project = window.projectData || {};
-    const payload = { project_id: project.id, layers };
+    // Sanitize layers to avoid sending heavy blobs/base64 to the server on autosave
+    const sanitizedLayers = (layers || []).map(l => ({
+      id: l.id,
+      name: l.name,
+      clips: (l.clips || []).map(c => {
+        const out = Object.assign({}, c);
+        if (out.type === 'audio'){
+          // Normalize src to a simple, playable string if possible
+          const playable = getPlayableSrc(out.src || out.meta);
+          out.src = playable || '';
+          // Strip heavy fields from meta; keep only link-ish fields
+          out.meta = sanitizeAudioMeta(out.meta);
+        }
+        // Drop transient fields used only in UI
+        delete out._img; delete out._layerId; delete out._clipIndex; delete out._isBackground;
+        return out;
+      })
+    }));
+    const payload = { project_id: project.id, layers: sanitizedLayers };
     const resp = await fetch('/save_project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload)});
     if (!resp.ok) throw new Error('Save failed: ' + resp.status);
     autosavePending = false;
@@ -599,48 +1557,19 @@ async function fetchAudioBuffer(src){
   try{
     const ctx = await ensureAudioContext();
     if (!ctx) return null;
-    const resp = await fetch(src); const ab = await resp.arrayBuffer(); const decoded = await ctx.decodeAudioData(ab); audioBufferCache[src] = decoded; return decoded;
+    // Use AbortController so pause can cancel long downloads
+    const ctrl = new AbortController();
+    audioFetchControllers[src] = ctrl;
+    const resp = await fetch(src, { signal: ctrl.signal });
+    const ab = await resp.arrayBuffer();
+    // After completion, delete controller
+    delete audioFetchControllers[src];
+    const decoded = await ctx.decodeAudioData(ab);
+    audioBufferCache[src] = decoded; return decoded;
   }catch(e){ console.warn('AudioBuffer fetch/decoding failed for', src, e); return null; }
 }
 
-async function onPreviewTimeline(){
-  stopPreview();
-  const videoEl = document.getElementById('previewVideo');
-  const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = 720; const ctx = canvas.getContext('2d');
-  const stream = canvas.captureStream(30); videoEl.srcObject = stream; videoEl.play();
-  const allClips = flattenLayersToTimeline();
-  const total = Math.max(...allClips.map(c=> (c.startTime||0) + ((c.duration!=null)? Number(c.duration): (c.type==='image'?2:0))), 0);
-  previewControllers = [];
-  // Try WebAudio scheduling for audio clips
-  const actx = await ensureAudioContext();
-  const startAt = actx ? actx.currentTime + 0.1 : performance.now();
-  for (const clip of allClips){
-    const st = clip.startTime || 0; const dur = (clip.duration!=null)? Number(clip.duration) : (clip.type==='image'?2:0);
-    if (clip.type === 'audio'){
-      if (actx){
-        const buf = await fetchAudioBuffer(clip.src);
-        if (buf){
-          const srcNode = actx.createBufferSource(); srcNode.buffer = buf; srcNode.connect(actx.destination);
-          srcNode.start(startAt + st);
-          previewControllers.push({type:'webaudio', node: srcNode});
-        } else {
-          // fallback to HTMLAudio timed by setTimeout (only if playable)
-          const playable = getPlayableSrc(clip.src);
-          if (playable){ const audio = new Audio(playable); audio.preload='auto'; const to = setTimeout(()=>{ audio.play().catch(()=>{}); }, st*1000); previewControllers.push({type:'audio', audio, timeout: to}); } else { console.warn('Preview fallback: audio clip not playable, skipping', clip); }
-        }
-      } else {
-        const playable = getPlayableSrc(clip.src);
-        if (playable){ const audio = new Audio(playable); audio.preload='auto'; const to = setTimeout(()=>{ audio.play().catch(()=>{}); }, st*1000); previewControllers.push({type:'audio', audio, timeout: to}); } else { console.warn('Preview no-audio: skipping clip (no playable src)', clip); }
-      }
-    } else if (clip.type === 'image'){
-      // schedule draw
-      const to = setTimeout(async ()=>{ try{ await drawImageToCanvas(clip.src, ctx, canvas); }catch(e){} }, st*1000);
-      previewControllers.push({type:'image', timeout: to});
-    }
-  }
-  // finish
-  const finishTimeout = setTimeout(()=>{ stopPreview(); }, Math.max(1000, (total*1000)+200)); previewControllers.push({type:'finish', timeout: finishTimeout});
-}
+async function onPreviewTimeline(){ togglePlayback(); }
 
 
 function onDropToLayer(e, layerId){
@@ -768,9 +1697,11 @@ function selectLayerClip(layerId, idx){
   const layer = layers.find(l=>l.id===layerId);
   if (!layer) return;
   selectedClip = layer.clips[idx];
+  selectedLayerId = layerId; selectedIndex = idx;
   // reuse inspector UI but need to map update/remove to layer
   const inspector = document.getElementById('inspector');
   const type = selectedClip.type; const src = selectedClip.src || ''; const durationVal = selectedClip.duration || '';
+  const isBg = isBackgroundLayer(layer);
   inspector.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:8px">
       <div><strong>Type:</strong> ${type}</div>
@@ -782,7 +1713,7 @@ function selectLayerClip(layerId, idx){
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn" id="insUpdate">Update</button>
-        <button class="btn secondary" id="insRemove">Remove</button>
+        ${isBg ? '' : '<button class="btn secondary" id="insRemove">Remove</button>'}
         <button class="btn secondary" id="insPlay">Play Clip</button>
       </div>
     </div>
@@ -791,10 +1722,12 @@ function selectLayerClip(layerId, idx){
     const v = parseFloat(document.getElementById('clipDur').value || '2');
     selectedClip.duration = v; timeline = flattenLayersToTimeline(); renderTimeline(); recomputeLayerTimings(layers.find(ld=> ld.id === activeLayerId) || layers[0]); scheduleAutosave();
   });
-  document.getElementById('insRemove').addEventListener('click', ()=>{ const li = layer.clips.indexOf(selectedClip); if (li>=0) { layer.clips.splice(li,1); recomputeLayerTimings(layer); timeline=flattenLayersToTimeline(); renderTimeline(); scheduleAutosave(); } });
-  document.getElementById('insPlay').addEventListener('click', async ()=>{
-    if (type==='image'){ const videoEl = document.getElementById('previewVideo'); const canvas = document.createElement('canvas'); canvas.width=720; canvas.height=720; const ctx = canvas.getContext('2d'); await drawImageToCanvas(src, ctx, canvas); const stream = canvas.captureStream(30); videoEl.srcObject = stream; videoEl.play(); setTimeout(()=>{ try{ videoEl.pause(); videoEl.srcObject=null;}catch(e){} }, (selectedClip.duration||2)*1000); } else { const playable = getPlayableSrc(src); if (playable){ const a = new Audio(playable); a.play().catch(()=>{}); } else { console.warn('Inspector play: no playable src for clip', selectedClip); } }
-  });
+  if (!isBg){
+    const rm = document.getElementById('insRemove'); if (rm) rm.addEventListener('click', ()=>{ const li = layer.clips.indexOf(selectedClip); if (li>=0) { layer.clips.splice(li,1); recomputeLayerTimings(layer); timeline=flattenLayersToTimeline(); renderTimeline(); scheduleAutosave(); } });
+  }
+  const playBtn = document.getElementById('insPlay'); if (playBtn) playBtn.addEventListener('click', ()=>{ if (typeof drawFrame === 'function'){ playhead = selectedClip.startTime || 0; drawFrame(playhead); } });
+  // update overlays on selection
+  if (typeof renderOverlays === 'function'){ renderOverlays(); }
 }
 
 function removeClipFromLayer(layerId, idx){
@@ -804,8 +1737,26 @@ function removeClipFromLayer(layerId, idx){
 function flattenLayersToTimeline(){
   // simple flatten by concatenating layers in order (layer 0 first).
   // Include mapping metadata so flat timeline items can be traced back to their layer/clip index.
+  // IMPORTANT: Preserve image cache properties (_img, _imgLoading, etc.) when copying
   const out = [];
-  layers.forEach((l, li) => { l.clips.forEach((c, ci) => out.push(Object.assign({}, c, { _layerId: l.id, _clipIndex: ci }))); });
+  layers.forEach((l, li) => { 
+    l.clips.forEach((c, ci) => {
+      const flattened = Object.assign({}, c, { 
+        _layerId: l.id, 
+        _layerIndex: li, 
+        _clipIndex: ci, 
+        _isBackground: isBackgroundLayer(l) 
+      });
+      
+      // Preserve image cache properties to prevent reloading during playback
+      if (c._img) flattened._img = c._img;
+      if (c._imgLoading) flattened._imgLoading = c._imgLoading;
+      if (c._imgLoaded) flattened._imgLoaded = c._imgLoaded;
+      if (c._imgError) flattened._imgError = c._imgError;
+      
+      out.push(flattened);
+    });
+  });
   return out;
 }
 
@@ -825,9 +1776,10 @@ function renderLayerControls(){
   // remove existing layer-controls if any
   const existing = document.getElementById('layerControls'); if (existing) existing.remove();
   const ctr = document.createElement('div'); ctr.id='layerControls'; ctr.style.display='flex'; ctr.style.gap='8px';
+  const addBg = document.createElement('button'); addBg.className='btn secondary'; addBg.textContent='Add Background'; addBg.title = 'Add 1920x1080 background image'; addBg.addEventListener('click', ()=>{ ensureBackgroundLayer(true); renderTimeline(); renderLayerControls(); scheduleAutosave(); });
   const add = document.createElement('button'); add.className='btn'; add.textContent='Add Layer'; add.addEventListener('click', addLayer);
   const select = document.createElement('select'); select.style.padding='6px'; select.style.borderRadius='6px'; layers.forEach(l=>{ const o = document.createElement('option'); o.value=l.id; o.textContent=l.name; if (l.id===activeLayerId) o.selected=true; select.appendChild(o); }); select.addEventListener('change', (e)=>{ activeLayerId = e.target.value; renderTimeline(); });
-  ctr.appendChild(select); ctr.appendChild(add);
+  ctr.appendChild(select); ctr.appendChild(add); ctr.appendChild(addBg);
   header.appendChild(ctr);
 }
 
@@ -851,6 +1803,7 @@ function removeClip(idx) {
 
 function selectClip(idx) {
   selectedClip = timeline[idx];
+  selectedLayerId = selectedClip? selectedClip._layerId : null; selectedIndex = selectedClip? selectedClip._clipIndex : -1;
   const inspector = document.getElementById('inspector');
   // Build richer inspector UI
   const type = selectedClip.type;
@@ -875,21 +1828,7 @@ function selectClip(idx) {
 
   document.getElementById('insUpdate').addEventListener('click', () => updateClipDuration(idx));
   document.getElementById('insRemove').addEventListener('click', () => { removeClip(idx); });
-  document.getElementById('insPlay').addEventListener('click', async () => {
-    if (type === 'image') {
-      // show image for the clip duration in preview canvas
-      const videoEl = document.getElementById('previewVideo');
-      const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = 720; const ctx = canvas.getContext('2d');
-      await drawImageToCanvas(src, ctx, canvas);
-      const stream = canvas.captureStream(30);
-      videoEl.srcObject = stream;
-      videoEl.play();
-      setTimeout(()=>{ try{ videoEl.pause(); videoEl.srcObject = null;}catch(e){} }, (timeline[idx].duration||2)*1000);
-    } else {
-      const playable = getPlayableSrc(src);
-      if (playable){ const a = new Audio(playable); a.play().catch(()=>{}); } else { console.warn('selectClip play: no playable src', selectedClip); }
-    }
-  });
+  document.getElementById('insPlay').addEventListener('click', async () => { if (typeof drawFrame === 'function'){ playhead = timeline[idx].startTime || 0; drawFrame(playhead); } });
 }
 
 function updateClipDuration(idx) {
@@ -909,59 +1848,46 @@ function updateClipDuration(idx) {
   scheduleAutosave();
 }
 
-async function onPreviewTimeline() {
-  stopPreview();
-  const videoEl = document.getElementById('previewVideo');
-  const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = 720; const ctx = canvas.getContext('2d');
-  const stream = canvas.captureStream(30); videoEl.srcObject = stream; videoEl.play();
-  // schedule all clips by their startTime across layers
-  const allClips = flattenLayersToTimeline();
-  const total = Math.max(...allClips.map(c=> (c.startTime||0) + ((c.duration!=null)? Number(c.duration): (c.type==='image'?2:0))), 0);
-  const startTime = performance.now();
-  previewControllers = [];
-  // schedule images: draw the appropriate image for the current time (supports overlapping by last-written wins)
-  allClips.forEach((clip)=>{
-    const stMs = (clip.startTime || 0) * 1000;
-    const durMs = ((clip.duration!=null)? Number(clip.duration) : (clip.type==='image'?2:0)) * 1000;
-    if (clip.type === 'audio'){
-      // schedule audio playback at offset relative to now
-      const audio = new Audio(clip.src); audio.preload='auto';
-      const to = setTimeout(()=>{ audio.play().catch(()=>{}); }, stMs);
-      previewControllers.push({type:'audio', audio, timeout:to});
-    } else if (clip.type === 'image'){
-      // schedule draw start
-      const drawStart = setTimeout(async ()=>{ try{ await drawImageToCanvas(clip.src, ctx, canvas); }catch(e){} }, stMs);
-      // schedule clear after duration (or overwrite by next image)
-      const drawEnd = setTimeout(()=>{}, stMs + durMs);
-      previewControllers.push({type:'image', start:drawStart, end:drawEnd});
-    }
-  });
-  // ensure cleanup after total
-  const finishTimeout = setTimeout(()=>{ stopPreview(); }, Math.max(1000, (total*1000)+100));
-  previewControllers.push({type:'finish', timeout: finishTimeout});
-}
+// Old onPreviewTimeline (video element) removed; canvas engine is used instead
 
-function stopPreview(){
-  try{
-    previewControllers.forEach(c=>{
-      if (c.timeout) clearTimeout(c.timeout);
-      if (c.start) clearTimeout(c.start);
-      if (c.end) clearTimeout(c.end);
-      if (c.audio) try{ c.audio.pause(); c.audio.src = ''; }catch(e){}
-    });
-  }catch(e){}
-  previewControllers = [];
-  const videoEl = document.getElementById('previewVideo'); if (videoEl){ try{ videoEl.pause(); videoEl.srcObject = null; }catch(e){} }
-}
+function stopPreview(){ isPlaying = false; if (rafId){ cancelAnimationFrame(rafId); rafId = null; } }
 
-function drawImageToCanvas(src, ctx, canvas) {
+function drawImageToCanvas(src, ctx, canvas, skipClear=false) {
   return new Promise((res, rej) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(img,0,0,canvas.width,canvas.height); res(); };
+    img.onload = () => {
+      if (!skipClear) {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
+      // Fit image to canvas preserving aspect ratio (cover)
+      const { sx, sy, sw, sh, dx, dy, dw, dh } = computeCoverFit(img.width, img.height, canvas.width, canvas.height);
+      ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+      res();
+    };
     img.onerror = rej;
     img.src = src;
   });
+}
+
+function computeCoverFit(srcW, srcH, dstW, dstH){
+  const srcAR = srcW / srcH;
+  const dstAR = dstW / dstH;
+  let sw, sh, sx, sy;
+  if (srcAR > dstAR){
+    // source is wider: crop width
+    sh = srcH;
+    sw = sh * dstAR;
+    sx = (srcW - sw) / 2;
+    sy = 0;
+  } else {
+    // source is taller: crop height
+    sw = srcW;
+    sh = sw / dstAR;
+    sx = 0;
+    sy = (srcH - sh) / 2;
+  }
+  return { sx, sy, sw, sh, dx: 0, dy: 0, dw: dstW, dh: dstH };
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
@@ -980,7 +1906,11 @@ function extractAudioDuration(clip){
         else if (m.audio) src = m.audio;
         else if (m.src) src = m.src;
         else if (m.filename) src = '/uploads/' + m.filename;
-        else if (m.base64 && typeof m.base64 === 'string') src = 'data:audio/mpeg;base64,' + m.base64.replace(/\s+/g,'');
+        else if (m.base64 && typeof m.base64 === 'string') {
+          // default to WAV unless meta suggests otherwise
+          const mimeGuess = (m.mime || m.mimetype || '').toLowerCase().includes('mp3') ? 'audio/mpeg' : 'audio/wav';
+          src = `data:${mimeGuess};base64,` + m.base64.replace(/\s+/g,'');
+        }
         else if (m.audioBlob && (m.audioBlob instanceof Blob || m.audioBlob instanceof File)){
           try{ src = URL.createObjectURL(m.audioBlob); }catch(e){ src = null; }
         }
@@ -1004,7 +1934,8 @@ function extractAudioDuration(clip){
                 src = parsed.audioBlob.url || parsed.audioBlob.name || parsed.audioBlob.filename || parsed.audioBlob.file || parsed.audioBlob.data || parsed.audioBlob.base64 || src;
                 // If we got raw base64 without data: prefix a default audio mime so Audio can load it
                 if (typeof src === 'string' && !src.startsWith('data:') && src.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(src)){
-                  src = 'data:audio/mpeg;base64,' + src.replace(/\s+/g, '');
+                  // default to WAV
+                  src = 'data:audio/wav;base64,' + src.replace(/\s+/g, '');
                 }
               } else if (parsed.audio) {
                 src = parsed.audio;
@@ -1086,6 +2017,12 @@ function updateTotalDuration(){
     const end = l.clips.reduce((acc,c)=> Math.max(acc, (c.startTime || 0) + ((c.duration!=null)? Number(c.duration): (c.type==='image'?2:0)) ), 0);
     total = Math.max(total, end);
   });
+  // If background exists, ensure its first clip covers total duration
+  const bg = layers.find(l=> isBackgroundLayer(l));
+  if (bg && bg.clips && bg.clips[0]){
+    bg.clips[0].duration = Math.max(bg.clips[0].duration || 0, total || 10);
+    bg.clips[0].startTime = 0;
+  }
   const header = document.querySelector('.timeline-header'); if (!header) return;
   let el = document.getElementById('totalDuration');
   if (!el){ el = document.createElement('div'); el.id='totalDuration'; el.style.marginLeft='12px'; el.style.fontWeight='600'; header.appendChild(el); }
@@ -1126,6 +2063,8 @@ function getPlayableSrc(raw){
   }
   if (!s || typeof s !== 'string') return null;
   const t = s.trim();
+  // If we've pre-fetched this to a Blob URL, prefer that immediately
+  try{ if (audioObjectUrlMap[t]) return audioObjectUrlMap[t].url; }catch(_e){}
   // If it looks like JSON, try to parse and extract fields
   if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))){
     try{
@@ -1144,8 +2083,20 @@ function getPlayableSrc(raw){
   // data URI / blob / http / absolute path
   if (s.startsWith('data:audio') || s.startsWith('blob:') || s.startsWith('http') || s.startsWith('/')) return s;
   // Raw base64 detection (length heuristic + base64 char set)
-  if (s.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(s)) return 'data:audio/mpeg;base64,' + s.replace(/\s+/g, '');
+  if (s.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(s)) return 'data:audio/wav;base64,' + s.replace(/\s+/g, '');
   return null;
+}
+
+function sanitizeAudioMeta(meta){
+  if (!meta || typeof meta !== 'object') return null;
+  // Preserve only lightweight fields; drop audioBlob/base64/data to keep autosave fast
+  const out = {};
+  if (typeof meta.url === 'string') out.url = meta.url;
+  if (typeof meta.filename === 'string') out.filename = meta.filename;
+  if (typeof meta.src === 'string') out.src = meta.src;
+  if (typeof meta.audio === 'string') out.audio = meta.audio;
+  // Do not include meta.base64, meta.audioBlob, meta.data, etc.
+  return Object.keys(out).length ? out : null;
 }
 
 async function onExport(){
@@ -1154,36 +2105,52 @@ async function onExport(){
   if (exportBtn) exportBtn.disabled = true;
   const oldText = exportBtn ? exportBtn.textContent : 'Rendering...';
   if (exportBtn) exportBtn.textContent = 'Rendering...';
+  isExporting = true;
+  const t0 = performance.now();
 
   try {
     const project = window.projectData || {};
     const sel = document.getElementById('resolutionSelect') || document.getElementById('resolutionSelectFooter');
     const res = sel ? parseInt(sel.value, 10) : 480;
+    const jobId = `render-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+    try { window.__renderJobId = jobId; } catch(e){}
 
     // Build export timeline with normalized src
     const exportTimeline = flattenLayersToTimeline().map((c)=>{
       const copy = Object.assign({}, c);
       copy.src = normalizeSrc(copy.src || copy.audio || copy.url || copy.file || copy);
       if (copy.duration != null) copy.duration = Number(copy.duration);
+      // pass layer z-order and background info to backend
+      copy._layerIndex = c._layerIndex;
+      copy._isBackground = !!c._isBackground;
       return copy;
     });
 
-    // Find clips that need uploading (audio with no usable src but have meta with base64/blob)
+    // Find clips that need uploading (audio with data/blobs or no usable URL src)
     const toUpload = [];
     for (let i=0;i<exportTimeline.length;i++){
       const c = exportTimeline[i];
-      if ((!c.src || c.src==='') && c.type === 'audio' && c.meta){
-        let fileToUpload = null;
-        if (c.meta.audioBlob && (c.meta.audioBlob instanceof File || c.meta.audioBlob instanceof Blob)) fileToUpload = c.meta.audioBlob;
-        if (!fileToUpload && c.meta.base64){
-          try{
-            const bin = atob(c.meta.base64.replace(/\s+/g,''));
-            const len = bin.length; const arr = new Uint8Array(len);
-            for (let j=0;j<len;j++) arr[j]=bin.charCodeAt(j);
-            fileToUpload = new File([arr], `audio-${Date.now()}.mp3`, { type: 'audio/mpeg' });
-          }catch(e){ fileToUpload = null; }
+      if (c.type === 'audio'){
+        const srcStr = typeof c.src === 'string' ? c.src : '';
+        const needsUpload = !srcStr || srcStr.startsWith('data:') || srcStr.startsWith('blob:');
+        if (needsUpload && c.meta){
+          let fileToUpload = null;
+          if (c.meta.audioBlob && (c.meta.audioBlob instanceof File || c.meta.audioBlob instanceof Blob)) fileToUpload = c.meta.audioBlob;
+          if (!fileToUpload && c.meta.base64){
+            try{
+              const bin = atob(c.meta.base64.replace(/\s+/g,''));
+              const len = bin.length; const arr = new Uint8Array(len);
+              for (let j=0;j<len;j++) arr[j]=bin.charCodeAt(j);
+              // Decide mime and extension from meta
+              const lower = String(c.meta.mime || c.meta.mimetype || c.meta.filename || '').toLowerCase();
+              const isMp3 = lower.includes('.mp3') || lower.includes('mpeg');
+              const mime = isMp3 ? 'audio/mpeg' : 'audio/wav';
+              const ext = isMp3 ? 'mp3' : 'wav';
+              fileToUpload = new File([arr], `audio-${Date.now()}.${ext}`, { type: mime });
+            }catch(e){ fileToUpload = null; }
+          }
+          if (fileToUpload) toUpload.push({ idx: i, file: fileToUpload });
         }
-        if (fileToUpload) toUpload.push({ idx: i, file: fileToUpload });
       }
     }
 
@@ -1206,7 +2173,7 @@ async function onExport(){
     }
 
     // Now POST the final payload to render endpoint
-    const payload = { project_id: project.id, timeline: exportTimeline, resolution: res };
+  const payload = { project_id: project.id, timeline: exportTimeline, resolution: res, downloadMode: 'link', return_url: true, job_id: jobId };
     let resp;
     try {
       resp = await fetch('/api/video/render', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
@@ -1216,7 +2183,7 @@ async function onExport(){
       return;
     }
 
-    if (!resp.ok) {
+  if (!resp.ok) {
       let text = '';
       try { text = await resp.text(); } catch (e) { text = '<unreadable response>'; }
       console.error('Render failed', resp.status, text);
@@ -1224,19 +2191,124 @@ async function onExport(){
       return;
     }
 
-    try {
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `project-${project.id}-export.mp4`; a.click();
-    } catch (e) {
-      console.error('Failed to read response blob', e);
-      alert('Download failed: ' + e.message);
+    // Try to read JSON (link mode) first; fall back to blob download
+    let didDownload = false;
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')){
+      try {
+        const j = await resp.json();
+        if (j && j.url){
+          // Immediately restore button state; download proceeds independently
+          if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = oldText; }
+          // Open in new tab or trigger download
+          const a = document.createElement('a'); a.href = j.url; a.download = j.filename || `project-${project.id}-export.mp4`; a.click();
+          try { alert(`Render ready in ${((performance.now()-t0)/1000).toFixed(1)}s`); } catch(e){}
+          didDownload = true;
+        }
+      } catch (e) {
+        console.warn('JSON parse failed, falling back to blob', e);
+      }
+    }
+    if (!didDownload){
+      try {
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = `project-${project.id}-export.mp4`; a.click();
+        try { alert(`Render ready in ${((performance.now()-t0)/1000).toFixed(1)}s`); } catch(e){}
+        didDownload = true;
+      } catch (e) {
+        console.error('Failed to read response blob', e);
+        alert('Download failed: ' + e.message);
+      }
     }
 
   } finally {
-    if (exportBtn) {
-      exportBtn.disabled = false;
-      exportBtn.textContent = oldText;
-    }
+    // If we already restored button state on JSON path, this is a no-op
+    if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = oldText; }
+    isExporting = false;
   }
 }
+
+// ------------------ BACKGROUND LAYER HELPERS ------------------
+function isBackgroundLayer(layer){ return layer && layer.id === BACKGROUND_LAYER_ID; }
+
+function ensureBackgroundLayer(createClip){
+  // Place background layer at index 0
+  let bgIdx = layers.findIndex(l=> l.id === BACKGROUND_LAYER_ID);
+  if (bgIdx === -1){
+    const bgLayer = { id: BACKGROUND_LAYER_ID, name: 'Background', clips: [] };
+    layers.unshift(bgLayer);
+    activeLayerId = activeLayerId || bgLayer.id;
+    bgIdx = 0;
+  } else if (bgIdx !== 0){
+    // Move it to the bottom (index 0)
+    const [bg] = layers.splice(bgIdx,1);
+    layers.unshift(bg);
+  }
+  if (createClip){
+    const bgLayer = layers[0];
+    // Single clip covering at least the current total timeline duration or default 10s
+    const total = Math.max(10, computeTotalDuration());
+    if (bgLayer.clips.length === 0){
+      bgLayer.clips.push({ type:'image', id:'bg', src: DEFAULT_BG_SRC, duration: total, startTime: 0 });
+    } else {
+      // update duration to cover total
+      bgLayer.clips[0].src = DEFAULT_BG_SRC;
+      bgLayer.clips[0].duration = total;
+      bgLayer.clips[0].startTime = 0;
+    }
+  }
+  timeline = flattenLayersToTimeline();
+}
+
+function computeTotalDuration(){
+  let total = 0;
+  layers.forEach(l=>{ l.clips.forEach(c=>{ const d = (c.duration!=null)? Number(c.duration) : (c.type==='image'?2:0); total = Math.max(total, (c.startTime||0)+d); }); });
+  return total;
+}
+
+// Add debugging to track page loading state
+window.addEventListener('load', () => {
+  DBG('Window load event fired - page should be fully loaded now');
+  DBG('Current readyState:', document.readyState);
+});
+
+// Track readyState changes
+document.addEventListener('readystatechange', () => {
+  DBG('Document readyState changed to:', document.readyState);
+});
+
+// Monitor for ongoing network requests that might keep the page loading
+let originalFetch = window.fetch;
+let activeRequests = new Set();
+window.fetch = function(...args) {
+  const url = args[0];
+  DBG('Fetch started:', url);
+  activeRequests.add(url);
+  return originalFetch.apply(this, args).then(response => {
+    DBG('Fetch completed:', url, response.status);
+    activeRequests.delete(url);
+    if (activeRequests.size === 0) {
+      DBG('All fetch requests completed - active requests:', activeRequests.size);
+    }
+    return response;
+  }).catch(error => {
+    DBG('Fetch error:', url, error);
+    activeRequests.delete(url);
+    throw error;
+  });
+};
+
+// Check for ongoing operations periodically
+window.pageMonitorInterval = setInterval(() => {
+  if (document.readyState !== 'complete') {
+    DBG('Page still loading - readyState:', document.readyState, 'Active requests:', activeRequests.size);
+    if (activeRequests.size > 0) {
+      DBG('Active fetch requests:', Array.from(activeRequests));
+    }
+  } else {
+    // Page is complete, stop monitoring
+    DBG('Page completed, stopping monitor interval');
+    clearInterval(pageMonitorInterval);
+  }
+}, 2000);
