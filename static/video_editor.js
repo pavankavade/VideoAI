@@ -587,14 +587,7 @@ function renderOverlays(){
   // remove previous overlays except toolbar
   Array.from(overlayEl.children).forEach(ch => { if (!ch.classList.contains('preview-toolbar')) overlayEl.removeChild(ch); });
   const sel = getSelectedClip();
-  if (!sel){
-    // Helpful hint when nothing is selected
-    const hint = document.createElement('div');
-    hint.className = 'hint-bubble';
-    hint.innerHTML = '<strong>Tip</strong>: Select a clip on the timeline (or click on the canvas) to edit. When paused:<br/>• Drag white corners to resize<br/>• Drag the center dot to move<br/>• Toggle \'Crop\' to adjust the green crop box';
-    overlayEl.appendChild(hint);
-    return;
-  }
+
   const r = getClipRectOnCanvas(sel); if (!r) return;
   // Convert canvas-space rect to CSS pixels based on current canvas display size
   const canvasRect = canvas.getBoundingClientRect();
