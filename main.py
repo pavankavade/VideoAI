@@ -1425,6 +1425,8 @@ async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
                 f"Match appropriate parts of this narration to each of these {len(panel_images)} panels from page {page_number}. "
                 f"Do not Change the original narration, just match the sentences to the panels.  "
                 f"if some sentences are not matched to any panel, just leave them as is in most close panel"
+                f"if no sentences match to any panel just randomly assign sentences to panels, do NOT drop any sentences. "
+                f"do not assign single sentences to multiple panels, each sentence can only be assigned to one panel. "
                 f"We have to make sure original narration is completely available after matching all panels, nothing from original narration should be lost"
                 f"Return ONLY a JSON array in this format: [['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...] "
                 f"Do NOT include markdown code blocks or any other text. Just return the raw JSON array."

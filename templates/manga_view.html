@@ -1098,8 +1098,37 @@
             background: var(--bg-tertiary);
             border-top: 1px solid var(--border-color);
             display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .panel-editor-actions .action-row {
+            display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+        
+        .panel-editor-actions .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--bg-primary);
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .panel-editor-actions .checkbox-row input[type="checkbox"] {
+            margin: 0;
+            cursor: pointer;
+        }
+        
+        .panel-editor-actions .checkbox-row label {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin: 0;
+            cursor: pointer;
+            user-select: none;
         }
         
         .panel-editor-stats {
@@ -1436,14 +1465,23 @@
                 </div>
             </div>
             <div class="panel-editor-actions">
-                <div class="panel-editor-stats" id="panelEditorStats">
-                    Ready to edit
+                <div class="action-row">
+                    <div class="panel-editor-stats" id="panelEditorStats">
+                        Ready to edit
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn-secondary" onclick="matchTextToCurrentPage()" id="matchTextToPageBtn">Match Text to Panel</button>
+                        <button class="btn-secondary" onclick="matchTextToAllPages()" id="matchTextToAllPagesBtn">Match Text to All Panels</button>
+                        <button class="btn-secondary" onclick="detectPanelsForCurrentPage()" id="detectPanelsForPageBtn">Panel Detection</button>
+                        <button class="btn-secondary" onclick="closePanelEditor()">Cancel</button>
+                        <button class="btn-primary" onclick="savePanelTexts()" id="savePanelTextsBtn">Save Changes</button>
+                    </div>
                 </div>
-                <div class="btn-group">
-                    <button class="btn-secondary" onclick="matchTextToCurrentPage()" id="matchTextToPageBtn">Match Text to Panel</button>
-                    <button class="btn-secondary" onclick="detectPanelsForCurrentPage()" id="detectPanelsForPageBtn">Panel Detection</button>
-                    <button class="btn-secondary" onclick="closePanelEditor()">Cancel</button>
-                    <button class="btn-primary" onclick="savePanelTexts()" id="savePanelTextsBtn">Save Changes</button>
+                <div class="checkbox-row">
+                    <input type="checkbox" id="overwriteExistingTextCheckbox">
+                    <label for="overwriteExistingTextCheckbox">
+                        Overwrite existing text when matching to all panels
+                    </label>
                 </div>
             </div>
         </div>

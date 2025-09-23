@@ -2092,12 +2092,18 @@ async function matchTextToCurrentPage() {
         });
         
         if (!response.ok) {
-            throw new Error('Failed to match text to panels');
+            const errorText = await response.text();
+            console.error('Text matching API error:', response.status, errorText);
+            throw new Error(`Failed to match text to panels: ${response.status} ${errorText}`);
         }
         
         const data = await response.json();
+        console.log('Text matching response:', data);
         
         // Update project data
+        if (!projectData.workflow.text_matching) {
+            projectData.workflow.text_matching = { status: 'complete', data: [] };
+        }
         const tmData = projectData.workflow.text_matching.data || [];
         const pageIndex = tmData.findIndex(p => p.page_number === currentEditingPage);
         if (pageIndex >= 0) {
@@ -2106,15 +2112,148 @@ async function matchTextToCurrentPage() {
             tmData.push(data.page);
         }
         projectData.workflow.text_matching.data = tmData;
-        
+        projectData.workflow.text_matching.status = 'complete';
+
         // Refresh the panel editor content
-        loadPanelEditorContent(currentEditingPage);
+        openPanelEditor(currentEditingPage);
         
         alert('Text matching completed for this page!');
         
     } catch (error) {
         console.error('Error matching text to current page:', error);
-        alert('Failed to match text to panels for this page. Please try again.');
+        alert(`Failed to match text to panels for this page: ${error.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+// New function to match text to panels for all pages
+async function matchTextToAllPages() {
+    const btn = document.getElementById('matchTextToAllPagesBtn');
+    const overwriteCheckbox = document.getElementById('overwriteExistingTextCheckbox');
+    const originalText = btn.textContent;
+    const overwriteExisting = overwriteCheckbox.checked;
+    
+    // Confirm the action
+    const confirmMessage = overwriteExisting 
+        ? 'This will match text to panels for ALL pages and overwrite any existing text. This may take several minutes. Continue?'
+        : 'This will match text to panels for ALL pages that don\'t already have text assigned. This may take several minutes. Continue?';
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = 'Processing...';
+    
+    try {
+        // Get all pages that have panels
+        const panelsData = projectData.workflow?.panels?.data || [];
+        if (panelsData.length === 0) {
+            alert('No panels detected yet. Please run panel detection first.');
+            return;
+        }
+        
+        // Filter pages based on overwrite setting
+        let pagesToProcess = panelsData;
+        if (!overwriteExisting) {
+            // Only process pages that don't have existing text matching
+            const textMatchingData = projectData.workflow?.text_matching?.data || [];
+            pagesToProcess = panelsData.filter(pageData => {
+                const existingTmData = textMatchingData.find(tm => tm.page_number === pageData.page_number);
+                return !existingTmData || !existingTmData.panels || existingTmData.panels.length === 0;
+            });
+        }
+        
+        if (pagesToProcess.length === 0) {
+            alert('No pages need text matching. All pages already have text assigned.');
+            return;
+        }
+        
+        console.log(`Processing ${pagesToProcess.length} pages for text matching`);
+        btn.textContent = `Processing ${pagesToProcess.length} pages...`;
+        
+        let successCount = 0;
+        let errorCount = 0;
+        const errors = [];
+        
+        // Process pages sequentially to avoid overwhelming the server
+        for (let i = 0; i < pagesToProcess.length; i++) {
+            const pageData = pagesToProcess[i];
+            const pageNumber = pageData.page_number;
+            
+            try {
+                btn.textContent = `Processing page ${pageNumber} (${i + 1}/${pagesToProcess.length})...`;
+                
+                const response = await fetch(`/api/manga/${projectData.id}/text-matching/page/${pageNumber}/redo`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`Text matching API error for page ${pageNumber}:`, response.status, errorText);
+                    throw new Error(`Page ${pageNumber}: ${response.status} ${errorText}`);
+                }
+                
+                const data = await response.json();
+                console.log(`Text matching response for page ${pageNumber}:`, data);
+                
+                // Update project data
+                if (!projectData.workflow.text_matching) {
+                    projectData.workflow.text_matching = { status: 'complete', data: [] };
+                }
+                const tmData = projectData.workflow.text_matching.data || [];
+                const pageIndex = tmData.findIndex(p => p.page_number === pageNumber);
+                if (pageIndex >= 0) {
+                    tmData[pageIndex] = data.page;
+                } else {
+                    tmData.push(data.page);
+                }
+                projectData.workflow.text_matching.data = tmData;
+                
+                successCount++;
+                
+                // Add a small delay to avoid overwhelming the server
+                if (i < pagesToProcess.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                
+            } catch (error) {
+                console.error(`Error matching text for page ${pageNumber}:`, error);
+                errors.push(`Page ${pageNumber}: ${error.message}`);
+                errorCount++;
+            }
+        }
+        
+        // Update workflow status
+        if (successCount > 0) {
+            projectData.workflow.text_matching.status = 'complete';
+        }
+        
+        // Show results
+        let resultMessage = `Text matching completed!\n\nSuccessfully processed: ${successCount} pages`;
+        if (errorCount > 0) {
+            resultMessage += `\nFailed: ${errorCount} pages`;
+            if (errors.length > 0) {
+                resultMessage += `\n\nErrors:\n${errors.slice(0, 5).join('\n')}`;
+                if (errors.length > 5) {
+                    resultMessage += `\n... and ${errors.length - 5} more errors`;
+                }
+            }
+        }
+        
+        alert(resultMessage);
+        
+        // Refresh the current panel editor if it's open
+        if (currentEditingPage) {
+            openPanelEditor(currentEditingPage);
+        }
+        
+    } catch (error) {
+        console.error('Error in matchTextToAllPages:', error);
+        alert(`Failed to process text matching for all pages: ${error.message}`);
     } finally {
         btn.disabled = false;
         btn.textContent = originalText;
@@ -2141,12 +2280,18 @@ async function detectPanelsForCurrentPage() {
         });
         
         if (!response.ok) {
-            throw new Error('Failed to detect panels');
+            const errorText = await response.text();
+            console.error('Panel detection API error:', response.status, errorText);
+            throw new Error(`Failed to detect panels: ${response.status} ${errorText}`);
         }
         
         const data = await response.json();
+        console.log('Panel detection response:', data);
         
         // Update project data
+        if (!projectData.workflow.panels) {
+            projectData.workflow.panels = { status: 'complete', data: [] };
+        }
         const panelsData = projectData.workflow.panels.data || [];
         const pageIndex = panelsData.findIndex(p => p.page_number === currentEditingPage);
         if (pageIndex >= 0) {
@@ -2155,15 +2300,16 @@ async function detectPanelsForCurrentPage() {
             panelsData.push(data.page);
         }
         projectData.workflow.panels.data = panelsData;
-        
+        projectData.workflow.panels.status = 'complete';
+
         // Refresh the panel editor content
-        loadPanelEditorContent(currentEditingPage);
+        openPanelEditor(currentEditingPage);
         
         alert('Panel detection completed for this page!');
         
     } catch (error) {
         console.error('Error detecting panels for current page:', error);
-        alert('Failed to detect panels for this page. Please try again.');
+        alert(`Failed to detect panels for this page: ${error.message}`);
     } finally {
         btn.disabled = false;
         btn.textContent = originalText;
