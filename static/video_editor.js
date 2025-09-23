@@ -75,25 +75,47 @@ document.addEventListener('DOMContentLoaded', () => {
       document.body.appendChild(pool);
     }
   }catch(e){}
-  // load panels from project.pages
+  // load individual panels from project.workflow.panels.data instead of project.pages
   const panelsList = document.getElementById('panelsList');
   const audioList = document.getElementById('audioList');
   const timelineTrack = document.getElementById('timelineTrack');
 
-  (project.pages || []).forEach((p, idx) => {
-    const url = `/manga_projects/${project.id}/${p.filename}`;
-    const id = `panel-${idx}`;
-    panels.push({id, src: url, filename: p.filename});
-    const el = document.createElement('div');
-    el.className = 'asset-item';
-    el.draggable = true;
-    el.dataset.id = id;
-    el.dataset.type = 'image';
-    // Lazy-load thumbnails to avoid keeping the tab in a perpetual "loading" state
-    el.innerHTML = `<img src="${url}" alt="${p.filename}" loading="lazy" decoding="async"/><div class="meta">${p.filename}</div>`;
-    el.addEventListener('dragstart', onDragStartAsset);
-    panelsList.appendChild(el);
+  // Load individual panels from panel detection data
+  const panelsData = project.workflow?.panels?.data || [];
+  let panelCounter = 0;
+  
+  panelsData.forEach((pageData, pageIdx) => {
+    const pageNumber = pageData.page_number;
+    const pagePanels = pageData.panels || [];
+    
+    pagePanels.forEach((panel, panelIdx) => {
+      const url = panel.url; // already includes the full path
+      const id = `panel-page${pageNumber}-${panelIdx}`;
+      const displayName = `Page ${pageNumber} Panel ${panelIdx + 1}`;
+      
+      panels.push({
+        id, 
+        src: url, 
+        filename: panel.filename,
+        pageNumber: pageNumber,
+        panelIndex: panelIdx,
+        displayName: displayName
+      });
+      
+      const el = document.createElement('div');
+      el.className = 'asset-item';
+      el.draggable = true;
+      el.dataset.id = id;
+      el.dataset.type = 'image';
+      // Lazy-load thumbnails to avoid keeping the tab in a perpetual "loading" state
+      el.innerHTML = `<img src="${url}" alt="${displayName}" loading="lazy" decoding="async"/><div class="meta">${displayName}</div>`;
+      el.addEventListener('dragstart', onDragStartAsset);
+      panelsList.appendChild(el);
+      panelCounter++;
+    });
   });
+  
+  console.log(`Loaded ${panelCounter} individual panels for video editor`);
 
   // If editor state was previously saved on the server, restore layers
   try {
@@ -117,150 +139,77 @@ document.addEventListener('DOMContentLoaded', () => {
     ensureBackgroundLayer(false);
   }
 
-  // existing audio from project.workflow.tts.data may contain audio blobs or urls
-  let maybeAudio = project.workflow?.tts?.data;
-  // Normalize into an array if possible
-  if (!maybeAudio) {
-    maybeAudio = [];
-  } else if (!Array.isArray(maybeAudio)) {
-    // If it's an object with keys, convert values to array; if a string/url, wrap it
-    if (typeof maybeAudio === 'string') {
-      maybeAudio = [maybeAudio];
-    } else if (typeof maybeAudio === 'object') {
-      // If object has numeric keys or is a map, convert to values
-      try {
-        maybeAudio = Object.values(maybeAudio);
-      } catch (e) {
-        maybeAudio = [maybeAudio];
+  // Load panel-level TTS audio from project.workflow.panel_tts.data instead of page-level audio
+  const panelTtsData = project.workflow?.panel_tts?.data || {};
+  let audioCounter = 0;
+  
+  Object.keys(panelTtsData).forEach(pageKey => {
+    const pageNumber = pageKey.replace('page', '');
+    const pagePanels = panelTtsData[pageKey] || [];
+    
+    pagePanels.forEach((panelAudio, panelIdx) => {
+      if (panelAudio.audioFile && panelAudio.text) {
+        const id = `audio-page${pageNumber}-panel${panelIdx}`;
+        const displayName = `P${pageNumber}-Panel${panelIdx + 1} Audio`;
+        const src = `/manga_projects/${project.id}/${panelAudio.audioFile}`;
+        
+        audios.push({
+          id, 
+          src, 
+          filename: panelAudio.audioFile,
+          pageNumber: parseInt(pageNumber),
+          panelIndex: panelIdx,
+          displayName: displayName,
+          duration: panelAudio.duration || 3.0,
+          text: panelAudio.text,
+          meta: panelAudio
+        });
+        
+        const el = document.createElement('div');
+        el.className = 'asset-item';
+        el.draggable = true;
+        el.dataset.id = id;
+        el.dataset.type = 'audio';
+        el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">${displayName}</div>`;
+        el.addEventListener('dragstart', onDragStartAsset);
+        if (audioList) audioList.appendChild(el);
+        audioCounter++;
       }
-    } else {
-      maybeAudio = [];
-    }
-  }
-
-  // Flatten to array safely
-  (maybeAudio || []).forEach((a, i) => {
-    // Expect object with page_number and audio url/blob
-    const id = `audio-${i}`;
-    // preserve original meta and try to derive a playable src immediately
-    const meta = a;
-    let srcCandidate = null;
-    const guessMime = (metaLike, fallback='audio/wav') => {
-      try{
-        if (!metaLike) return fallback;
-        const name = (typeof metaLike === 'string') ? metaLike : (metaLike.filename || metaLike.name || metaLike.file || metaLike.url || metaLike.src || '');
-        const mime = (typeof metaLike === 'object') ? (metaLike.mime || metaLike.mimetype || (metaLike.type && String(metaLike.type))) : '';
-        const lowerName = String(name||'').toLowerCase();
-        const lowerMime = String(mime||'').toLowerCase();
-        if (lowerMime.includes('wav') || lowerName.endsWith('.wav')) return 'audio/wav';
-        if (lowerMime.includes('mpeg') || lowerMime.includes('mp3') || lowerName.endsWith('.mp3')) return 'audio/mpeg';
-        if (lowerMime.includes('ogg') || lowerName.endsWith('.ogg')) return 'audio/ogg';
-        return fallback;
-      }catch(e){ return fallback; }
-    };
-    // prefer explicit fields
-    if (meta && typeof meta === 'object'){
-      srcCandidate = meta.url || meta.audio || meta.src || meta.filename || meta.file || null;
-      // If meta contains raw base64 or data, try to build a data URI
-      if (!srcCandidate && meta.base64 && typeof meta.base64 === 'string'){
-        const mime = guessMime(meta, 'audio/wav');
-        srcCandidate = `data:${mime};base64,` + meta.base64.replace(/\s+/g,'');
-      }
-      // audioBlob may be a serialized object (from server) containing base64/data/url/filename
-      if (!srcCandidate && meta.audioBlob){
-        try{
-          const ab = meta.audioBlob;
-          // If it's already a Blob/File (unlikely from JSON), create object URL
-          if (ab instanceof Blob || ab instanceof File){ srcCandidate = URL.createObjectURL(ab); }
-          else if (typeof ab === 'string'){
-            // sometimes stored as base64 string
-            const t = ab.trim();
-            if (t.startsWith('data:audio')) srcCandidate = t;
-            else if (t.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(t)) {
-              const mime = guessMime(meta, 'audio/wav');
-              srcCandidate = `data:${mime};base64,` + t.replace(/\s+/g,'');
-            }
-          } else if (typeof ab === 'object'){
-            // try common fields
-            if (ab.url && typeof ab.url === 'string') srcCandidate = ab.url;
-            else if (ab.filename && typeof ab.filename === 'string') srcCandidate = '/uploads/' + ab.filename;
-            else if (ab.base64 && typeof ab.base64 === 'string') {
-              const mime = guessMime(ab, 'audio/wav');
-              srcCandidate = `data:${mime};base64,` + ab.base64.replace(/\s+/g,'');
-            }
-            else if (ab.data && typeof ab.data === 'string'){
-              const t = ab.data.trim(); if (t.startsWith('data:audio')) srcCandidate = t; else if (t.length>100 && /^[A-Za-z0-9+/=\s]+$/.test(t)) srcCandidate = 'data:audio/mpeg;base64,' + t.replace(/\s+/g,'');
-            }
-          }
-        }catch(e){ /* ignore */ }
-      }
-    } else if (typeof a === 'string') {
-      srcCandidate = a;
-    }
-  const playable = getPlayableSrc(srcCandidate || meta);
-  // If no playable src was found, inspect meta.audioBlob for raw data and try to construct a Blob URL
-  let finalPlayable = playable;
-  if (!finalPlayable && meta && meta.audioBlob){
-    try{
-      const ab = meta.audioBlob;
-      const keys = (ab && typeof ab === 'object') ? Object.keys(ab) : [];
-      // If audioBlob contains base64
-      if (!finalPlayable && ab && typeof ab.base64 === 'string' && ab.base64.length>100){
-        const mime = guessMime(ab, 'audio/wav');
-        finalPlayable = `data:${mime};base64,` + ab.base64.replace(/\s+/g,'');
-      }
-      // If audioBlob contains raw numeric array in 'data' or 'bytes'
-      if (!finalPlayable && ab && Array.isArray(ab.data) && ab.data.length>0){
-        const arr = new Uint8Array(ab.data);
-        const mime = guessMime(ab, 'audio/wav');
-        const blob = new Blob([arr], { type: mime });
-        finalPlayable = URL.createObjectURL(blob);
-      }
-      if (!finalPlayable && ab && Array.isArray(ab.bytes) && ab.bytes.length>0){
-        const arr = new Uint8Array(ab.bytes);
-        const mime = guessMime(ab, 'audio/wav');
-        const blob = new Blob([arr], { type: mime });
-        finalPlayable = URL.createObjectURL(blob);
-      }
-      // If audioBlob has .data.buffer-like structure
-      if (!finalPlayable && ab && ab.data && ab.data.data && Array.isArray(ab.data.data)){
-        const arr = new Uint8Array(ab.data.data);
-        const mime = guessMime(ab, 'audio/wav');
-        const blob = new Blob([arr], { type: mime });
-        finalPlayable = URL.createObjectURL(blob);
-      }
-      // If no enumerable keys were present (Blob-like object from deserialization), attempt blob/arraybuffer/typedarray handling
-      if (!finalPlayable){
-        try{
-          // ab may be a real Blob/File (size property) or have arrayBuffer method
-          if (ab && (typeof ab.size === 'number' || typeof ab.arrayBuffer === 'function' || typeof ab.slice === 'function')){
-            try{
-              finalPlayable = URL.createObjectURL(ab);
-            }catch(err){ console.warn('[audio-load] failed to create objectURL directly', err); }
-          }
-          // If it's an ArrayBuffer or a typed array
-          if (!finalPlayable && ab && (ab instanceof ArrayBuffer || typeof ab.byteLength === 'number')){
-            const arr = ab instanceof ArrayBuffer ? new Uint8Array(ab) : (ab.buffer ? new Uint8Array(ab.buffer) : new Uint8Array(ab));
-            const mime = guessMime(ab, 'audio/wav');
-            const blob = new Blob([arr], { type: mime });
-            finalPlayable = URL.createObjectURL(blob);
-          }
-        }catch(e){ console.warn('[audio-load] blob-like fallback error', e); }
-      }
-    }catch(e){ console.warn('[audio-load] error inspecting audioBlob', e); }
-  }
-    // store playable (or empty) but keep original meta for later upload/inspection
-  const fname = (meta && (meta.filename || meta.file || meta.name)) || `audio-${i}.wav`;
-  audios.push({id, src: finalPlayable || '', filename: fname, meta});
-    const el = document.createElement('div');
-    el.className = 'asset-item';
-    el.draggable = true;
-    el.dataset.id = id;
-    el.dataset.type = 'audio';
-    el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">${id}</div>`;
-    el.addEventListener('dragstart', onDragStartAsset);
-    if (audioList) audioList.appendChild(el);
+    });
   });
+  
+  console.log(`Loaded ${audioCounter} panel audio files for video editor`);
+
+  // Load panel audio files if available
+  if (currentProject && currentProject.panels) {
+    currentProject.panels.forEach((panel, i) => {
+      if (panel.audio_file) {
+        const id = `panel-audio-${panel.panel_id}`;
+        const src = `/uploads/${panel.audio_file}`;
+        const filename = panel.audio_file;
+        
+        audios.push({
+          id, 
+          src, 
+          filename, 
+          meta: { 
+            panelId: panel.panel_id,
+            duration: panel.audio_duration,
+            text: panel.text 
+          }
+        });
+        
+        const el = document.createElement('div');
+        el.className = 'asset-item';
+        el.draggable = true;
+        el.dataset.id = id;
+        el.dataset.type = 'audio';
+        el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">Panel ${panel.panel_id}</div>`;
+        el.addEventListener('dragstart', onDragStartAsset);
+        if (audioList) audioList.appendChild(el);
+      }
+    });
+  }
 
   const audioFileInputEl = document.getElementById('audioFileInput');
   if (audioFileInputEl) audioFileInputEl.addEventListener('change', async (e) => {
@@ -2350,3 +2299,76 @@ window.pageMonitorInterval = setInterval(() => {
     clearInterval(pageMonitorInterval);
   }
 }, 2000);
+
+// Generate automatic timeline from panels and their audio
+function generatePanelTimeline() {
+  if (!currentProject || !currentProject.panels) {
+    showToast('No panels available. Please run panel detection first.', 'error');
+    return;
+  }
+
+  const panelsWithAudio = currentProject.panels.filter(panel => panel.audio_file);
+  if (panelsWithAudio.length === 0) {
+    showToast('No panels with audio found. Please synthesize panel audio first.', 'error');
+    return;
+  }
+
+  // Clear existing timeline
+  layers.length = 0;
+  timeline.innerHTML = '';
+
+  // Set up background layer
+  ensureBackgroundLayer(true);
+
+  // Create panel layers
+  let currentTime = 0;
+  const PANEL_TRANSITION_TIME = 0.5; // 0.5 second transition between panels
+
+  panelsWithAudio.forEach((panel, index) => {
+    // Create image layer for panel
+    const imageLayerId = `panel_${panel.panel_id}`;
+    const imageLayer = {
+      id: imageLayerId,
+      name: `Panel ${panel.panel_id}`,
+      clips: [{
+        type: 'image',
+        id: `panel_clip_${panel.panel_id}`,
+        src: `/uploads/${panel.panel_image}`,
+        startTime: currentTime,
+        duration: panel.audio_duration || 3, // Use audio duration or default 3 seconds
+        panelId: panel.panel_id
+      }]
+    };
+    layers.push(imageLayer);
+
+    // Create audio layer for panel
+    const audioLayerId = `audio_${panel.panel_id}`;
+    const audioLayer = {
+      id: audioLayerId,
+      name: `Audio ${panel.panel_id}`,
+      clips: [{
+        type: 'audio',
+        id: `audio_clip_${panel.panel_id}`,
+        src: `/uploads/${panel.audio_file}`,
+        startTime: currentTime,
+        duration: panel.audio_duration || 3,
+        panelId: panel.panel_id
+      }]
+    };
+    layers.push(audioLayer);
+
+    // Move to next panel time (audio duration + transition)
+    currentTime += (panel.audio_duration || 3) + PANEL_TRANSITION_TIME;
+  });
+
+  // Set active layer to first panel
+  if (layers.length > 1) {
+    activeLayerId = layers[1].id; // Skip background layer
+  }
+
+  // Rebuild timeline UI
+  rebuildTimeline();
+  updateTimeline();
+
+  showToast(`Generated timeline with ${panelsWithAudio.length} panels`, 'success');
+}

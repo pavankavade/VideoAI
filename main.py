@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from PIL import Image
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
+# from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -348,6 +348,7 @@ def create_manga_project(title: str, files: List[str]) -> Dict[str, Any]:
             "panels": {"status": "pending", "data": None},
             "text_matching": {"status": "pending", "data": None},
             "tts": {"status": "todo", "data": None},
+            "panel_tts": {"status": "todo", "data": None},
             "video_editing": {"status": "todo", "data": None}
         }
     }
@@ -1694,6 +1695,225 @@ async def synthesize_tts_api(project_id: str, text: str):
         raise HTTPException(status_code=502, detail=f"TTS API request failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
+
+@app.get("/api/test")
+async def test_endpoint():
+    """Test endpoint to verify server is working"""
+    print("TEST ENDPOINT CALLED")
+    logger.info("TEST ENDPOINT CALLED")
+    return {"message": "Server is working", "tts_url": TTS_API_URL}
+
+@app.post("/api/manga/{project_id}/panel-tts/synthesize")
+async def synthesize_panel_tts_api(project_id: str, page_number: Optional[int] = None):
+    """Synthesize text to speech for individual panels"""
+    print(f"PANEL TTS ENDPOINT CALLED: project_id={project_id}, page_number={page_number}")
+    logger.info(f"PANEL TTS ENDPOINT CALLED: project_id={project_id}, page_number={page_number}")
+    logger.info(f"Starting panel TTS synthesis for project {project_id}")
+    logger.info(f"TTS_API_URL configured as: '{TTS_API_URL}'")
+    
+    if not TTS_API_URL:
+        logger.error("TTS_API_URL is not configured!")
+        raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
+    
+    # First, test the TTS API to make sure it's accessible
+    try:
+        logger.info(f"Testing TTS API connectivity at {TTS_API_URL}")
+        test_response = requests.get(TTS_API_URL.replace('/synthesize', '/health'), timeout=10)
+        logger.info(f"TTS API health check: {test_response.status_code}")
+    except Exception as e:
+        logger.warning(f"Could not reach TTS API health endpoint: {e}")
+    
+    # Also test with a simple POST request
+    try:
+        logger.info("Testing TTS API with simple request")
+        test_data = {
+            'text': 'Test',
+            'exaggeration': '0.5',
+            'cfg_weight': '0.5',
+            'temperature': '0.8'
+        }
+        test_response = requests.post(TTS_API_URL, data=test_data, timeout=10)
+        logger.info(f"TTS API test response: {test_response.status_code}, content_type: {test_response.headers.get('content-type')}")
+        if test_response.status_code != 200:
+            logger.warning(f"TTS API test failed: {test_response.text[:200]}")
+    except Exception as e:
+        logger.error(f"TTS API test failed with exception: {e}")
+    
+    project = get_manga_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Manga project not found")
+    
+    # Get text matching data
+    text_matching_data = project.get("workflow", {}).get("text_matching", {}).get("data")
+    if not text_matching_data:
+        raise HTTPException(status_code=400, detail="Text matching not completed yet")
+    
+    # Debug: Log structure of text matching data
+    logger.info(f"Panel TTS: Text matching data structure for project {project_id}")
+    for page_data in text_matching_data[:2]:  # Log first 2 pages for debugging
+        page_num = page_data.get("page_number", "?")
+        panels = page_data.get("panels", [])
+        logger.info(f"  Page {page_num}: {len(panels)} panels")
+        for i, panel in enumerate(panels[:3]):  # Log first 3 panels per page
+            text = panel.get("matched_text", "")
+            logger.info(f"    Panel {i+1}: '{text[:50]}{'...' if len(text) > 50 else ''}' (len={len(text)})")
+    
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+    
+    panel_tts_data = {}
+    total_panels = 0
+    processed_panels = 0
+    
+    try:
+        import requests
+        
+        if not TTS_API_URL:
+            raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
+        
+        # Filter pages if page_number is specified
+        pages_to_process = text_matching_data
+        if page_number is not None:
+            pages_to_process = [p for p in text_matching_data if p.get("page_number") == page_number]
+            if not pages_to_process:
+                raise HTTPException(status_code=404, detail=f"Page {page_number} not found")
+        
+        # Count total panels and panels with text
+        panels_with_text = 0
+        for page_data in pages_to_process:
+            panels = page_data.get("panels", [])
+            total_panels += len(panels)
+            for panel in panels:
+                if panel.get("matched_text", "").strip():
+                    panels_with_text += 1
+        
+        logger.info(f"Panel TTS: Processing {len(pages_to_process)} pages, {total_panels} total panels, {panels_with_text} panels with text")
+        
+        if total_panels == 0:
+            raise HTTPException(status_code=400, detail="No panels found in text matching data")
+        
+        if panels_with_text == 0:
+            raise HTTPException(status_code=400, detail=f"No panels with text found. Found {total_panels} panels but all have empty text. Please ensure text matching is completed properly.")
+        
+        # Process each page
+        for page_data in pages_to_process:
+            page_num = page_data.get("page_number", 1)
+            panels = page_data.get("panels", [])
+            
+            page_panel_data = []
+            
+            # Process each panel in the page
+            for panel_index, panel in enumerate(panels):
+                matched_text = panel.get("matched_text", "").strip()
+                
+                logger.info(f"Panel TTS: Page {page_num}, Panel {panel_index + 1}: Text='{matched_text[:50]}{'...' if len(matched_text) > 50 else ''}'")
+                
+                if not matched_text:
+                    # Add empty entry for panels without text
+                    page_panel_data.append({
+                        "panelIndex": panel_index,
+                        "filename": panel.get("filename", ""),
+                        "text": "",
+                        "audioFile": None,
+                        "duration": 0
+                    })
+                    continue
+                
+                try:
+                    # Call TTS API
+                    form_data = {
+                        'text': matched_text,
+                        'exaggeration': '0.5',
+                        'cfg_weight': '0.5',
+                        'temperature': '0.8'
+                    }
+                    
+                    print(f"CALLING TTS API for page {page_num} panel {panel_index + 1}")
+                    print(f"TTS_API_URL: {TTS_API_URL}")
+                    print(f"Text length: {len(matched_text)}")
+                    
+                    logger.info(f"Calling TTS API for page {page_num} panel {panel_index + 1}: {TTS_API_URL}")
+                    logger.info(f"TTS request data: text='{matched_text[:100]}{'...' if len(matched_text) > 100 else ''}' (len={len(matched_text)})")
+                    
+                    response = requests.post(TTS_API_URL, data=form_data, timeout=30)
+                    
+                    print(f"TTS API response status: {response.status_code}")
+                    print(f"TTS API response headers: {dict(response.headers)}")
+                    
+                    logger.info(f"TTS API response: status={response.status_code}, headers={dict(response.headers)}")
+                    
+                    if response.status_code == 200:
+                        print(f"SUCCESS: TTS API returned audio for page {page_num} panel {panel_index + 1}")
+                        # Save audio file
+                        audio_filename = f"tts_page_{page_num}_panel_{panel_index + 1}.wav"
+                        audio_path = os.path.join(project_dir, audio_filename)
+                        
+                        logger.info(f"Saving audio to: {audio_path}")
+                        
+                        with open(audio_path, "wb") as f:
+                            f.write(response.content)
+                        
+                        # Get audio duration (approximate based on text length)
+                        # For more accurate duration, you could use librosa or similar
+                        estimated_duration = max(len(matched_text) * 0.05, 1.0)  # ~0.05 seconds per character, min 1 second
+                        
+                        page_panel_data.append({
+                            "panelIndex": panel_index,
+                            "filename": panel.get("filename", ""),
+                            "text": matched_text,
+                            "audioFile": audio_filename,
+                            "duration": estimated_duration
+                        })
+                        
+                        processed_panels += 1
+                        print(f"PROCESSED PANEL {processed_panels}")
+                        
+                    else:
+                        print(f"ERROR: TTS API failed with status {response.status_code}")
+                        print(f"Error response: {response.text[:500]}")
+                        logger.warning(f"TTS API failed for page {page_num} panel {panel_index + 1}: {response.status_code}")
+                        logger.warning(f"TTS API error response: {response.text[:500]}")
+                        page_panel_data.append({
+                            "panelIndex": panel_index,
+                            "filename": panel.get("filename", ""),
+                            "text": matched_text,
+                            "audioFile": None,
+                            "duration": 0
+                        })
+                        
+                except Exception as e:
+                    print(f"EXCEPTION calling TTS API: {e}")
+                    logger.exception(f"Failed to synthesize panel {panel_index + 1} on page {page_num}: {e}")
+                    page_panel_data.append({
+                        "panelIndex": panel_index,
+                        "filename": panel.get("filename", ""),
+                        "text": matched_text,
+                        "audioFile": None,
+                        "duration": 0
+                    })
+            
+            if page_panel_data:
+                panel_tts_data[f"page{page_num}"] = page_panel_data
+        
+        # Update project
+        update_manga_project(project_id, {
+            "workflow.panel_tts.status": "complete",
+            "workflow.panel_tts.data": panel_tts_data
+        })
+        
+        return {
+            "success": True,
+            "processed_panels": processed_panels,
+            "total_panels": total_panels,
+            "panels_with_text": panels_with_text,
+            "data": panel_tts_data,
+            "message": f"Processed {processed_panels} out of {panels_with_text} panels with text (total {total_panels} panels found)"
+        }
+        
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"TTS API request failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Panel TTS synthesis failed: {str(e)}")
 
 @app.post("/upload")
 async def upload_files(files: List[UploadFile] = File(...)):

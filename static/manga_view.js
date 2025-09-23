@@ -1212,13 +1212,41 @@ function openPanelEditor(pageNumber) {
                 }
                 
                 const hasText = existingText && existingText.trim();
+                
+                // Check if panel has audio
+                const panelTtsData = projectData.workflow?.panel_tts?.data?.[`page${pageNumber}`];
+                const panelAudio = panelTtsData?.find(p => p.panelIndex === index);
+                const hasAudio = panelAudio && panelAudio.audioFile;
+                
                 return `
                     <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
                         <div class="drag-handle">⋮⋮</div>
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
-                            <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}</div>
+                            <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
                             <textarea class="panel-editor-textarea ${hasText ? 'has-text' : ''}" data-panel-index="${index}" placeholder="Enter narration text for this panel...">${existingText}</textarea>
+                            <div class="panel-audio-controls">
+                                ${hasText ? (
+                                    hasAudio ? `
+                                        <audio controls class="panel-audio-player" style="width: 100%; margin: 4px 0;">
+                                            <source src="/manga_projects/${projectData.id}/${panelAudio.audioFile}" type="audio/wav">
+                                        </audio>
+                                        <div class="panel-audio-actions">
+                                            <button class="btn-secondary btn-xs" onclick="synthesizeIndividualPanel(${pageNumber}, ${index})" title="Re-synthesize this panel">
+                                                🔄
+                                            </button>
+                                        </div>
+                                    ` : `
+                                        <button class="btn-primary btn-xs" onclick="synthesizeIndividualPanel(${pageNumber}, ${index})" style="width: 100%; margin: 4px 0;">
+                                            🎵 Synthesize
+                                        </button>
+                                    `
+                                ) : `
+                                    <button class="btn-secondary btn-xs" disabled style="width: 100%; margin: 4px 0;" title="Add text first">
+                                        🎵 Add Text First
+                                    </button>
+                                `}
+                            </div>
                         </div>
                     </div>
                 `;
@@ -1319,6 +1347,185 @@ function openPanelEditor(pageNumber) {
     // Add drag and drop functionality
     initializeDragAndDrop();
 }
+
+function loadPanelEditorContent(pageNumber) {
+    if (!currentEditingPage || currentEditingPage !== pageNumber) {
+        currentEditingPage = pageNumber;
+    }
+    
+    const contentDiv = document.getElementById('panelEditorContent');
+    const title = document.getElementById('panelEditorTitle');
+    
+    if (!contentDiv) {
+        console.warn('Panel editor content div not found');
+        return;
+    }
+    
+    // Update title and navigation
+    if (title) {
+        title.textContent = `Panel Editor - Page ${pageNumber}`;
+    }
+    updatePanelEditorNavigation(pageNumber);
+    
+    // Get page data
+    const panelsData = projectData.workflow?.panels?.data || [];
+    const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+    
+    if (!pageData || !pageData.panels || pageData.panels.length === 0) {
+        contentDiv.innerHTML = `
+            <div class="no-panels-message">
+                <h3>No panels available</h3>
+                <p>Please detect panels first before editing text assignments.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Get narration for this page
+    const narrativeData = projectData.workflow?.narrative?.data;
+    let pageNarration = '';
+    if (narrativeData && narrativeData.page_narrations) {
+        const pageLabel = `Page${pageNumber}`;
+        const narrationEntry = narrativeData.page_narrations.find(p => p[0] === pageLabel);
+        if (narrationEntry) {
+            pageNarration = narrationEntry[1];
+        }
+    }
+    
+    // Get existing text from text matching data if available
+    const textMatchingData = projectData.workflow?.text_matching?.data || [];
+    const tmPageData = textMatchingData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+    
+    // Check if audio exists for this page
+    const hasAudio = ttsData[pageNumber] && ttsData[pageNumber].audioBlob;
+    
+    // Display panels with text areas
+    contentDiv.innerHTML = `
+        <div class="panels-grid-editor" id="panelsGridEditor">
+            ${pageData.panels.map((panel, index) => {
+                // Get existing text from multiple sources
+                let existingText = panel.matched_text || '';
+                
+                // Also check text matching data
+                if (tmPageData && tmPageData.panels && tmPageData.panels[index]) {
+                    const tmPanelText = tmPageData.panels[index].matched_text;
+                    if (tmPanelText && tmPanelText.trim()) {
+                        existingText = tmPanelText;
+                    }
+                }
+                
+                const hasText = existingText && existingText.trim();
+                
+                // Check if panel has audio
+                const panelTtsData = projectData.workflow?.panel_tts?.data?.[`page${pageNumber}`];
+                const panelAudio = panelTtsData?.find(p => p.panelIndex === index);
+                const hasAudio = panelAudio && panelAudio.audioFile;
+                
+                return `
+                    <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
+                        <div class="drag-handle">⋮⋮</div>
+                        <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
+                        <div class="panel-editor-info">
+                            <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
+                            <textarea class="panel-editor-textarea ${hasText ? 'has-text' : ''}" data-panel-index="${index}" placeholder="Enter narration text for this panel...">${existingText}</textarea>
+                            <div class="panel-audio-controls">
+                                ${hasText ? (
+                                    hasAudio ? `
+                                        <audio controls class="panel-audio-player" style="width: 100%; margin: 4px 0;">
+                                            <source src="/manga_projects/${projectData.id}/${panelAudio.audioFile}" type="audio/wav">
+                                        </audio>
+                                        <div class="panel-audio-actions">
+                                            <button class="btn-secondary btn-xs" onclick="synthesizeIndividualPanel(${pageNumber}, ${index})" title="Re-synthesize this panel">
+                                                🔄
+                                            </button>
+                                        </div>
+                                    ` : `
+                                        <button class="btn-primary btn-xs" onclick="synthesizeIndividualPanel(${pageNumber}, ${index})" style="width: 100%; margin: 4px 0;">
+                                            🎵 Synthesize
+                                        </button>
+                                    `
+                                ) : `
+                                    <button class="btn-secondary btn-xs" disabled style="width: 100%; margin: 4px 0;" title="Add text first">
+                                        🎵 Add Text First
+                                    </button>
+                                `}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+        
+        <!-- Audio Controls for Panel Editor -->
+        <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
+            ${pageNarration ? `
+                <div class="page-narration-text">
+                    <strong>Page Narration:</strong>
+                    <p>${pageNarration}</p>
+                </div>
+            ` : `
+                <div class="page-narration-text">
+                    <strong>Page Narration:</strong>
+                    <p style="color: #6b7280; font-style: italic;">No narration available for this page. Generate narrative first to enable audio synthesis.</p>
+                </div>
+            `}
+            <div class="page-audio-actions" id="panel-editor-audio-actions-${pageNumber}">
+                ${pageNarration ? (
+                    hasAudio ? `
+                        <div class="audio-controls-container">
+                            <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
+                                <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
+                                Your browser does not support the audio element.
+                            </audio>
+                            <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
+                                🔄 Re-synthesize
+                            </button>
+                        </div>
+                    ` : `
+                        <button class="btn-primary btn-sm" onclick="synthesizePageFromEditor(${pageNumber})" id="synthesize-panel-editor-${pageNumber}">
+                            🎵 Synthesize Narration
+                        </button>
+                    `
+                ) : `
+                    <button class="btn-secondary btn-sm" disabled>
+                        🎵 Generate Narrative First
+                    </button>
+                `}
+            </div>
+        </div>
+    `;
+    
+    // Store original texts for comparison
+    originalPanelTexts = {};
+    pageData.panels.forEach((panel, index) => {
+        // Get existing text from multiple sources (same logic as above)
+        let existingText = panel.matched_text || '';
+        
+        if (tmPageData && tmPageData.panels && tmPageData.panels[index]) {
+            const tmPanelText = tmPageData.panels[index].matched_text;
+            if (tmPanelText && tmPanelText.trim()) {
+                existingText = tmPanelText;
+            }
+        }
+        
+        originalPanelTexts[index] = existingText;
+    });
+    
+    // Update panel stats
+    updatePanelStats();
+    
+    // Add event listeners for real-time stats updates
+    const textareas = contentDiv.querySelectorAll('.panel-editor-textarea');
+    textareas.forEach(textarea => {
+        textarea.addEventListener('input', updatePanelStats);
+    });
+    
+    // Add drag and drop functionality
+    initializeDragAndDrop();
+}
+
+// Make function globally available
+window.loadPanelEditorContent = loadPanelEditorContent;
 
 // TTS Functionality
 let currentAudio = null;
@@ -2599,3 +2806,217 @@ async function savePanelTexts() {
         saveBtn.textContent = 'Save Changes';
     }
 }
+
+// Panel TTS Functions
+async function synthesizeAllPanels() {
+    console.log('synthesizeAllPanels() function called');
+    const btn = document.getElementById('synthesizeAllPanelsBtn');
+    const progressEl = document.getElementById('panelTtsProgress');
+    const bar = document.getElementById('panelTtsBar');
+    const label = document.getElementById('panelTtsLabel');
+    const count = document.getElementById('panelTtsCount');
+    
+    console.log('Button and progress elements found:', {btn: !!btn, progressEl: !!progressEl});
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span> Synthesizing...';
+    progressEl.classList.remove('hidden');
+    bar.style.width = '0%';
+    label.textContent = 'Starting panel text-to-speech synthesis...';
+    count.textContent = '';
+    
+    try {
+        // Check if text matching is complete
+        const textMatchingData = projectData.workflow?.text_matching?.data;
+        if (!textMatchingData || textMatchingData.length === 0) {
+            throw new Error('Text matching not completed. Please match text to panels first.');
+        }
+        
+        // Update UI to show we're making the request
+        label.textContent = 'Calling panel TTS API...';
+        
+        // Call the panel TTS API
+        console.log('Making panel TTS request to:', `/api/manga/${projectData.id}/panel-tts/synthesize`);
+        const response = await fetch(`/api/manga/${projectData.id}/panel-tts/synthesize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        console.log('Panel TTS response status:', response.status);
+        label.textContent = `API responded with status: ${response.status}`;
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error('Panel TTS error:', errorData);
+            throw new Error(errorData.detail || 'Failed to synthesize panel TTS');
+        }
+        
+        const data = await response.json();
+        
+        // Update project data
+        projectData.workflow.panel_tts = {
+            status: 'complete',
+            data: data.data
+        };
+        
+        // Update UI
+        updateWorkflowStatus('panel_tts', 'complete');
+        bar.style.width = '100%';
+        label.textContent = 'Panel synthesis completed!';
+        count.textContent = `${data.processed_panels}/${data.panels_with_text || data.total_panels} panels with text`;
+        
+        // Update panel editor if open
+        if (currentEditingPage) {
+            loadPanelEditorContent(currentEditingPage);
+        }
+        
+        const message = data.message || `Panel TTS synthesis completed! Processed ${data.processed_panels} out of ${data.panels_with_text || data.total_panels} panels with text.`;
+        alert(message);
+        
+    } catch (error) {
+        console.error('Error synthesizing panel TTS:', error);
+        alert(`Failed to synthesize panel TTS: ${error.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Synthesize All Panels';
+        setTimeout(() => progressEl.classList.add('hidden'), 2000);
+    }
+}
+
+// Make function globally available
+window.synthesizeAllPanels = synthesizeAllPanels;
+
+async function synthesizeCurrentPagePanels() {
+    if (!currentEditingPage) {
+        alert('No page is currently being edited.');
+        return;
+    }
+    
+    const btn = document.getElementById('synthesizeCurrentPageBtn');
+    const originalText = btn.textContent;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span> Synthesizing...';
+    
+    try {
+        // Call the panel TTS API for current page only
+        const response = await fetch(`/api/manga/${projectData.id}/panel-tts/synthesize?page_number=${currentEditingPage}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Failed to synthesize panel TTS');
+        }
+        
+        const data = await response.json();
+        
+        // Update project data
+        if (!projectData.workflow.panel_tts) {
+            projectData.workflow.panel_tts = { status: 'complete', data: {} };
+        }
+        Object.assign(projectData.workflow.panel_tts.data, data.data);
+        
+        // Update UI
+        loadPanelEditorContent(currentEditingPage);
+        
+        const message = data.message || `Page ${currentEditingPage} panel TTS synthesis completed! Processed ${data.processed_panels} panels with text.`;
+        alert(message);
+        
+    } catch (error) {
+        console.error('Error synthesizing current page panels:', error);
+        alert(`Failed to synthesize page panels: ${error.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+// Make function globally available
+window.synthesizeCurrentPagePanels = synthesizeCurrentPagePanels;
+
+async function synthesizeAllPanelsFromEditor() {
+    console.log('synthesizeAllPanelsFromEditor called');
+    try {
+        // Use the same function as the main workflow
+        await synthesizeAllPanels();
+    } catch (error) {
+        console.error('Error in synthesizeAllPanelsFromEditor:', error);
+        showToast('Error synthesizing panels: ' + error.message, 'error');
+    }
+}
+
+// Make function globally available
+window.synthesizeAllPanelsFromEditor = synthesizeAllPanelsFromEditor;
+
+async function synthesizeIndividualPanel(pageNumber, panelIndex) {
+    // Get the current text for this panel
+    const textarea = document.querySelector(`[data-panel-index="${panelIndex}"]`);
+    if (!textarea) {
+        alert('Panel not found.');
+        return;
+    }
+    
+    const text = textarea.value.trim();
+    if (!text) {
+        alert('Please enter text for this panel first.');
+        return;
+    }
+    
+    try {
+        // Call the single panel TTS API
+        const response = await fetch(`/api/manga/${projectData.id}/tts/synthesize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text })
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to synthesize panel audio');
+        }
+        
+        // Get the audio blob
+        const audioBlob = await response.blob();
+        
+        // Upload the audio file
+        const audioFilename = await uploadAudioBlob(audioBlob, `tts_page_${pageNumber}_panel_${panelIndex + 1}.wav`);
+        
+        // Update project data
+        if (!projectData.workflow.panel_tts) {
+            projectData.workflow.panel_tts = { status: 'complete', data: {} };
+        }
+        if (!projectData.workflow.panel_tts.data[`page${pageNumber}`]) {
+            projectData.workflow.panel_tts.data[`page${pageNumber}`] = [];
+        }
+        
+        // Find or create panel data entry
+        let panelData = projectData.workflow.panel_tts.data[`page${pageNumber}`].find(p => p.panelIndex === panelIndex);
+        if (!panelData) {
+            panelData = {
+                panelIndex: panelIndex,
+                filename: '',
+                text: text,
+                audioFile: audioFilename,
+                duration: Math.max(text.length * 0.05, 1.0)
+            };
+            projectData.workflow.panel_tts.data[`page${pageNumber}`].push(panelData);
+        } else {
+            panelData.text = text;
+            panelData.audioFile = audioFilename;
+            panelData.duration = Math.max(text.length * 0.05, 1.0);
+        }
+        
+        // Update the UI
+        loadPanelEditorContent(pageNumber);
+        
+        alert('Panel audio synthesized successfully!');
+        
+    } catch (error) {
+        console.error('Error synthesizing individual panel:', error);
+        alert(`Failed to synthesize panel audio: ${error.message}`);
+    }
+}
+
+// Make function globally available
+window.synthesizeIndividualPanel = synthesizeIndividualPanel;

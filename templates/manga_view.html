@@ -1093,6 +1093,69 @@
             position: relative;
         }
         
+        /* Panel Audio Controls */
+        .panel-audio-controls {
+            margin-top: 8px;
+        }
+        
+        .panel-audio-player {
+            border-radius: 4px;
+            background: var(--bg-primary);
+        }
+        
+        .panel-audio-actions {
+            display: flex;
+            justify-content: center;
+            margin-top: 4px;
+        }
+        
+        .btn-xs {
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-xs:hover:not(:disabled) {
+            background: var(--bg-tertiary);
+            transform: translateY(-1px);
+        }
+        
+        .btn-xs:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .btn-primary.btn-xs {
+            background: #3b82f6;
+            color: white;
+            border-color: #3b82f6;
+        }
+        
+        .btn-primary.btn-xs:hover:not(:disabled) {
+            background: #2563eb;
+        }
+        
+        .btn-secondary.btn-xs {
+            background: #6b7280;
+            color: white;
+            border-color: #6b7280;
+        }
+        
+        .btn-secondary.btn-xs:hover:not(:disabled) {
+            background: #4b5563;
+        }
+        
+        .panel-tts-stats {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+        
         .panel-editor-actions {
             padding: 20px;
             background: var(--bg-tertiary);
@@ -1385,6 +1448,40 @@
                 </details>
             </div>
 
+            <!-- Panel Text-to-Speech (Collapsible) -->
+            <div class="workflow-step">
+                <details class="collapsible">
+                    <summary class="collapsible-summary">
+                        <h3 data-step="panel_tts" style="margin:0; display:flex; align-items:center; gap:8px;">
+                            <span class="status-badge status-{{ project.workflow.panel_tts.status if project.workflow.panel_tts else 'todo' }}">{{ project.workflow.panel_tts.status if project.workflow.panel_tts else 'todo' }}</span>
+                            Panel Text-to-Speech
+                        </h3>
+                        <span class="collapsible-caret">▼</span>
+                    </summary>
+                    <div class="collapsible-content">
+                        <p>Generate individual speech audio for each panel's matched text for precise video synchronization.</p>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+                            <button class="btn-primary" onclick="synthesizeAllPanels()" id="synthesizeAllPanelsBtn">
+                                Synthesize All Panels
+                            </button>
+                            <button class="btn-secondary" onclick="openPanelEditorFromWorkflow()" id="openPanelEditorBtn3">
+                                Open Panel Editor
+                            </button>
+                        </div>
+                        <div id="panelTtsProgress" class="hidden" style="margin-top:12px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                <span id="panelTtsLabel" style="font-size:14px; color: var(--text-secondary);">Synthesizing panels...</span>
+                                <span id="panelTtsCount" style="font-size:12px; color: var(--text-muted);"></span>
+                            </div>
+                            <div style="width:100%; background: var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; overflow:hidden; height:12px;">
+                                <div id="panelTtsBar" style="height:100%; width:0%; background:#3b82f6; transition: width 0.3s ease;"></div>
+                            </div>
+                        </div>
+                        <div id="panelTtsOutput" class="hidden"></div>
+                    </div>
+                </details>
+            </div>
+
             <!-- Video Editing (Collapsible) -->
             <div class="workflow-step">
                 <details class="collapsible">
@@ -1475,6 +1572,19 @@
                         <button class="btn-secondary" onclick="detectPanelsForCurrentPage()" id="detectPanelsForPageBtn">Panel Detection</button>
                         <button class="btn-secondary" onclick="closePanelEditor()">Cancel</button>
                         <button class="btn-primary" onclick="savePanelTexts()" id="savePanelTextsBtn">Save Changes</button>
+                    </div>
+                </div>
+                <div class="action-row">
+                    <div class="panel-tts-stats" id="panelTtsStats">
+                        Panel TTS: Ready to synthesize
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn-primary" onclick="synthesizeCurrentPagePanels()" id="synthesizeCurrentPageBtn">
+                            🎵 Synthesize All Panels (Current Page)
+                        </button>
+                        <button class="btn-secondary" onclick="synthesizeAllPanelsFromEditor()" id="synthesizeAllPanelsFromEditorBtn">
+                            🎵 Synthesize All Panels (All Pages)
+                        </button>
                     </div>
                 </div>
                 <div class="checkbox-row">
