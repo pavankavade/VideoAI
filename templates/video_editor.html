@@ -151,5 +151,20 @@
       Object.defineProperty(window, '__renderJobId', { set: (v)=>{ try{ connect(v); }catch(_){}; } });
     })();
   </script>
+  
+  <!-- Loading Modal -->
+  <div id="loadingModal" class="loading-modal" style="display: none;">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-title">Loading Video Editor</div>
+      <div class="loading-status" id="loadingStatus">Initializing...</div>
+      <div class="loading-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" id="loadingProgress"></div>
+        </div>
+        <div class="progress-text" id="loadingProgressText">0%</div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

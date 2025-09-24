@@ -2873,6 +2873,14 @@ async function synthesizeAllPanels() {
         const message = data.message || `Panel TTS synthesis completed! Processed ${data.processed_panels} out of ${data.panels_with_text || data.total_panels} panels with text.`;
         alert(message);
         
+        // Show the video editor button if synthesis was successful
+        if (data.processed_panels > 0) {
+            const videoEditorBtn = document.getElementById('openVideoEditorBtn');
+            if (videoEditorBtn) {
+                videoEditorBtn.style.display = 'inline-block';
+            }
+        }
+        
     } catch (error) {
         console.error('Error synthesizing panel TTS:', error);
         alert(`Failed to synthesize panel TTS: ${error.message}`);
@@ -2885,6 +2893,29 @@ async function synthesizeAllPanels() {
 
 // Make function globally available
 window.synthesizeAllPanels = synthesizeAllPanels;
+
+// Function to open video editor with panel data
+function openVideoEditorWithPanels() {
+    const panelTtsData = projectData.workflow?.panel_tts?.data;
+    if (!panelTtsData) {
+        alert('No panel TTS data found. Please synthesize panels first.');
+        return;
+    }
+    
+    // Store panel data for video editor
+    sessionStorage.setItem('panelVideoData', JSON.stringify({
+        projectId: projectData.id,
+        projectTitle: projectData.title,
+        panelTtsData: panelTtsData,
+        mode: 'panels'
+    }));
+    
+    // Open video editor in new tab
+    window.open('/video_editor.html', '_blank');
+}
+
+// Make function globally available  
+window.openVideoEditorWithPanels = openVideoEditorWithPanels;
 
 async function synthesizeCurrentPagePanels() {
     if (!currentEditingPage) {

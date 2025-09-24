@@ -19,6 +19,50 @@ let viewPxPerSec = pxPerSec;
 let previewControllers = []; // store audio/video controllers to stop preview
 let audioCtx = null;
 let audioBufferCache = {}; // keyed by src -> AudioBuffer
+
+// Loading modal functions
+let loadingState = {
+  totalAssets: 0,
+  loadedAssets: 0,
+  currentStatus: 'Initializing...'
+};
+
+function showLoadingModal(status = 'Initializing...') {
+  const modal = document.getElementById('loadingModal');
+  const statusEl = document.getElementById('loadingStatus');
+  const progressEl = document.getElementById('loadingProgress');
+  const progressTextEl = document.getElementById('loadingProgressText');
+  
+  loadingState.currentStatus = status;
+  loadingState.loadedAssets = 0;
+  loadingState.totalAssets = 0;
+  
+  statusEl.textContent = status;
+  progressEl.style.width = '0%';
+  progressTextEl.textContent = '0%';
+  modal.style.display = 'flex';
+}
+
+function updateLoadingProgress(loaded, total, status) {
+  const statusEl = document.getElementById('loadingStatus');
+  const progressEl = document.getElementById('loadingProgress');
+  const progressTextEl = document.getElementById('loadingProgressText');
+  
+  loadingState.loadedAssets = loaded;
+  loadingState.totalAssets = total;
+  loadingState.currentStatus = status;
+  
+  const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
+  
+  if (statusEl) statusEl.textContent = status;
+  if (progressEl) progressEl.style.width = percentage + '%';
+  if (progressTextEl) progressTextEl.textContent = percentage + '%';
+}
+
+function hideLoadingModal() {
+  const modal = document.getElementById('loadingModal');
+  modal.style.display = 'none';
+}
 let audioFetchControllers = {}; // keyed by src -> AbortController
 let audioPreloadInProgress = false; // Flag to prevent duplicate calls
 const DBG = (...args)=>{ try{ console.log('[editor]', ...args); }catch(e){} };
@@ -57,9 +101,35 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
   
+  // Show loading modal immediately
+  showLoadingModal('Initializing video editor...');
+  
   DBG('DOMContentLoaded fired - starting video editor initialization');
-  const data = window.projectData || {};
-  const project = data;
+  
+  // Check if we're in panel mode (loaded from panel TTS)
+  const panelVideoData = sessionStorage.getItem('panelVideoData');
+  let data, project;
+  
+  if (panelVideoData) {
+    // Panel mode: load from session storage
+    const parsedData = JSON.parse(panelVideoData);
+    data = parsedData;
+    project = {
+      id: parsedData.projectId,
+      title: parsedData.projectTitle,
+      workflow: {
+        panel_tts: {
+          data: parsedData.panelTtsData
+        }
+      }
+    };
+    // Clear session storage after use
+    sessionStorage.removeItem('panelVideoData');
+  } else {
+    // Page mode: load from window.projectData
+    data = window.projectData || {};
+    project = data;
+  }
   // Ensure a hidden audio pool exists for preloading
   try{
     let pool = document.getElementById('hidden-audio-pool');
@@ -80,42 +150,131 @@ document.addEventListener('DOMContentLoaded', () => {
   const audioList = document.getElementById('audioList');
   const timelineTrack = document.getElementById('timelineTrack');
 
-  // Load individual panels from panel detection data
-  const panelsData = project.workflow?.panels?.data || [];
+  // Load panels and audio based on mode
   let panelCounter = 0;
   
-  panelsData.forEach((pageData, pageIdx) => {
-    const pageNumber = pageData.page_number;
-    const pagePanels = pageData.panels || [];
+  if (panelVideoData) {
+    // Panel mode: load from panel TTS data
+    updateLoadingProgress(0, 100, 'Loading panels from TTS data...');
+    const panelTtsData = project.workflow?.panel_tts?.data || {};
     
-    pagePanels.forEach((panel, panelIdx) => {
-      const url = panel.url; // already includes the full path
-      const id = `panel-page${pageNumber}-${panelIdx}`;
-      const displayName = `Page ${pageNumber} Panel ${panelIdx + 1}`;
-      
-      panels.push({
-        id, 
-        src: url, 
-        filename: panel.filename,
-        pageNumber: pageNumber,
-        panelIndex: panelIdx,
-        displayName: displayName
-      });
-      
-      const el = document.createElement('div');
-      el.className = 'asset-item';
-      el.draggable = true;
-      el.dataset.id = id;
-      el.dataset.type = 'image';
-      // Lazy-load thumbnails to avoid keeping the tab in a perpetual "loading" state
-      el.innerHTML = `<img src="${url}" alt="${displayName}" loading="lazy" decoding="async"/><div class="meta">${displayName}</div>`;
-      el.addEventListener('dragstart', onDragStartAsset);
-      panelsList.appendChild(el);
-      panelCounter++;
+    // Count total assets to load
+    let totalPanels = 0;
+    Object.keys(panelTtsData).forEach(pageKey => {
+      const pagePanels = panelTtsData[pageKey] || [];
+      totalPanels += pagePanels.length;
     });
-  });
-  
-  console.log(`Loaded ${panelCounter} individual panels for video editor`);
+    
+    updateLoadingProgress(0, totalPanels * 2, `Loading ${totalPanels} panels and audio...`); // *2 for panel + audio
+    
+    let loadedCount = 0;
+    
+    Object.keys(panelTtsData).forEach(pageKey => {
+      const pageNumber = parseInt(pageKey.replace('page', ''));
+      const pagePanels = panelTtsData[pageKey] || [];
+      
+      pagePanels.forEach((panelData, panelIdx) => {
+        // Add panel image
+        const panelId = `panel-page${pageNumber}-${panelIdx}`;
+        const displayName = `Page ${pageNumber} Panel ${panelIdx + 1}`;
+        
+        // We need to construct the panel image URL
+        // This should match the structure from panel detection
+        const panelImageUrl = `/manga_projects/${project.id}/panels/Page ${pageNumber}/${panelData.filename}`;
+        
+        panels.push({
+          id: panelId,
+          src: panelImageUrl,
+          filename: panelData.filename,
+          pageNumber: pageNumber,
+          panelIndex: panelIdx,
+          displayName: displayName
+        });
+        
+        const panelEl = document.createElement('div');
+        panelEl.className = 'asset-item';
+        panelEl.draggable = true;
+        panelEl.dataset.id = panelId;
+        panelEl.dataset.type = 'image';
+        panelEl.innerHTML = `<img src="${panelImageUrl}" alt="${displayName}" loading="lazy" decoding="async"/><div class="meta">${displayName}</div>`;
+        panelEl.addEventListener('dragstart', onDragStartAsset);
+        panelsList.appendChild(panelEl);
+        panelCounter++;
+        
+        loadedCount++;
+        updateLoadingProgress(loadedCount, totalPanels * 2, `Loaded panel: ${displayName}`);
+        
+        // Add panel audio if available
+        if (panelData.audioFile) {
+          const audioId = `audio-page${pageNumber}-panel${panelIdx}`;
+          const audioUrl = `/manga_projects/${project.id}/${panelData.audioFile}`;
+          const audioDisplayName = `${displayName} Audio`;
+          
+          audios.push({
+            id: audioId,
+            src: audioUrl,
+            filename: panelData.audioFile,
+            pageNumber: pageNumber,
+            panelIndex: panelIdx,
+            displayName: audioDisplayName,
+            duration: panelData.duration || 1.0,
+            text: panelData.text || ''
+          });
+          
+          const audioEl = document.createElement('div');
+          audioEl.className = 'asset-item';
+          audioEl.draggable = true;
+          audioEl.dataset.id = audioId;
+          audioEl.dataset.type = 'audio';
+          audioEl.innerHTML = `<span class="audio-icon">🎵</span><div class="meta">${audioDisplayName}<br><small>${panelData.text?.substring(0, 50)}${panelData.text?.length > 50 ? '...' : ''}</small></div>`;
+          audioEl.addEventListener('dragstart', onDragStartAsset);
+          audioList.appendChild(audioEl);
+          
+          loadedCount++;
+          updateLoadingProgress(loadedCount, totalPanels * 2, `Loaded audio: ${audioDisplayName}`);
+        }
+      });
+    });
+    
+    console.log(`Loaded ${panelCounter} panels with TTS audio for video editor`);
+    
+  } else {
+    // Page mode: load from panel detection data
+    const panelsData = project.workflow?.panels?.data || [];
+    
+    panelsData.forEach((pageData, pageIdx) => {
+      const pageNumber = pageData.page_number;
+      const pagePanels = pageData.panels || [];
+      
+      pagePanels.forEach((panel, panelIdx) => {
+        const url = panel.url; // already includes the full path
+        const id = `panel-page${pageNumber}-${panelIdx}`;
+        const displayName = `Page ${pageNumber} Panel ${panelIdx + 1}`;
+        
+        panels.push({
+          id, 
+          src: url, 
+          filename: panel.filename,
+          pageNumber: pageNumber,
+          panelIndex: panelIdx,
+          displayName: displayName
+        });
+        
+        const el = document.createElement('div');
+        el.className = 'asset-item';
+        el.draggable = true;
+        el.dataset.id = id;
+        el.dataset.type = 'image';
+        // Lazy-load thumbnails to avoid keeping the tab in a perpetual "loading" state
+        el.innerHTML = `<img src="${url}" alt="${displayName}" loading="lazy" decoding="async"/><div class="meta">${displayName}</div>`;
+        el.addEventListener('dragstart', onDragStartAsset);
+        panelsList.appendChild(el);
+        panelCounter++;
+      });
+    });
+    
+    console.log(`Loaded ${panelCounter} individual panels for video editor`);
+  }
 
   // If editor state was previously saved on the server, restore layers
   try {
@@ -125,7 +284,25 @@ document.addEventListener('DOMContentLoaded', () => {
       layers = saved.map((s, li) => ({
         id: s.id || ('layer-' + (Date.now() + li)),
         name: s.name || ('Layer ' + (li + 1)),
-        clips: (s.clips || []).map((c) => Object.assign({}, c))
+        clips: (s.clips || []).map((c) => {
+          const clip = Object.assign({}, c);
+          // Fix blob URLs in audio clips
+          if (clip.type === 'audio' && clip.src && clip.src.startsWith('blob:')) {
+            // Try to recover the original URL from meta or filename
+            if (clip.meta && clip.meta.originalUrl) {
+              clip.src = clip.meta.originalUrl;
+            } else if (clip.filename) {
+              clip.src = `/manga_projects/${project.id}/${clip.filename}`;
+            } else {
+              // Fallback: construct from displayName or other info
+              const match = clip.displayName?.match(/P(\d+)-Panel(\d+)/);
+              if (match) {
+                clip.src = `/manga_projects/${project.id}/tts_page_${match[1]}_panel_${match[2]}.wav`;
+              }
+            }
+          }
+          return clip;
+        })
       }));
       // ensure numeric fields and recompute timings
       layers.forEach(l => { l.clips.forEach(c => { if (c.duration != null) c.duration = Number(c.duration); if (c.startTime != null) c.startTime = Number(c.startTime); }); recomputeLayerTimings(l); });
@@ -151,12 +328,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (panelAudio.audioFile && panelAudio.text) {
         const id = `audio-page${pageNumber}-panel${panelIdx}`;
         const displayName = `P${pageNumber}-Panel${panelIdx + 1} Audio`;
-        const src = `/manga_projects/${project.id}/${panelAudio.audioFile}`;
+        
+        // Convert blob URLs back to original file paths if needed
+        let audioFile = panelAudio.audioFile;
+        if (typeof audioFile === 'string' && audioFile.startsWith('blob:')) {
+          // Extract the filename from the stored blob URL or use the expected filename format
+          audioFile = `tts_page_${pageNumber}_panel_${panelIdx + 1}.wav`;
+        }
+        
+        const src = `/manga_projects/${project.id}/${audioFile}`;
         
         audios.push({
           id, 
           src, 
-          filename: panelAudio.audioFile,
+          filename: audioFile,
           pageNumber: parseInt(pageNumber),
           panelIndex: panelIdx,
           displayName: displayName,
@@ -179,37 +364,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   
   console.log(`Loaded ${audioCounter} panel audio files for video editor`);
-
-  // Load panel audio files if available
-  if (currentProject && currentProject.panels) {
-    currentProject.panels.forEach((panel, i) => {
-      if (panel.audio_file) {
-        const id = `panel-audio-${panel.panel_id}`;
-        const src = `/uploads/${panel.audio_file}`;
-        const filename = panel.audio_file;
-        
-        audios.push({
-          id, 
-          src, 
-          filename, 
-          meta: { 
-            panelId: panel.panel_id,
-            duration: panel.audio_duration,
-            text: panel.text 
-          }
-        });
-        
-        const el = document.createElement('div');
-        el.className = 'asset-item';
-        el.draggable = true;
-        el.dataset.id = id;
-        el.dataset.type = 'audio';
-        el.innerHTML = `<div style="width:48px; height:48px; background:#111; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff;">♪</div><div class="meta">Panel ${panel.panel_id}</div>`;
-        el.addEventListener('dragstart', onDragStartAsset);
-        if (audioList) audioList.appendChild(el);
-      }
-    });
-  }
 
   const audioFileInputEl = document.getElementById('audioFileInput');
   if (audioFileInputEl) audioFileInputEl.addEventListener('change', async (e) => {
@@ -263,6 +417,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveNowBtn = document.getElementById('saveNow'); if (saveNowBtn) saveNowBtn.addEventListener('click', ()=> saveProject(true));
   // autosave status element (optional)
   const autosaveEl = document.getElementById('autosaveStatus'); if (autosaveEl) autosaveEl.textContent = '';
+  
+  // Generate Panel Timeline button
+  const generateTimelineBtn = document.getElementById('generatePanelTimeline');
+  if (generateTimelineBtn) generateTimelineBtn.addEventListener('click', generatePanelTimeline);
+  
   // Top export/preview buttons (if present)
   const exportTop = document.getElementById('exportBtnTop');
   if (exportTop) exportTop.addEventListener('click', onExport);
@@ -272,23 +431,25 @@ document.addEventListener('DOMContentLoaded', () => {
   if (previewTop) previewTop.addEventListener('click', onPreviewTimeline);
 
   // Initialize canvas-based preview
-  DBG('Initializing canvas preview');
+  updateLoadingProgress(loadingState.loadedAssets || 0, loadingState.totalAssets || 100, 'Initializing canvas preview...');
   initCanvasPreview();
 
-  DBG('Rendering timeline and components');
+  updateLoadingProgress(loadingState.loadedAssets || 0, loadingState.totalAssets || 100, 'Rendering timeline and components...');
   renderTimeline();
   renderLayerControls();
   renderRuler();
   
   // Preload after initial render so timeline clips are present
-  DBG('Starting image preloading');
+  updateLoadingProgress(loadingState.loadedAssets || 0, loadingState.totalAssets || 100, 'Preloading image assets...');
   try{ preloadImageAssets(); }catch(e){ DBG('preloadImageAssets error', e); }
-  DBG('Starting audio preloading');
+  updateLoadingProgress(loadingState.loadedAssets || 0, loadingState.totalAssets || 100, 'Preloading audio assets...');
   try{ preloadAudioAssets(); }catch(e){ DBG('preloadAudioAssets error', e); }
-  DBG('Audio preloading initiated');
 
   // Mark initialization complete
-  DBG('Video editor initialization complete');
+  updateLoadingProgress(100, 100, 'Video editor ready!');
+  
+  // Mark initialization complete - loading modal will be hidden when audio preloading finishes
+  window.videoEditorLoaded = true;
 
   // Disable proactive audio duration prefetch on load to avoid long-running network/audio decode operations.
   // Durations will be computed lazily when audio is added or explicitly requested.
@@ -508,8 +669,28 @@ function renderClipToCanvas(clip, t){
   if (!img || !img.complete || !img.naturalWidth || clip._imgLoading) {
     return; // Image not ready yet, skip this frame
   }
-  // defaults
-  clip.transform = clip.transform || { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
+  
+  // Check if this is a panel image for 50% sizing
+  const isPanelImage = clip.src && clip.src.includes('/panels/');
+  
+  // Set defaults based on image type
+  if (isPanelImage && !clip.transform) {
+    // For panels: 50% size and centered
+    const panelFit = computePanelFit(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height);
+    clip.transform = {
+      x: panelFit.dx + panelFit.dw/2,
+      y: panelFit.dy + panelFit.dh/2,
+      w: panelFit.dw,
+      h: panelFit.dh,
+      rotation: 0
+    };
+    DBG(`[render-clip] Panel transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
+  } else if (!clip.transform) {
+    // For other images: full canvas (existing behavior)
+    clip.transform = { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
+    DBG(`[render-clip] Standard transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
+  }
+  
   clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
   const dx = Math.round(clip.transform.x - clip.transform.w/2);
   const dy = Math.round(clip.transform.y - clip.transform.h/2);
@@ -776,8 +957,6 @@ function preloadImageAssets(){
     const all = flattenLayersToTimeline();
     const imageClips = all.filter(c => c.type === 'image' && c.src);
     
-    DBG('Preloading images:', imageClips.length);
-    
     imageClips.forEach(clip => {
       if (!clip._img && !clip._imgLoading) {
         clip._imgLoading = true;
@@ -822,7 +1001,7 @@ function preloadImageAssets(){
       }
     });
   } catch(e) {
-    DBG('Error preloading images:', e);
+    // Error preloading images
   }
 }
 
@@ -1071,30 +1250,29 @@ function preloadAudioAssets(){
         if (completedSources.has(src)) return; // Prevent double counting
         completedSources.add(src);
         completedAudio++;
-        DBG(`Audio completed: ${completedAudio}/${totalAudio} (${src})`);
         if (completedAudio >= totalAudio) {
-          DBG('All audio preloading completed!');
           audioPreloadInProgress = false;
+          
+          // Hide loading modal now that all assets are loaded
+          if (document.getElementById('loadingModal')?.style.display !== 'none') {
+            updateLoadingProgress(100, 100, 'All audio preloaded! Video editor ready.');
+            setTimeout(() => {
+              hideLoadingModal();
+            }, 500);
+          }
           
           // Only stop operations if we're still loading the page
           if (document.readyState !== 'complete') {
-            DBG('Page still loading - stopping operations to help completion');
             stopRaf(); // Stop animation if running
             clearAudioPlayback(); // Stop audio if playing
-          } else {
-            DBG('Page already loaded - keeping animation system active for playback');
           }
           
           // Force page completion immediately
           setTimeout(() => {
-            DBG('Checking document readyState after audio completion:', document.readyState);
             if (document.readyState !== 'complete') {
-              DBG('Signaling page completion without re-initialization');
-              
               // Method 1: Stop the monitoring interval
               if (window.pageMonitorInterval) {
                 clearInterval(window.pageMonitorInterval);
-                DBG('Stopped page monitor interval');
               }
               
               // Method 2: Create a completion flag to prevent future operations
@@ -1105,9 +1283,8 @@ function preloadAudioAssets(){
               try {
                 stopRaf(); // Stop animation frame loop
                 // Don't clear audio playback - we want to keep preloaded audio
-                DBG('Stopped animation operations during loading (kept audio preloaded)');
               } catch (e) {
-                DBG('Error stopping operations:', e);
+                // Error stopping operations
               }
               
               // Clear any pending timeouts
@@ -1506,9 +1683,27 @@ async function saveProject(force=false){
       clips: (l.clips || []).map(c => {
         const out = Object.assign({}, c);
         if (out.type === 'audio'){
-          // Normalize src to a simple, playable string if possible
-          const playable = getPlayableSrc(out.src || out.meta);
-          out.src = playable || '';
+          // For audio clips, preserve the original file URL instead of blob URLs
+          // Check if we have the original URL in meta or use the current src if it's a file URL
+          let originalSrc = '';
+          if (out.meta && out.meta.originalUrl) {
+            originalSrc = out.meta.originalUrl;
+          } else if (out.src && out.src.startsWith('/manga_projects/')) {
+            // If src is already a manga project file URL, keep it
+            originalSrc = out.src;
+          } else if (out.filename && out.filename.includes('.wav')) {
+            // Construct the original URL from filename if available
+            const project = window.projectData || {};
+            originalSrc = `/manga_projects/${project.id}/${out.filename}`;
+          } else {
+            // Fallback to getPlayableSrc but avoid blob URLs
+            const playable = getPlayableSrc(out.src || out.meta);
+            if (playable && !playable.startsWith('blob:')) {
+              originalSrc = playable;
+            }
+          }
+          
+          out.src = originalSrc || '';
           // Strip heavy fields from meta; keep only link-ish fields
           out.meta = sanitizeAudioMeta(out.meta);
         }
@@ -1847,8 +2042,22 @@ function drawImageToCanvas(src, ctx, canvas, skipClear=false) {
       if (!skipClear) {
         ctx.clearRect(0,0,canvas.width,canvas.height);
       }
-      // Fit image to canvas preserving aspect ratio (cover)
-      const { sx, sy, sw, sh, dx, dy, dw, dh } = computeCoverFit(img.width, img.height, canvas.width, canvas.height);
+      
+      // Check if this is a panel image (contains /panels/ in the URL)
+      const isPanelImage = src && src.includes('/panels/');
+      
+      let fitParams;
+      if (isPanelImage) {
+        // For panels: render at 50% size and center
+        fitParams = computePanelFit(img.width, img.height, canvas.width, canvas.height);
+      } else {
+        // For background images: use cover fit (stretch to fill)
+        fitParams = computeCoverFit(img.width, img.height, canvas.width, canvas.height);
+      }
+      
+      const { sx, sy, sw, sh, dx, dy, dw, dh } = fitParams;
+      DBG(`[canvas] Final draw params: src(${sx},${sy},${sw},${sh}) -> dest(${dx},${dy},${dw},${dh})`);
+      
       ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
       res();
     };
@@ -1875,6 +2084,52 @@ function computeCoverFit(srcW, srcH, dstW, dstH){
     sy = (srcH - sh) / 2;
   }
   return { sx, sy, sw, sh, dx: 0, dy: 0, dw: dstW, dh: dstH };
+}
+
+function computePanelFit(srcW, srcH, dstW, dstH) {
+  // For panels: render at 50% size and center in canvas
+  const scaleFactor = 0.5;
+  const scaledDstW = dstW * scaleFactor;
+  const scaledDstH = dstH * scaleFactor;
+  
+  DBG(`[panel-fit] Source: ${srcW}x${srcH}, Canvas: ${dstW}x${dstH}, Scale: ${scaleFactor}`);
+  DBG(`[panel-fit] Scaled target: ${scaledDstW}x${scaledDstH}`);
+  
+  const srcAR = srcW / srcH;
+  const scaledAR = scaledDstW / scaledDstH;
+  
+  DBG(`[panel-fit] Source AR: ${srcAR}, Scaled AR: ${scaledAR}`);
+  
+  let sw, sh, sx, sy, dw, dh, dx, dy;
+  
+  if (srcAR > scaledAR) {
+    // Source is wider: fit to width
+    dw = scaledDstW;
+    dh = scaledDstW / srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to width: dw=${dw}, dh=${dh}`);
+  } else {
+    // Source is taller: fit to height
+    dh = scaledDstH;
+    dw = scaledDstH * srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to height: dw=${dw}, dh=${dh}`);
+  }
+  
+  // Center the scaled image in the canvas
+  dx = (dstW - dw) / 2;
+  dy = (dstH - dh) / 2;
+  
+  DBG(`[panel-fit] Centering: dx=${dx}, dy=${dy}`);
+  DBG(`[panel-fit] Final result: src(${sx},${sy},${sw},${sh}) -> dest(${dx},${dy},${dw},${dh})`);
+  
+  return { sx, sy, sw, sh, dx, dy, dw, dh };
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
@@ -2289,10 +2544,7 @@ window.fetch = function(...args) {
 // Check for ongoing operations periodically
 window.pageMonitorInterval = setInterval(() => {
   if (document.readyState !== 'complete') {
-    DBG('Page still loading - readyState:', document.readyState, 'Active requests:', activeRequests.size);
-    if (activeRequests.size > 0) {
-      DBG('Active fetch requests:', Array.from(activeRequests));
-    }
+    // Page is still loading
   } else {
     // Page is complete, stop monitoring
     DBG('Page completed, stopping monitor interval');
@@ -2302,73 +2554,170 @@ window.pageMonitorInterval = setInterval(() => {
 
 // Generate automatic timeline from panels and their audio
 function generatePanelTimeline() {
-  if (!currentProject || !currentProject.panels) {
-    showToast('No panels available. Please run panel detection first.', 'error');
+  DBG('generatePanelTimeline called');
+  
+  if (panels.length === 0) {
+    console.error('No panels available. Please load a project with panels first.');
     return;
   }
 
-  const panelsWithAudio = currentProject.panels.filter(panel => panel.audio_file);
+  const panelsWithAudio = audios.filter(audio => audio.id && audio.duration > 0);
   if (panelsWithAudio.length === 0) {
-    showToast('No panels with audio found. Please synthesize panel audio first.', 'error');
+    console.error('No panels with audio found. Please synthesize panel audio first.');
     return;
   }
 
-  // Clear existing timeline
-  layers.length = 0;
-  timeline.innerHTML = '';
+  DBG('Generating timeline for', panelsWithAudio.length, 'panels with audio');
 
-  // Set up background layer
+  // Clear existing layers and create new ones
+  layers = [
+    { id: 'video-layer', name: 'Video (Panels)', clips: [] },
+    { id: 'audio-layer', name: 'Audio (Speech)', clips: [] }
+  ];
+  
+  // Ensure background layer exists with default background
   ensureBackgroundLayer(true);
-
-  // Create panel layers
+  
+  activeLayerId = 'video-layer';
+  
   let currentTime = 0;
-  const PANEL_TRANSITION_TIME = 0.5; // 0.5 second transition between panels
-
-  panelsWithAudio.forEach((panel, index) => {
-    // Create image layer for panel
-    const imageLayerId = `panel_${panel.panel_id}`;
-    const imageLayer = {
-      id: imageLayerId,
-      name: `Panel ${panel.panel_id}`,
-      clips: [{
-        type: 'image',
-        id: `panel_clip_${panel.panel_id}`,
-        src: `/uploads/${panel.panel_image}`,
-        startTime: currentTime,
-        duration: panel.audio_duration || 3, // Use audio duration or default 3 seconds
-        panelId: panel.panel_id
-      }]
-    };
-    layers.push(imageLayer);
-
-    // Create audio layer for panel
-    const audioLayerId = `audio_${panel.panel_id}`;
-    const audioLayer = {
-      id: audioLayerId,
-      name: `Audio ${panel.panel_id}`,
-      clips: [{
-        type: 'audio',
-        id: `audio_clip_${panel.panel_id}`,
-        src: `/uploads/${panel.audio_file}`,
-        startTime: currentTime,
-        duration: panel.audio_duration || 3,
-        panelId: panel.panel_id
-      }]
-    };
-    layers.push(audioLayer);
-
-    // Move to next panel time (audio duration + transition)
-    currentTime += (panel.audio_duration || 3) + PANEL_TRANSITION_TIME;
+  const transitionDuration = 0.2; // 200ms transition between panels
+  
+  // Debug: Log panel data before sorting
+  DBG('Panel data before sorting:');
+  panelsWithAudio.forEach((audio, i) => {
+    DBG(`  ${i}: pageNumber=${audio.pageNumber}, panelIndex=${audio.panelIndex}, id=${audio.id}`);
   });
-
-  // Set active layer to first panel
-  if (layers.length > 1) {
-    activeLayerId = layers[1].id; // Skip background layer
+  
+  // Sort panels by page and panel index
+  const sortedPanels = panelsWithAudio.sort((a, b) => {
+    // Ensure we're comparing numbers, not strings
+    const pageA = parseInt(a.pageNumber) || 0;
+    const pageB = parseInt(b.pageNumber) || 0;
+    const panelA = parseInt(a.panelIndex) || 0;
+    const panelB = parseInt(b.panelIndex) || 0;
+    
+    if (pageA !== pageB) {
+      return pageA - pageB;
+    }
+    return panelA - panelB;
+  });
+  
+  // Debug: Log panel data after sorting
+  DBG('Panel data after sorting:');
+  sortedPanels.forEach((audio, i) => {
+    DBG(`  ${i}: pageNumber=${audio.pageNumber}, panelIndex=${audio.panelIndex}, id=${audio.id}`);
+  });
+  
+  sortedPanels.forEach((audioData, index) => {
+    // Find the corresponding panel image
+    const panelData = panels.find(p => 
+      p.pageNumber === audioData.pageNumber && 
+      p.panelIndex === audioData.panelIndex
+    );
+    
+    if (!panelData) {
+      DBG('Warning: No panel image found for audio', audioData.id);
+      return;
+    }
+    
+    const duration = audioData.duration || 2.0;
+    
+    // Add panel image to video layer
+    const videoClip = {
+      id: `video-${panelData.id}-${Date.now()}`,
+      start: currentTime,
+      duration: duration,
+      src: panelData.src,
+      type: 'image',
+      layer: 'video-layer',
+      filename: panelData.filename,
+      displayName: panelData.displayName
+    };
+    
+    // Add audio to audio layer
+    const audioClip = {
+      id: `audio-${audioData.id}-${Date.now()}`,
+      start: currentTime,
+      duration: duration,
+      src: audioData.src,
+      type: 'audio',
+      layer: 'audio-layer',
+      filename: audioData.filename,
+      displayName: audioData.displayName,
+      text: audioData.text || '',
+      meta: {
+        originalUrl: audioData.src, // Store the original file URL for persistence
+        filename: audioData.filename
+      }
+    };
+    
+    // Find video and audio layers (background layer is at index 0)
+    const videoLayer = layers.find(l => l.id === 'video-layer');
+    const audioLayer = layers.find(l => l.id === 'audio-layer');
+    
+    if (videoLayer) videoLayer.clips.push(videoClip);
+    if (audioLayer) audioLayer.clips.push(audioClip);
+    
+    currentTime += duration + transitionDuration;
+    
+    DBG(`Added panel ${panelData.displayName} at ${videoClip.start}s for ${duration}s`);
+  });
+  
+  // Update background layer duration to cover entire timeline
+  const backgroundLayer = layers.find(l => l.id === BACKGROUND_LAYER_ID);
+  if (backgroundLayer && backgroundLayer.clips.length > 0) {
+    backgroundLayer.clips[0].duration = Math.max(currentTime, backgroundLayer.clips[0].duration || 10);
+    DBG(`Updated background duration to ${backgroundLayer.clips[0].duration}s`);
   }
-
-  // Rebuild timeline UI
-  rebuildTimeline();
-  updateTimeline();
-
-  showToast(`Generated timeline with ${panelsWithAudio.length} panels`, 'success');
+  
+  // Fix any overlaps in all layers after batch adding
+  layers.forEach(layer => {
+    if (layer.clips && layer.clips.length > 0) {
+      fixLayerOverlaps(layer);
+    }
+  });
+  
+  // Refresh timeline display
+  renderTimeline();
+  
+  // Update layer list UI
+  renderLayerControls();
+  
+  // Force redraw of timeline to ensure proper positioning
+  setTimeout(() => {
+    renderTimeline();
+    
+    // Force layout reflow to ensure positioning is applied
+    const track = document.getElementById('timelineTrack');
+    if (track) {
+      track.offsetHeight; // Force layout reflow
+      
+      // Double-check clip positions and fix any that are overlapped
+      const clips = track.querySelectorAll('.clip');
+      clips.forEach((clipEl, index) => {
+        const layerId = clipEl.dataset.layerId;
+        const clipIndex = parseInt(clipEl.dataset.idx);
+        const layer = layers.find(l => l.id === layerId);
+        
+        if (layer && layer.clips[clipIndex]) {
+          const clip = layer.clips[clipIndex];
+          const expectedLeft = (clip.startTime || 0) * viewPxPerSec;
+          const currentLeft = parseFloat(clipEl.style.left) || 0;
+          
+          // If position is significantly off, force correct it
+          if (Math.abs(expectedLeft - currentLeft) > 5) {
+            clipEl.style.left = expectedLeft + 'px';
+            DBG(`Fixed clip position: ${clip.id || 'clip'} from ${currentLeft}px to ${expectedLeft}px`);
+          }
+        }
+      });
+    }
+    
+    DBG('Timeline redraw and positioning fixes completed');
+  }, 100);
+  
+  console.log(`[editor] Generated timeline with ${sortedPanels.length} panels (${currentTime.toFixed(1)}s total)`);
+  
+  DBG('Timeline generation complete. Total duration:', currentTime);
 }

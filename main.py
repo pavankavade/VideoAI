@@ -678,6 +678,7 @@ async def api_video_render(request: Request):
             tr = getattr(iclip, '_transform', None)
             cr = getattr(iclip, '_crop', None)
             out = iclip
+            
             # Crop first (coordinates in source image pixels)
             try:
                 if isinstance(cr, dict):
@@ -687,27 +688,41 @@ async def api_video_render(request: Request):
                         out = out.fx(vfx.crop, x1=max(0, int(cx)), y1=max(0, int(cy)), x2=max(1, int(cx+cw)), y2=max(1, int(cy+ch)))
             except Exception:
                 logger.exception('Failed to apply crop; skipping')
-            # Transform defaults (center full screen)
-            tx = 1920/2.0; ty = 1080/2.0; tw = 1920.0; th = 1080.0; rot = 0.0
+                
+            # Get original clip dimensions
+            original_w, original_h = out.size
+            
+            # Default: resize panels to 50% and center them
             if isinstance(tr, dict):
-                tx = float(tr.get('x', tx)); ty = float(tr.get('y', ty));
-                tw = float(tr.get('w', tw)); th = float(tr.get('h', th));
+                # Use custom transform if provided
+                tx = float(tr.get('x', target_w/2.0)); ty = float(tr.get('y', target_h/2.0));
+                tw = float(tr.get('w', original_w)); th = float(tr.get('h', original_h));
                 rot = float(tr.get('rotation', 0.0) or 0.0)
-            # Resize to target transform size (scaled to output resolution)
-            dw = max(1, int(tw * scale_x)); dh = max(1, int(th * scale_y))
+                logger.info(f"Using custom transform: size={tw}x{th}, pos=({tx},{ty})")
+            else:
+                # Default: 50% size, centered
+                tw = original_w * 0.5; th = original_h * 0.5
+                tx = target_w / 2.0; ty = target_h / 2.0; rot = 0.0
+                logger.info(f"Default transform: original={original_w}x{original_h}, resized={tw}x{th}, centered at ({tx},{ty})")
+            
+            # Resize to target size
+            dw = max(1, int(tw)); dh = max(1, int(th))
             try:
                 out = out.resize(newsize=(dw, dh))
             except Exception:
                 logger.exception('Failed to resize image clip; leaving original size')
+                
             # Rotate around center (no expand to mimic canvas clipping)
             try:
                 if abs(rot) > 1e-3:
                     out = out.rotate(rot, unit='deg', resample='bilinear')
             except Exception:
                 logger.exception('Failed to rotate clip; skipping rotation')
+                
             # Position: convert center (tx,ty) to top-left in output coordinates
-            dx = int((tx - tw/2.0) * scale_x); dy = int((ty - th/2.0) * scale_y)
+            dx = int(tx - tw/2.0); dy = int(ty - th/2.0)
             out = out.set_position((dx, dy))
+            
             # preserve timing and z
             out = out.set_start(getattr(iclip, 'start', 0))
             out = out.set_duration(iclip.duration)
