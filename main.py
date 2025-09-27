@@ -414,6 +414,14 @@ full_story_context: str = ""
 PANEL_API_URL = os.environ.get("PANEL_API_URL", "").strip()
 PANEL_API_MODE = os.environ.get("PANEL_API_MODE", "auto").lower()  # auto|json|zip|image
 
+# Hardcoded panel-split API extras (new params on upstream service)
+# These are intentionally hardcoded per request; change here if you want different behavior.
+PANEL_API_ADD_BORDER: bool = True
+PANEL_API_BORDER_WIDTH: int = 4
+PANEL_API_BORDER_COLOR: str = "black"
+PANEL_API_CURVED_BORDER: bool = True
+PANEL_API_CORNER_RADIUS: int = 20
+
 # External TTS API (optional)
 TTS_API_URL = os.environ.get("TTS_API_URL", "").strip()
 
@@ -423,7 +431,15 @@ def call_external_panel_api(page_path: str) -> Dict[str, Any]:
     import requests  # lazy import
     with open(page_path, "rb") as f:
         files = {"file": (os.path.basename(page_path), f, "image/png")}
-        resp = requests.post(PANEL_API_URL, files=files, timeout=120)
+        # New: pass hardcoded border params supported by the upstream API
+        params = {
+            "add_border": "true" if PANEL_API_ADD_BORDER else "false",
+            "border_width": int(PANEL_API_BORDER_WIDTH),
+            "border_color": str(PANEL_API_BORDER_COLOR),
+            "curved_border": "true" if PANEL_API_CURVED_BORDER else "false",
+            "corner_radius": int(PANEL_API_CORNER_RADIUS),
+        }
+        resp = requests.post(PANEL_API_URL, files=files, params=params, timeout=120)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Panel API error {resp.status_code}: {resp.text[:200]}")
     content_type = resp.headers.get("content-type", "").lower()
