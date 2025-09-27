@@ -70,6 +70,7 @@ const preloadedAudioEls = {}; // src -> HTMLAudioElement (preloaded)
 // Simplified preview audio state (HTMLAudio-only)
 let activeAudio = null; // current HTMLAudio element in use
 let activeAudioTimeout = null; // timeout id for scheduling next clip
+let playbackTotalOverride = null; // total duration override based on real audio lengths during playback
 // Cache mapping of original URLs to object URLs so we can reuse and revoke later
 const audioObjectUrlMap = {}; // originalSrc -> { url: objectURL, blob: Blob }
 let autosaveTimer = null;
@@ -521,7 +522,7 @@ function initCanvasPreview(){
   if (seekSlider){
     let scrubbing = false;
     const applySeek = () => {
-      const total = computeTotalDuration() || 0;
+      const total = getCanvasTotalDuration() || 0;
       const frac = Math.max(0, Math.min(1, Number(seekSlider.value)));
       const t = frac * total;
       playhead = t; drawFrame(playhead);
@@ -604,7 +605,7 @@ function togglePlayback(){
 function startRaf(){
   lastTs = performance.now();
   if (rafId) cancelAnimationFrame(rafId);
-  const total = computeTotalDuration();
+  const total = getCanvasTotalDuration();
   const step = (ts) => {
     const dt = (ts - lastTs) / 1000; lastTs = ts;
     playhead = Math.min(total, playhead + dt);
@@ -631,7 +632,7 @@ function drawFrame(timeSec){
   // overlays (selection/crop) when paused
   if (!isPlaying) renderOverlays();
   const tr = document.getElementById('timeReadout'); if (tr) tr.textContent = formatTime(timeSec);
-  const total = computeTotalDuration();
+  const total = getCanvasTotalDuration();
   const ttr = document.getElementById('totalTimeReadout'); if (ttr) ttr.textContent = '/ ' + formatTime(total);
   const seek = document.getElementById('seekSlider'); if (seek){
     const frac = total>0 ? (timeSec / total) : 0;
@@ -858,14 +859,25 @@ function onCanvasPointerMove(ev){
 function onCanvasPointerUp(){ if (interaction && interaction.from === 'canvas'){ interaction = null; scheduleAutosave(); } }
 
 // ------------------ Audio scheduling during canvas playback (HTMLAudio only) ------------------
+function getClipDurationEstimate(clip){
+  try{
+    const d = (clip && clip.duration!=null) ? Number(clip.duration) : 0;
+    if (d && isFinite(d) && d>0) return d;
+    const playable = getPlayableSrc(clip && clip.src);
+    const el = playable && preloadedAudioEls[playable];
+    if (el && isFinite(el.duration) && el.duration>0) return Number(el.duration);
+  }catch(e){}
+  return 0;
+}
+
 function findCurrentOrNextAudioClip(auds, t){
   // Prefer the clip active at time t; otherwise the next one after t
   let current = null;
   let next = null;
   for (const c of auds){
     const st = Number(c.startTime||0);
-    const dur = (c.duration!=null)? Number(c.duration) : null;
-    if (dur != null && t >= st && t < st + dur){ current = c; break; }
+    const dur = getClipDurationEstimate(c) || ((c.duration!=null)? Number(c.duration):0);
+    if (dur > 0 && t >= st && t < st + dur){ current = c; break; }
     if (st >= t){ if (!next || st < Number(next.startTime||0)) next = c; }
   }
   return current || next;
@@ -876,6 +888,12 @@ function scheduleAudioForPlayback(){
   const all = flattenLayersToTimeline();
   const auds = all.filter(c=> c.type==='audio' && c.src).sort((a,b)=> (a.startTime||0) - (b.startTime||0));
   DBG('Scheduling audio - found audio clips:', auds.length);
+  // Compute total override from actual durations so RAF won't stop early
+  try{
+    let total = 0;
+    for (const c of auds){ total += getClipDurationEstimate(c); }
+    playbackTotalOverride = (total && isFinite(total) && total>0) ? total : null;
+  }catch(e){ playbackTotalOverride = null; }
   
   if (auds.length === 0) return;
   const clip = findCurrentOrNextAudioClip(auds, playhead);
@@ -901,6 +919,8 @@ function scheduleAudioForPlayback(){
     preloadedAudioEls[playable] = audio;
   }
   activeAudio = audio;
+  // Always pause and reset any reused element before seeking
+  try{ audio.pause(); }catch(e){}
   // Reset handlers to avoid stacking
   audio.onended = null; audio.onerror = null; audio.onstalled = null; audio.onwaiting = null; audio.onloadedmetadata = null;
   // Attach basic logs for diagnostics
@@ -909,12 +929,15 @@ function scheduleAudioForPlayback(){
   audio.onwaiting = ()=>{ DBG('HTMLAudio waiting', { src: playable }); };
   // Chain to the next clip when this one ends
   audio.onended = ()=>{
-    const curEnd = (clip.startTime||0) + (clip.duration!=null? Number(clip.duration):0);
+    // Use actual audio duration if available to avoid early/late jumps
+    const playedDur = (isFinite(audio.duration) && audio.duration>0) ? Number(audio.duration) : (clip.duration!=null? Number(clip.duration):0);
+    const curEnd = (clip.startTime||0) + playedDur;
     const nextClip = findCurrentOrNextAudioClip(auds, curEnd + 0.001);
     if (!isPlaying || !nextClip) return;
     playhead = Math.max(playhead, curEnd);
     // Schedule next immediately
-    window.activeAudioTimeout = setTimeout(()=>{ scheduleAudioForPlayback(); }, 0);
+    if (activeAudioTimeout){ try{ clearTimeout(activeAudioTimeout); }catch(e){} }
+    activeAudioTimeout = setTimeout(()=>{ scheduleAudioForPlayback(); }, 0);
   };
   // Seek to offset within the clip
   if (playhead < (clip.startTime||0)){
@@ -923,12 +946,57 @@ function scheduleAudioForPlayback(){
   }
   const offset = Math.max(0, playhead - (clip.startTime||0));
   const seekAndPlay = ()=>{
-    try{
-      if (offset>0 && isFinite(audio.duration)){
-        audio.currentTime = Math.min(audio.duration-0.05, Math.max(0, offset));
+    const target = Math.max(0, offset);
+    const actuallyPlay = ()=>{
+      audio.play().then(()=>{ DBG('HTMLAudio play started', { src: playable, at: (clip.startTime||0)+target }); }).catch(err=>{ DBG('HTMLAudio play error', err); });
+    };
+    const doSeek = ()=>{
+      let want = target;
+      try{
+        if (isFinite(audio.duration) && audio.duration > 0){
+          // Clamp to slightly before end to avoid range errors
+          want = Math.min(audio.duration - 0.05, target);
+        } else {
+          want = target;
+        }
+        audio.currentTime = want;
+      }catch(e){ /* ignore set error; will try play anyway */ }
+      // If the element reports it's seeking, wait for 'seeked' before play
+      if (audio.seeking){
+        const onSeeked = ()=>{ audio.removeEventListener('seeked', onSeeked); actuallyPlay(); };
+        audio.addEventListener('seeked', onSeeked, { once: true });
+      } else {
+        // Some browsers don't flip seeking reliably; give a microtask tick
+        setTimeout(actuallyPlay, 0);
       }
-    }catch(e){}
-    audio.play().then(()=>{ DBG('HTMLAudio play started', { src: playable, at: playhead.toFixed(2) }); }).catch(err=>{ DBG('HTMLAudio play error', err); });
+    };
+    // Ensure metadata is ready before seeking
+    if (audio.readyState >= 1 && isFinite(audio.duration) && audio.duration > 0){
+      doSeek();
+    } else {
+      audio.onloadedmetadata = ()=>{ audio.onloadedmetadata = null; doSeek(); };
+      try{ audio.load(); }catch(e){}
+    }
+    // After metadata is ready, reconcile clip duration with actual audio duration
+    try{
+      if (isFinite(audio.duration) && audio.duration > 0){
+        const real = Number(audio.duration);
+        const orig = findOriginalClip(clip);
+        if (orig && (orig.duration == null || Math.abs(Number(orig.duration) - real) > 0.01)){
+          orig.duration = real;
+          // Mirror to paired video clip if in the same index
+          try{
+            const videoLayer = layers.find(l => l.id === 'video-layer');
+            if (videoLayer && typeof orig._clipIndex === 'number' && videoLayer.clips[orig._clipIndex]){
+              videoLayer.clips[orig._clipIndex].duration = real;
+            }
+          }catch(_e){}
+          timeline = flattenLayersToTimeline();
+          renderTimeline();
+          updateTotalDuration();
+        }
+      }
+    }catch(_e){}
   };
   if (audio.readyState >= 1){ seekAndPlay(); } else { audio.onloadedmetadata = seekAndPlay; try{ audio.load(); }catch(e){} }
   // Ensure playback element exists in DOM to align with some browsers (not strictly required)
@@ -944,11 +1012,20 @@ function clearAudioPlayback(){
       try{ if (isFinite(activeAudio.duration)) activeAudio.currentTime = 0; }catch(e){}
       activeAudio = null;
     }
+    playbackTotalOverride = null;
     // Abort any WebAudio fetches (legacy)
     Object.values(audioFetchControllers).forEach(ctrl=>{ try{ ctrl.abort(); }catch(e){} });
     audioFetchControllers = {};
   }catch(e){}
   previewControllers = [];
+}
+
+function getCanvasTotalDuration(){
+  try{
+    const t = playbackTotalOverride;
+    if (t && isFinite(t) && t>0) return t;
+  }catch(e){}
+  return computeTotalDuration();
 }
 
 // Preload all images used in the timeline to prevent loading during playback
@@ -2553,7 +2630,7 @@ window.pageMonitorInterval = setInterval(() => {
 }, 2000);
 
 // Generate automatic timeline from panels and their audio
-function generatePanelTimeline() {
+async function generatePanelTimeline() {
   DBG('generatePanelTimeline called');
   
   if (panels.length === 0) {
@@ -2626,7 +2703,7 @@ function generatePanelTimeline() {
     // Add panel image to video layer
     const videoClip = {
       id: `video-${panelData.id}-${Date.now()}`,
-      start: currentTime,
+      startTime: currentTime,
       duration: duration,
       src: panelData.src,
       type: 'image',
@@ -2638,7 +2715,7 @@ function generatePanelTimeline() {
     // Add audio to audio layer
     const audioClip = {
       id: `audio-${audioData.id}-${Date.now()}`,
-      start: currentTime,
+      startTime: currentTime,
       duration: duration,
       src: audioData.src,
       type: 'audio',
@@ -2680,31 +2757,38 @@ function generatePanelTimeline() {
   
   // Refresh timeline display
   renderTimeline();
-  
+
   // Update layer list UI
   renderLayerControls();
-  
+
+  // Sync canvas to actual audio durations and chain sequentially to match server render
+  try {
+    await syncTimelineToActualAudio();
+  } catch (e) {
+    DBG('syncTimelineToActualAudio failed', e);
+  }
+
   // Force redraw of timeline to ensure proper positioning
   setTimeout(() => {
     renderTimeline();
-    
+
     // Force layout reflow to ensure positioning is applied
     const track = document.getElementById('timelineTrack');
     if (track) {
       track.offsetHeight; // Force layout reflow
-      
+
       // Double-check clip positions and fix any that are overlapped
       const clips = track.querySelectorAll('.clip');
       clips.forEach((clipEl, index) => {
         const layerId = clipEl.dataset.layerId;
         const clipIndex = parseInt(clipEl.dataset.idx);
         const layer = layers.find(l => l.id === layerId);
-        
+
         if (layer && layer.clips[clipIndex]) {
           const clip = layer.clips[clipIndex];
           const expectedLeft = (clip.startTime || 0) * viewPxPerSec;
           const currentLeft = parseFloat(clipEl.style.left) || 0;
-          
+
           // If position is significantly off, force correct it
           if (Math.abs(expectedLeft - currentLeft) > 5) {
             clipEl.style.left = expectedLeft + 'px';
@@ -2713,11 +2797,54 @@ function generatePanelTimeline() {
         }
       });
     }
-    
+
     DBG('Timeline redraw and positioning fixes completed');
   }, 100);
-  
+
   console.log(`[editor] Generated timeline with ${sortedPanels.length} panels (${currentTime.toFixed(1)}s total)`);
-  
+
   DBG('Timeline generation complete. Total duration:', currentTime);
+}
+
+// Make canvas audio and image durations match actual audio files and chain sequentially (no gaps),
+// so canvas total time equals server render time.
+async function syncTimelineToActualAudio(){
+  try {
+    const audioLayer = layers.find(l => l.id === 'audio-layer');
+    const videoLayer = layers.find(l => l.id === 'video-layer');
+    if (!audioLayer || !videoLayer) return;
+
+    // Measure real durations for all audio clips
+    const auds = audioLayer.clips.slice();
+    const realDurs = await Promise.all(auds.map(async (c) => {
+      try {
+        const d = await extractAudioDuration(c);
+        return (d && isFinite(d) && d > 0) ? d : (c.duration || 0);
+      } catch(_e){ return c.duration || 0; }
+    }));
+
+    // Apply sequential chaining with real durations; mirror durations to corresponding image clips
+    let t = 0;
+    for (let i = 0; i < auds.length; i++){
+      const d = Number(realDurs[i] || 0);
+      auds[i].startTime = t; auds[i].duration = d;
+      if (videoLayer.clips[i]){ videoLayer.clips[i].startTime = t; videoLayer.clips[i].duration = d; }
+      t += d; // no gap to match render
+    }
+
+    // Ensure background covers the full chained duration
+    const bg = layers.find(l => isBackgroundLayer(l));
+    if (bg && bg.clips && bg.clips[0]){
+      bg.clips[0].startTime = 0;
+      bg.clips[0].duration = Math.max(bg.clips[0].duration || 0, t || 10);
+    }
+
+    // Recompute flattened timeline and refresh UI
+    timeline = flattenLayersToTimeline();
+    renderTimeline();
+    updateTotalDuration();
+    DBG('Synchronized to audio durations. New total (approx):', t, 'seconds');
+  } catch (e) {
+    DBG('syncTimelineToActualAudio error', e);
+  }
 }

@@ -545,7 +545,7 @@ async def api_video_render(request: Request):
 
     clips = []
     fg_clips = []  # foreground image clips (non-background)
-    audio_clips = []  # list of (AudioFileClip, start_time)
+    audio_clips = []  # list of (AudioFileClip, start_time, requested_duration)
 
     # Create temporary directory for intermediate files if needed
     import tempfile
@@ -553,6 +553,8 @@ async def api_video_render(request: Request):
     from pathlib import Path
     from starlette.responses import FileResponse
     from starlette.background import BackgroundTask
+    # Local MoviePy imports used by the renderer
+    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 
     # Create a temporary working directory that we'll clean up after the response completes
     tmpdir = tempfile.mkdtemp(prefix="video_render_")
@@ -565,7 +567,11 @@ async def api_video_render(request: Request):
             ttype = item.get('type')
             src = item.get('src')
             dur = float(item.get('duration')) if item.get('duration') else None
-            start_time = float(item.get('startTime') or item.get('start_time') or 0.0)
+            # support both startTime (editor) and start (legacy) fields
+            start_time = float(
+                (item.get('startTime') if item.get('startTime') is not None else item.get('start'))
+                or item.get('start_time') or 0.0
+            )
             is_bg = bool(item.get('_isBackground'))
             layer_index = int(item.get('_layerIndex')) if item.get('_layerIndex') is not None else None
             if ttype == 'image':
@@ -612,12 +618,13 @@ async def api_video_render(request: Request):
                     continue
                 # default to provided start_time if any
                 astart = start_time
+                aduration = dur if dur is not None else None
                 if srca.startswith('/'):
                     local_a = os.path.join(BASE_DIR, srca.lstrip('/'))
                     if os.path.exists(local_a):
                         try:
                             ac = AudioFileClip(local_a)
-                            audio_clips.append((ac, astart))
+                            audio_clips.append((ac, astart, aduration))
                         except Exception:
                             logger.exception('Failed to open local audio %s', local_a)
                     else:
@@ -629,7 +636,7 @@ async def api_video_render(request: Request):
                             af = tmp / f"audio_{len(audio_clips)}{ext}"
                             af.write_bytes(r.content)
                             ac = AudioFileClip(str(af))
-                            audio_clips.append((ac, astart))
+                            audio_clips.append((ac, astart, aduration))
                         except Exception:
                             logger.exception('Failed to fetch audio %s', srca)
                 else:
@@ -640,7 +647,7 @@ async def api_video_render(request: Request):
                         af = tmp / f"audio_{len(audio_clips)}{ext}"
                         af.write_bytes(r.content)
                         ac = AudioFileClip(str(af))
-                        audio_clips.append((ac, astart))
+                        audio_clips.append((ac, astart, aduration))
                     except Exception:
                         logger.exception('Failed to fetch audio %s', srca)
         push_progress(job_id, stage="parse_timeline", status="complete")
@@ -663,6 +670,13 @@ async def api_video_render(request: Request):
         total_end = 0.0
         for c in clips + fg_clips:
             total_end = max(total_end, float(getattr(c, 'start', 0) or 0) + float(c.duration or 0))
+        # Include audio tails in total duration as well
+        for ac, st, adur in audio_clips:
+            try:
+                a_len = float(adur) if adur is not None else float(getattr(ac, 'duration', 0) or 0)
+            except Exception:
+                a_len = float(getattr(ac, 'duration', 0) or 0)
+            total_end = max(total_end, float(st or 0.0) + float(a_len or 0.0))
         from moviepy.editor import ColorClip
         base_video = ColorClip((target_w, target_h), color=(0,0,0), duration=(total_end or 2.0))
         push_progress(job_id, stage="build_base", status="complete")
@@ -750,18 +764,38 @@ async def api_video_render(request: Request):
         if audio_clips:
             try:
                 push_progress(job_id, stage="attach_audio", status="start")
-                # Place audio clips on their timeline positions and mix
+                # Chain audio clips sequentially (one after another), playing each in full without overlap.
                 from moviepy.editor import CompositeAudioClip as MPCompositeAudioClip
+
+                # Sort by provided start_time to respect user ordering when available
+                seq = sorted(audio_clips, key=lambda t: float(t[1] or 0.0))
                 placed = []
-                for ac, st in audio_clips:
+                cursor = 0.0
+                for ac, st, adur in seq:
                     try:
-                        placed.append(ac.set_start(float(st or 0.0)))
+                        # Always play full clip; ignore provided aduration for sequential mode
+                        dur = float(getattr(ac, 'duration', 0.0) or 0.0)
+                        placed.append(ac.set_start(cursor))
+                        cursor += dur
                     except Exception:
-                        logger.exception('Failed to set audio start; using 0')
-                        placed.append(ac)
+                        logger.exception('Failed during sequential audio placement; continuing')
+                        # If something goes wrong, at least append as-is at current cursor
+                        try:
+                            placed.append(ac.set_start(cursor))
+                            cursor += float(getattr(ac, 'duration', 0.0) or 0.0)
+                        except Exception:
+                            placed.append(ac)
+
                 if placed:
                     final_audio = MPCompositeAudioClip(placed)
                     video = video.set_audio(final_audio)
+                    # Ensure the video duration covers the entire chained audio timeline
+                    try:
+                        if cursor > float(getattr(video, 'duration', 0.0) or 0.0):
+                            video = video.set_duration(cursor)
+                    except Exception:
+                        logger.warning('Could not extend video duration to match audio; proceeding')
+
                 push_progress(job_id, stage="attach_audio", status="complete")
             except Exception:
                 logger.exception('Failed to attach audio to video')
