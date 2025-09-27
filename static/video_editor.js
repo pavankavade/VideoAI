@@ -2434,6 +2434,48 @@ async function onExport(){
     const jobId = `render-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
     try { window.__renderJobId = jobId; } catch(e){}
 
+    // Ensure the timeline reflects real audio durations and sequential layout before exporting
+    if (typeof syncTimelineToActualAudio === 'function'){
+      try { await syncTimelineToActualAudio(); } catch(e){ /* non-fatal */ }
+    }
+
+    // Helper to ensure we send concrete transform/crop identical to canvas defaults
+    const ensureTransformAndCrop = (clip) => {
+      if (clip.type !== 'image') return;
+      const baseW = (typeof canvas?.width === 'number' ? canvas.width : 1920);
+      const baseH = (typeof canvas?.height === 'number' ? canvas.height : 1080);
+      // Transform
+      if (!clip.transform){
+        const isPanel = typeof clip.src === 'string' && clip.src.includes('/panels/');
+        if (clip._img && clip._img.naturalWidth && clip._img.naturalHeight){
+          if (isPanel){
+            const pf = computePanelFit(clip._img.naturalWidth, clip._img.naturalHeight, baseW, baseH);
+            clip.transform = { x: pf.dx + pf.dw/2, y: pf.dy + pf.dh/2, w: pf.dw, h: pf.dh, rotation: 0 };
+          } else if (clip._isBackground){
+            // Background: cover canvas
+            clip.transform = { x: baseW/2, y: baseH/2, w: baseW, h: baseH, rotation: 0 };
+          } else {
+            clip.transform = { x: baseW/2, y: baseH/2, w: baseW, h: baseH, rotation: 0 };
+          }
+        } else {
+          // Approximation if image metadata not ready
+          if (isPanel){
+            clip.transform = { x: baseW/2, y: baseH/2, w: baseW*0.5, h: baseH*0.5, rotation: 0 };
+          } else if (clip._isBackground){
+            clip.transform = { x: baseW/2, y: baseH/2, w: baseW, h: baseH, rotation: 0 };
+          } else {
+            clip.transform = { x: baseW/2, y: baseH/2, w: baseW, h: baseH, rotation: 0 };
+          }
+        }
+      }
+      // Crop: default to full image if known
+      if (!clip.crop){
+        if (clip._img && clip._img.naturalWidth && clip._img.naturalHeight){
+          clip.crop = { x: 0, y: 0, w: clip._img.naturalWidth, h: clip._img.naturalHeight };
+        }
+      }
+    };
+
     // Build export timeline with normalized src
     const exportTimeline = flattenLayersToTimeline().map((c)=>{
       const copy = Object.assign({}, c);
@@ -2442,6 +2484,7 @@ async function onExport(){
       // pass layer z-order and background info to backend
       copy._layerIndex = c._layerIndex;
       copy._isBackground = !!c._isBackground;
+      if (copy.type === 'image') ensureTransformAndCrop(copy);
       return copy;
     });
 
@@ -2491,8 +2534,17 @@ async function onExport(){
       }catch(e){ console.warn('Inline audio upload error', e); }
     }
 
-    // Now POST the final payload to render endpoint
-  const payload = { project_id: project.id, timeline: exportTimeline, resolution: res, downloadMode: 'link', return_url: true, job_id: jobId };
+    // Now POST the final payload to render endpoint, include authoring frame and mode hints
+  const payload = { 
+      project_id: project.id, 
+      timeline: exportTimeline, 
+      resolution: res, 
+      downloadMode: 'link', 
+      return_url: true, 
+      job_id: jobId,
+      baseFrame: { width: (canvas && canvas.width) || 1920, height: (canvas && canvas.height) || 1080 },
+      sequentialAudio: true
+    };
     let resp;
     try {
       resp = await fetch('/api/video/render', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
