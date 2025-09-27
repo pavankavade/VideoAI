@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 
 from PIL import Image
 # from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
@@ -67,6 +68,22 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_projects")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# CORS: allow LAN/dev usage from other devices on the same network
+# For production, restrict allow_origins via environment variable ALLOW_ORIGINS (comma-separated)
+allow_origins_env = os.environ.get("ALLOW_ORIGINS", "*").strip()
+if allow_origins_env == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [o.strip() for o in allow_origins_env.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -------------------- In-memory SSE progress channels --------------------
 # Simple per-job pubsub so the UI can subscribe to step-by-step progress.
@@ -2116,8 +2133,80 @@ async def process_chapter():
 
 
 if __name__ == "__main__":
+    # Optional direct runner for convenience: `python main.py`
+    # Binds to 0.0.0.0 by default so other LAN devices can access this machine.
     import uvicorn  # type: ignore
+    import socket
+    from urllib.parse import urlparse
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    def get_local_ip() -> str:
+        ip = "127.0.0.1"
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Doesn't need to be reachable; used to determine the default interface
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            try:
+                ip = socket.gethostbyname(socket.gethostname()) or ip
+            except Exception:
+                pass
+        return ip
+
+    host = os.environ.get("HOST", "0.0.0.0")
+    try:
+        port = int(os.environ.get("PORT", "8000"))
+    except Exception:
+        port = 8000
+    reload_flag = (os.environ.get("RELOAD", "1").lower() in {"1", "true", "yes"})
+
+    # Friendly startup banner
+    env_name = "development" if reload_flag else "production"
+    local_ip = get_local_ip()
+    print("Manga AI Dashboard starting...")
+    print(f" * Environment: {env_name}")
+    print(f" * Base directory: {BASE_DIR}")
+    print(f" * Uploads dir: {UPLOAD_DIR}")
+    print(f" * Manga projects dir: {MANGA_DIR}")
+    print(" * Access the application at:")
+    print(f"   - Local:   http://127.0.0.1:{port}")
+    if host == "0.0.0.0":
+        print(f"   - Network: http://{local_ip}:{port}")
+    else:
+        print("   - Network: (bind to 0.0.0.0 to allow LAN access)")
+
+    # Optional: expose via ngrok only if NGROK_APP_URL and NGROK_APP_AUTHTOKEN exist
+    ngrok_url = None
+    app_url = (os.environ.get("NGROK_APP_URL") or "").strip()
+    app_token = (os.environ.get("NGROK_APP_AUTHTOKEN") or "").strip()
+    if app_url and app_token:
+        try:
+            from pyngrok import ngrok, conf  # type: ignore
+            conf.get_default().auth_token = app_token
+            opts = {"bind_tls": True}
+            parsed = urlparse(app_url)
+            hostname = parsed.hostname
+            try:
+                if hostname:
+                    tunnel = ngrok.connect(addr=port, proto="http", hostname=hostname, **opts)
+                else:
+                    tunnel = ngrok.connect(addr=port, proto="http", **opts)
+                ngrok_url = tunnel.public_url
+                print(f" * Public (ngrok): {ngrok_url}")
+                logger.info(f"ngrok tunnel established: {ngrok_url}")
+                logger.info(f"Public URL: {ngrok_url}")
+            except Exception:
+                logger.exception("ngrok hostname binding failed; falling back to random URL")
+                tunnel = ngrok.connect(addr=port, proto="http", **opts)
+                ngrok_url = tunnel.public_url
+                print(f" * Public (ngrok): {ngrok_url}")
+                logger.info(f"ngrok tunnel established: {ngrok_url}")
+                logger.info(f"Public URL: {ngrok_url}")
+        except Exception:
+            logger.exception("Failed to start ngrok tunnel; continuing without public URL")
+
+    logger.info(f"Starting Uvicorn on {host}:{port} reload={reload_flag}")
+    uvicorn.run("main:app", host=host, port=port, reload=reload_flag)
 
 

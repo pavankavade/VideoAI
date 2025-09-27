@@ -16,3 +16,4 @@ tensorflow>=2.15.0 ; platform_system != "Windows"
 moviepy==1.0.3
 imageio-ffmpeg>=0.4.7
 numpy>=1.24.0
+pyngrok>=7.0.0
