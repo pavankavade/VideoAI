@@ -167,6 +167,34 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Show loading modal immediately
   showLoadingModal('Initializing video editor...');
   
+  // Initialize project data from script tag
+  try {
+    console.log('[video-editor] Looking for project data script tag...');
+    const projectDataScript = document.getElementById('__project_data__');
+    console.log('[video-editor] Found script element:', !!projectDataScript);
+    
+    if (projectDataScript && projectDataScript.textContent) {
+      console.log('[video-editor] Script content length:', projectDataScript.textContent.length);
+      console.log('[video-editor] Script content preview:', projectDataScript.textContent.substring(0, 200));
+      
+      window.projectData = JSON.parse(projectDataScript.textContent);
+      console.log('[video-editor] Successfully loaded project data:', {
+        id: window.projectData?.id,
+        title: window.projectData?.title,
+        hasWorkflow: !!window.projectData?.workflow,
+        keysCount: Object.keys(window.projectData || {}).length
+      });
+    } else {
+      console.warn('[video-editor] No project data script found or empty content');
+      console.log('[video-editor] All script tags:', Array.from(document.querySelectorAll('script')).map(s => s.id || s.type));
+      window.projectData = { id: '', title: '', pages: [], workflow: {} };
+    }
+  } catch (e) {
+    console.error('[video-editor] Failed to parse project data:', e);
+    console.error('[video-editor] Raw content that failed to parse:', projectDataScript?.textContent);
+    window.projectData = { id: '', title: '', pages: [], workflow: {} };
+  }
+  
   // Load effect configuration from server
   await loadEffectConfig();
   
@@ -2015,11 +2043,27 @@ function onClipResizeEnd(ev){
 
 // ------------------ AUTOSAVE ------------------
 function scheduleAutosave(){
-  if (isExporting) return; // skip autosave while exporting
+  console.log('[scheduleAutosave] Called, isExporting:', isExporting);
+  if (isExporting) {
+    console.log('[scheduleAutosave] Skipping - export in progress');
+    return; // skip autosave while exporting
+  }
+  
+  console.log('[scheduleAutosave] Setting autosavePending to true');
   autosavePending = true;
-  const autosaveEl = document.getElementById('autosaveStatus'); if (autosaveEl) autosaveEl.textContent = 'Pending...';
-  if (autosaveTimer) clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(()=>{ saveProject(false); }, 2000);
+  const autosaveEl = document.getElementById('autosaveStatus'); 
+  if (autosaveEl) autosaveEl.textContent = 'Pending...';
+  
+  if (autosaveTimer) {
+    console.log('[scheduleAutosave] Clearing existing timer');
+    clearTimeout(autosaveTimer);
+  }
+  
+  console.log('[scheduleAutosave] Setting new timer for 2 seconds');
+  autosaveTimer = setTimeout(()=>{ 
+    console.log('[scheduleAutosave] Timer fired, calling saveProject');
+    saveProject(false); 
+  }, 2000);
   
   // Mark initialization complete
   DBG('Video editor initialization completed');
@@ -2034,10 +2078,55 @@ function scheduleAutosave(){
 }
 
 async function saveProject(force=false){
-  if (!autosavePending && !force) return;
-  const autosaveEl = document.getElementById('autosaveStatus'); if (autosaveEl) autosaveEl.textContent = 'Saving...';
+  console.log('[saveProject] Called with force:', force, 'autosavePending:', autosavePending);
+  if (!autosavePending && !force) {
+    console.log('[saveProject] Skipping save - no pending changes and not forced');
+    return;
+  }
+  
+  const autosaveEl = document.getElementById('autosaveStatus'); 
+  if (autosaveEl) autosaveEl.textContent = 'Saving...';
+  
   try{
-    const project = window.projectData || {};
+    console.log('[saveProject] Starting save process...');
+    console.log('[saveProject] window.projectData exists:', !!window.projectData);
+    console.log('[saveProject] window.projectData type:', typeof window.projectData);
+    
+    // Handle both nested and direct project data formats
+    const projectData = window.projectData || {};
+    let project;
+    
+    // Check if project data is nested under a "project" key
+    if (projectData.project && typeof projectData.project === 'object') {
+      project = projectData.project;
+      console.log('[saveProject] Using nested project data format');
+    } else if (projectData.id) {
+      project = projectData;
+      console.log('[saveProject] Using direct project data format');
+    } else {
+      project = projectData;
+      console.log('[saveProject] Using raw project data as fallback');
+    }
+    
+    console.log('[saveProject] Project data keys:', Object.keys(project));
+    console.log('[saveProject] Project ID value:', project.id);
+    console.log('[saveProject] Project ID type:', typeof project.id);
+    console.log('[saveProject] Project data:', {
+      id: project.id,
+      title: project.title,
+      hasWorkflow: !!project.workflow,
+      projectType: typeof project,
+      fullProject: project,
+      rawProjectData: projectData
+    });
+    
+    if (!project.id || project.id === '' || project.id === null || project.id === undefined) {
+      console.error('[saveProject] Project ID is missing! Project ID value:', project.id);
+      console.error('[saveProject] Project data:', project);
+      console.error('[saveProject] Raw projectData:', projectData);
+      throw new Error('Project ID is missing or empty. Full project: ' + JSON.stringify({project: project, raw: projectData}));
+    }
+    
     // Sanitize layers to avoid sending heavy blobs/base64 to the server on autosave
     const sanitizedLayers = (layers || []).map(l => ({
       id: l.id,
@@ -2074,17 +2163,70 @@ async function saveProject(force=false){
         return out;
       })
     }));
+    
+    console.log('[saveProject] Sanitized layers count:', sanitizedLayers.length);
+    console.log('[saveProject] Sanitized layers:', sanitizedLayers);
+    
     const payload = { project_id: project.id, layers: sanitizedLayers };
-    const resp = await fetch('/save_project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload)});
-    if (!resp.ok) throw new Error('Save failed: ' + resp.status);
+    console.log('[saveProject] Final payload:', {
+      project_id: payload.project_id,
+      layers_count: payload.layers.length,
+      payload_size: JSON.stringify(payload).length,
+      full_payload: payload
+    });
+    
+    console.log('[saveProject] Making API call to /save_project...');
+    const resp = await fetch('/save_project', { 
+      method:'POST', 
+      headers:{'content-type':'application/json'}, 
+      body: JSON.stringify(payload)
+    });
+    
+    console.log('[saveProject] Response received:', {
+      status: resp.status,
+      statusText: resp.statusText,
+      headers: Object.fromEntries(resp.headers.entries())
+    });
+    
+    if (!resp.ok) {
+      const errorText = await resp.text();
+      console.error('[saveProject] Error response:', errorText);
+      throw new Error('Save failed: ' + resp.status + ' - ' + errorText);
+    }
+    
+    const result = await resp.json();
+    console.log('[saveProject] Success response:', result);
+    
     autosavePending = false;
     if (autosaveEl) autosaveEl.textContent = 'Saved';
     setTimeout(()=>{ if (autosaveEl) autosaveEl.textContent = ''; }, 2000);
   }catch(e){
     console.error('Autosave failed', e);
-    if (autosaveEl) autosaveEl.textContent = 'Save error';
+    if (autosaveEl) autosaveEl.textContent = 'Save error: ' + e.message;
   }
 }
+
+// Test save function for debugging
+function testSaveFunction() {
+  console.log('[testSave] Manual save test triggered');
+  console.log('[testSave] window.projectData:', window.projectData);
+  
+  // Handle both nested and direct project data formats
+  const projectData = window.projectData || {};
+  const project = projectData.project || projectData;
+  
+  console.log('[testSave] Extracted project:', project);
+  console.log('[testSave] Project ID:', project.id);
+  console.log('[testSave] Current layers:', layers);
+  console.log('[testSave] autosavePending:', autosavePending);
+  
+  // Force a save
+  autosavePending = true;
+  saveProject(true);
+}
+
+// Make test function globally available
+window.testSaveFunction = testSaveFunction;
 
 // ------------------ WEBAUDIO-BASED PREVIEW ------------------
 async function ensureAudioContext(){

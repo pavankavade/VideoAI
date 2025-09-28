@@ -1261,6 +1261,10 @@ function openPanelEditor(pageNumber) {
                                 return `
                     <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
                         <div class="drag-handle">⋮⋮</div>
+                        <div class="panel-edit-overlay">
+                            <button class="edit-panel-btn" onclick="openPanelImageEditor(${pageNumber}, ${index})" title="Edit Panel">✂️</button>
+                            <button class="add-border-btn" onclick="addBorderToPanel(${pageNumber}, ${index})" title="Add Border">⭕</button>
+                        </div>
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
@@ -1316,6 +1320,11 @@ function openPanelEditor(pageNumber) {
                 `;
             }).join('')}
         </div>
+        
+        <!-- Add New Panel Button -->
+        <button class="add-panel-btn" onclick="openAddPanelModal(${pageNumber})">
+            ➕ Add New Panel
+        </button>
         
         <!-- Audio Controls for Panel Editor -->
         <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
@@ -1429,6 +1438,13 @@ function openPanelEditor(pageNumber) {
 }
 
 function loadPanelEditorContent(pageNumber) {
+    console.log('Loading panel editor content for page:', pageNumber);
+    console.log('Current project data structure:', {
+        workflow: projectData.workflow ? 'exists' : 'missing',
+        panels: projectData.workflow?.panels ? 'exists' : 'missing',
+        panelsData: projectData.workflow?.panels?.data ? projectData.workflow.panels.data.length + ' pages' : 'missing'
+    });
+    
     if (!currentEditingPage || currentEditingPage !== pageNumber) {
         currentEditingPage = pageNumber;
     }
@@ -1449,13 +1465,27 @@ function loadPanelEditorContent(pageNumber) {
     
     // Get page data
     const panelsData = projectData.workflow?.panels?.data || [];
-    const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+    const pageData = panelsData.find(p => {
+        const pageNum = parseInt(p.page_number);
+        const targetPage = parseInt(pageNumber);
+        console.log('Comparing page numbers:', pageNum, 'vs', targetPage, '- match:', pageNum === targetPage);
+        return pageNum === targetPage;
+    });
+    
+    console.log('Panel data for page', pageNumber, ':', pageData);
+    console.log('All panel data:', panelsData);
+    console.log('Page data panels:', pageData?.panels);
     
     if (!pageData || !pageData.panels || pageData.panels.length === 0) {
+        console.log('No panels found for page', pageNumber, '- showing no panels message');
         contentDiv.innerHTML = `
             <div class="no-panels-message">
                 <h3>No panels available</h3>
                 <p>Please detect panels first before editing text assignments.</p>
+                <div style="margin-top: 10px; font-size: 12px; color: #888;">
+                    Debug info: Page ${pageNumber}, found ${pageData ? 'page data' : 'no page data'}, 
+                    panels: ${pageData?.panels?.length || 0}
+                </div>
             </div>
         `;
         return;
@@ -1506,6 +1536,10 @@ function loadPanelEditorContent(pageNumber) {
                                 return `
                     <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
                         <div class="drag-handle">⋮⋮</div>
+                        <div class="panel-edit-overlay">
+                            <button class="edit-panel-btn" onclick="openPanelImageEditor(${pageNumber}, ${index})" title="Edit Panel">✂️</button>
+                            <button class="add-border-btn" onclick="addBorderToPanel(${pageNumber}, ${index})" title="Add Border">⭕</button>
+                        </div>
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
@@ -3200,3 +3234,2112 @@ async function synthesizeIndividualPanel(pageNumber, panelIndex) {
 
 // Make function globally available
 window.synthesizeIndividualPanel = synthesizeIndividualPanel;
+
+// Panel Image Editing Functionality - Enhanced
+let currentEditingPanel = null;
+let cropCanvas = null;
+let cropContext = null;
+let previewCanvas = null;
+let previewContext = null;
+let originalImage = null;
+
+// Crop modes and data
+let cropMode = 'rectangle'; // 'rectangle' or 'freeform'
+let rectangleCrop = null;
+let freeformPoints = [];
+
+// Rectangle cropping variables
+let isDragging = false;
+let isResizing = false;
+let resizeHandle = null;
+let dragStart = { x: 0, y: 0 };
+let maintainAspectRatio = false;
+
+// Zoom functionality variables
+let zoomLevel = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let lastPanX = 0;
+let lastPanY = 0;
+
+// Add New Panel Functionality - Enhanced
+let addPanelCanvas = null;
+let addPanelContext = null;
+let addPanelPreviewCanvas = null;
+let addPanelPreviewContext = null;
+let addPanelImage = null;
+let addPanelCropMode = 'rectangle';
+let addPanelRectangleCrop = null;
+let addPanelFreeformPoints = [];
+let addPanelDragState = { isDragging: false, dragType: '', startX: 0, startY: 0, originalCrop: null };
+let currentPageForNewPanel = null;
+let addPanelZoomLevel = 1;
+let addPanelPanX = 0;
+let addPanelPanY = 0;
+
+// Additional add panel variables
+let addPanelDragging = false;
+let addPanelResizing = false;
+let addPanelResizeHandle = null;
+let addPanelDragStart = { x: 0, y: 0 };
+let addPanelMaintainAspect = false;
+
+// Global mouse event handlers for crop functionality
+function handleCropMouseDown(e) {
+    const rect = cropCanvas.getBoundingClientRect();
+    // Adjust coordinates for zoom and pan
+    const x = (e.clientX - rect.left - panX) / zoomLevel;
+    const y = (e.clientY - rect.top - panY) / zoomLevel;
+    
+    console.log('Mouse down at:', x, y, 'zoom:', zoomLevel);
+    
+    if (cropMode === 'freeform') {
+        // Add point for freeform crop
+        if (freeformPoints.length < 4) {
+            freeformPoints.push({ x, y });
+            updateFreeformPointsDisplay();
+            drawImage();
+        }
+        return;
+    }
+    
+    if (cropMode === 'rectangle') {
+        handleRectangleMouseDown(x, y);
+    }
+}
+
+function handleCropMouseMove(e) {
+    const rect = cropCanvas.getBoundingClientRect();
+    // Adjust coordinates for zoom and pan
+    const x = (e.clientX - rect.left - panX) / zoomLevel;
+    const y = (e.clientY - rect.top - panY) / zoomLevel;
+    
+    if (cropMode === 'rectangle') {
+        handleRectangleMouseMove(x, y);
+    }
+}
+
+function handleCropMouseUp(e) {
+    dragging = false;
+    resizing = false;
+    resizeHandle = null;
+}
+
+function openPanelImageEditor(pageNumber, panelIndex) {
+    const modal = document.getElementById('panelImageEditorModal');
+    if (!modal) return;
+    
+    // Clean up any existing state
+    if (cropCanvas) {
+        cropCanvas.removeEventListener('mousedown', handleCropMouseDown);
+        cropCanvas.removeEventListener('mousemove', handleCropMouseMove);
+        cropCanvas.removeEventListener('mouseup', handleCropMouseUp);
+        cropCanvas.removeEventListener('wheel', handleZoom);
+    }
+    
+    // Get panel data
+    const pages = projectData.workflow?.panels?.data || [];
+    const pageData = pages.find(p => p.page_number === pageNumber);
+    if (!pageData || !pageData.panels || !pageData.panels[panelIndex]) {
+        alert('Panel not found');
+        return;
+    }
+    
+    currentEditingPanel = {
+        pageNumber: pageNumber,
+        panelIndex: panelIndex,
+        panel: pageData.panels[panelIndex]
+    };
+    
+    // Reset zoom and pan state
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    
+    // Reset crop mode to rectangle
+    setCropMode('rectangle');
+    
+    // Setup canvases
+    setupCropCanvas(currentEditingPanel.panel.url);
+    
+    // Setup zoom controls
+    setupZoomControls();
+    
+    console.log('Panel image editor opened for:', currentEditingPanel);
+    
+    modal.style.display = 'block';
+}
+
+function setupCropCanvas(imageUrl) {
+    cropCanvas = document.getElementById('cropCanvas');
+    cropContext = cropCanvas.getContext('2d');
+    previewCanvas = document.getElementById('previewCanvas');
+    previewContext = previewCanvas.getContext('2d');
+    
+    // Reset zoom and pan
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    
+    originalImage = new Image();
+    originalImage.crossOrigin = 'anonymous';
+    originalImage.onload = function() {
+        // Set canvas size to fit image while maintaining aspect ratio
+        const containerWidth = 600;
+        const containerHeight = 400;
+        let { width, height } = originalImage;
+        
+        const scaleX = containerWidth / width;
+        const scaleY = containerHeight / height;
+        const scale = Math.min(scaleX, scaleY, 1);
+        
+        width *= scale;
+        height *= scale;
+        
+        cropCanvas.width = width;
+        cropCanvas.height = height;
+        cropCanvas.style.width = width + 'px';
+        cropCanvas.style.height = height + 'px';
+        
+        drawImage();
+        setupCropCanvasEvents();
+        
+        // Initialize rectangle crop
+        if (cropMode === 'rectangle') {
+            initializeRectangleCrop();
+        }
+    };
+    originalImage.src = imageUrl;
+}
+
+function setupCropCanvasEvents() {
+    if (!cropCanvas) return;
+    
+    // Remove existing event listeners
+    cropCanvas.removeEventListener('mousedown', handleCropMouseDown);
+    cropCanvas.removeEventListener('mousemove', handleCropMouseMove);
+    cropCanvas.removeEventListener('mouseup', handleCropMouseUp);
+    cropCanvas.removeEventListener('wheel', handleZoom);
+    
+    // Add new event listeners
+    cropCanvas.addEventListener('mousedown', handleCropMouseDown);
+    cropCanvas.addEventListener('mousemove', handleCropMouseMove);
+    cropCanvas.addEventListener('mouseup', handleCropMouseUp);
+    cropCanvas.addEventListener('mouseleave', handleCropMouseUp);
+    cropCanvas.addEventListener('wheel', handleZoom);
+}
+
+function drawImage() {
+    if (!cropContext || !originalImage || !originalImage.complete || originalImage.naturalWidth === 0) {
+        console.warn('Cannot draw image - image not loaded or context not available');
+        return;
+    }
+    
+    cropContext.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    
+    // Save context state
+    cropContext.save();
+    
+    // Apply zoom and pan transformations
+    cropContext.translate(panX, panY);
+    cropContext.scale(zoomLevel, zoomLevel);
+    
+    // Draw the image
+    cropContext.drawImage(originalImage, 0, 0, cropCanvas.width / zoomLevel, cropCanvas.height / zoomLevel);
+    
+    // Restore context state
+    cropContext.restore();
+    
+    if (cropMode === 'rectangle' && rectangleCrop) {
+        drawRectangleCrop();
+    } else if (cropMode === 'freeform') {
+        drawFreeformCrop();
+    }
+    
+    updatePreview();
+}
+
+function setCropMode(mode) {
+    cropMode = mode;
+    
+    // Update UI
+    document.querySelectorAll('.crop-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    
+    // Show/hide settings
+    document.getElementById('rectangleSettings').style.display = mode === 'rectangle' ? 'block' : 'none';
+    document.getElementById('freeformSettings').style.display = mode === 'freeform' ? 'block' : 'none';
+    
+    // Reset crop data
+    if (mode === 'rectangle') {
+        freeformPoints = [];
+        initializeRectangleCrop();
+        updateFreeformPointsDisplay();
+    } else {
+        rectangleCrop = null;
+    }
+    
+    if (cropCanvas) {
+        drawImage();
+    }
+}
+
+function initializeRectangleCrop() {
+    if (!cropCanvas) return;
+    
+    const padding = 40;
+    rectangleCrop = {
+        x: padding,
+        y: padding,
+        width: cropCanvas.width - padding * 2,
+        height: cropCanvas.height - padding * 2
+    };
+    console.log('Rectangle crop initialized:', rectangleCrop);
+}
+
+function drawRectangleCrop() {
+    if (!rectangleCrop) return;
+    
+    // Draw overlay
+    cropContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+    
+    // Clear crop area
+    cropContext.clearRect(rectangleCrop.x, rectangleCrop.y, rectangleCrop.width, rectangleCrop.height);
+    cropContext.drawImage(originalImage,
+        rectangleCrop.x * (originalImage.width / cropCanvas.width),
+        rectangleCrop.y * (originalImage.height / cropCanvas.height),
+        rectangleCrop.width * (originalImage.width / cropCanvas.width),
+        rectangleCrop.height * (originalImage.height / cropCanvas.height),
+        rectangleCrop.x, rectangleCrop.y, rectangleCrop.width, rectangleCrop.height
+    );
+    
+    // Draw crop border
+    cropContext.strokeStyle = '#3b82f6';
+    cropContext.lineWidth = 2;
+    cropContext.setLineDash([5, 5]);
+    cropContext.strokeRect(rectangleCrop.x, rectangleCrop.y, rectangleCrop.width, rectangleCrop.height);
+    cropContext.setLineDash([]);
+    
+    // Draw resize handles
+    const handleSize = 8;
+    cropContext.fillStyle = '#3b82f6';
+    
+    // Corner handles
+    cropContext.fillRect(rectangleCrop.x - handleSize/2, rectangleCrop.y - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x + rectangleCrop.width - handleSize/2, rectangleCrop.y - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x - handleSize/2, rectangleCrop.y + rectangleCrop.height - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x + rectangleCrop.width - handleSize/2, rectangleCrop.y + rectangleCrop.height - handleSize/2, handleSize, handleSize);
+    
+    // Edge handles  
+    cropContext.fillRect(rectangleCrop.x + rectangleCrop.width/2 - handleSize/2, rectangleCrop.y - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x + rectangleCrop.width/2 - handleSize/2, rectangleCrop.y + rectangleCrop.height - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x - handleSize/2, rectangleCrop.y + rectangleCrop.height/2 - handleSize/2, handleSize, handleSize);
+    cropContext.fillRect(rectangleCrop.x + rectangleCrop.width - handleSize/2, rectangleCrop.y + rectangleCrop.height/2 - handleSize/2, handleSize, handleSize);
+}
+
+function drawFreeformCrop() {
+    if (freeformPoints.length === 0) return;
+    
+    // Draw points
+    cropContext.fillStyle = '#3b82f6';
+    freeformPoints.forEach((point, index) => {
+        cropContext.beginPath();
+        cropContext.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+        cropContext.fill();
+        
+        // Draw point number
+        cropContext.fillStyle = 'white';
+        cropContext.font = '12px Arial';
+        cropContext.textAlign = 'center';
+        cropContext.fillText(index + 1, point.x, point.y + 4);
+        cropContext.fillStyle = '#3b82f6';
+    });
+    
+    // Draw lines connecting points
+    if (freeformPoints.length > 1) {
+        cropContext.strokeStyle = '#3b82f6';
+        cropContext.lineWidth = 2;
+        cropContext.setLineDash([5, 5]);
+        cropContext.beginPath();
+        cropContext.moveTo(freeformPoints[0].x, freeformPoints[0].y);
+        for (let i = 1; i < freeformPoints.length; i++) {
+            cropContext.lineTo(freeformPoints[i].x, freeformPoints[i].y);
+        }
+        if (freeformPoints.length === 4) {
+            cropContext.closePath();
+        }
+        cropContext.stroke();
+        cropContext.setLineDash([]);
+    }
+}
+
+function setupCropCanvasEvents() {
+    cropCanvas.removeEventListener('mousedown', handleCropMouseDown);
+    cropCanvas.removeEventListener('mousemove', handleCropMouseMove);
+    cropCanvas.removeEventListener('mouseup', handleCropMouseUp);
+    
+    cropCanvas.addEventListener('mousedown', handleCropMouseDown);
+    cropCanvas.addEventListener('mousemove', handleCropMouseMove);
+    cropCanvas.addEventListener('mouseup', handleCropMouseUp);
+}
+
+function handleCropMouseDown(e) {
+    const rect = cropCanvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / zoomLevel;
+    const y = (e.clientY - rect.top) / zoomLevel;
+    
+    console.log('Mouse down at:', x, y, 'zoom:', zoomLevel);
+    
+    if (cropMode === 'rectangle') {
+        handleRectangleMouseDown(x, y);
+    } else if (cropMode === 'freeform') {
+        handleFreeformMouseDown(x, y);
+    }
+}
+
+function handleCropMouseMove(e) {
+    const rect = cropCanvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / zoomLevel;
+    const y = (e.clientY - rect.top) / zoomLevel;
+    
+    if (cropMode === 'rectangle') {
+        handleRectangleMouseMove(x, y);
+    }
+}
+
+function handleCropMouseUp(e) {
+    isDragging = false;
+    isResizing = false;
+    resizeHandle = null;
+}
+
+function handleRectangleMouseDown(x, y) {
+    if (!rectangleCrop) return;
+    
+    const handleSize = 8;
+    const handles = [
+        { name: 'nw', x: rectangleCrop.x, y: rectangleCrop.y },
+        { name: 'ne', x: rectangleCrop.x + rectangleCrop.width, y: rectangleCrop.y },
+        { name: 'sw', x: rectangleCrop.x, y: rectangleCrop.y + rectangleCrop.height },
+        { name: 'se', x: rectangleCrop.x + rectangleCrop.width, y: rectangleCrop.y + rectangleCrop.height },
+        { name: 'n', x: rectangleCrop.x + rectangleCrop.width/2, y: rectangleCrop.y },
+        { name: 's', x: rectangleCrop.x + rectangleCrop.width/2, y: rectangleCrop.y + rectangleCrop.height },
+        { name: 'w', x: rectangleCrop.x, y: rectangleCrop.y + rectangleCrop.height/2 },
+        { name: 'e', x: rectangleCrop.x + rectangleCrop.width, y: rectangleCrop.y + rectangleCrop.height/2 }
+    ];
+    
+    // Check if clicking on a handle
+    for (const handle of handles) {
+        if (x >= handle.x - handleSize/2 && x <= handle.x + handleSize/2 &&
+            y >= handle.y - handleSize/2 && y <= handle.y + handleSize/2) {
+            isResizing = true;
+            resizeHandle = handle.name;
+            dragStart = { x, y };
+            return;
+        }
+    }
+    
+    // Check if clicking inside crop area
+    if (x >= rectangleCrop.x && x <= rectangleCrop.x + rectangleCrop.width &&
+        y >= rectangleCrop.y && y <= rectangleCrop.y + rectangleCrop.height) {
+        isDragging = true;
+        dragStart = { x: x - rectangleCrop.x, y: y - rectangleCrop.y };
+    }
+}
+
+function handleRectangleMouseMove(x, y) {
+    if (isDragging && rectangleCrop) {
+        const newX = x - dragStart.x;
+        const newY = y - dragStart.y;
+        
+        // Keep within bounds
+        rectangleCrop.x = Math.max(0, Math.min(newX, cropCanvas.width - rectangleCrop.width));
+        rectangleCrop.y = Math.max(0, Math.min(newY, cropCanvas.height - rectangleCrop.height));
+        
+        drawImage();
+    } else if (isResizing && rectangleCrop && resizeHandle) {
+        const dx = x - dragStart.x;
+        const dy = y - dragStart.y;
+        const aspectRatio = rectangleCrop.width / rectangleCrop.height;
+        maintainAspectRatio = document.getElementById('maintainAspect')?.checked || false;
+        
+        const originalCrop = { ...rectangleCrop };
+        
+        switch (resizeHandle) {
+            case 'nw':
+                rectangleCrop.x += dx;
+                rectangleCrop.y += dy;
+                rectangleCrop.width -= dx;
+                rectangleCrop.height -= dy;
+                break;
+            case 'ne':
+                rectangleCrop.y += dy;
+                rectangleCrop.width += dx;
+                rectangleCrop.height -= dy;
+                break;
+            case 'sw':
+                rectangleCrop.x += dx;
+                rectangleCrop.width -= dx;
+                rectangleCrop.height += dy;
+                break;
+            case 'se':
+                rectangleCrop.width += dx;
+                rectangleCrop.height += dy;
+                break;
+            case 'n':
+                rectangleCrop.y += dy;
+                rectangleCrop.height -= dy;
+                break;
+            case 's':
+                rectangleCrop.height += dy;
+                break;
+            case 'w':
+                rectangleCrop.x += dx;
+                rectangleCrop.width -= dx;
+                break;
+            case 'e':
+                rectangleCrop.width += dx;
+                break;
+        }
+        
+        if (maintainAspectRatio) {
+            if (resizeHandle.includes('e') || resizeHandle.includes('w')) {
+                rectangleCrop.height = rectangleCrop.width / aspectRatio;
+            } else if (resizeHandle.includes('n') || resizeHandle.includes('s')) {
+                rectangleCrop.width = rectangleCrop.height * aspectRatio;
+            }
+        }
+        
+        // Ensure minimum size
+        if (rectangleCrop.width < 20 || rectangleCrop.height < 20) {
+            rectangleCrop = originalCrop;
+        }
+        
+        // Keep within bounds
+        if (rectangleCrop.x < 0 || rectangleCrop.y < 0 || 
+            rectangleCrop.x + rectangleCrop.width > cropCanvas.width ||
+            rectangleCrop.y + rectangleCrop.height > cropCanvas.height) {
+            rectangleCrop = originalCrop;
+        }
+        
+        dragStart = { x, y };
+        drawImage();
+    }
+}
+
+function handleFreeformMouseDown(x, y) {
+    if (freeformPoints.length < 4) {
+        freeformPoints.push({ x, y });
+        updateFreeformPointsDisplay();
+        drawImage();
+    }
+}
+
+function updateFreeformPointsDisplay() {
+    const pointsDiv = document.getElementById('freeformPoints');
+    if (!pointsDiv) return;
+    
+    pointsDiv.innerHTML = '';
+    if (freeformPoints.length === 0) {
+        pointsDiv.innerHTML = '<div style="text-align: center; color: var(--text-muted);">No points selected</div>';
+        return;
+    }
+    
+    freeformPoints.forEach((point, index) => {
+        const pointDiv = document.createElement('div');
+        pointDiv.className = 'freeform-point';
+        pointDiv.innerHTML = `
+            <span>Point ${index + 1}:</span>
+            <span>(${Math.round(point.x)}, ${Math.round(point.y)})</span>
+        `;
+        pointsDiv.appendChild(pointDiv);
+    });
+}
+
+function clearFreeformPoints() {
+    freeformPoints = [];
+    updateFreeformPointsDisplay();
+    if (cropCanvas) {
+        drawImage();
+    }
+}
+
+function updatePreview() {
+    if (!previewContext || !originalImage) return;
+    
+    previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    
+    if (cropMode === 'rectangle' && rectangleCrop) {
+        // Calculate source coordinates
+        const sourceX = rectangleCrop.x * (originalImage.width / cropCanvas.width);
+        const sourceY = rectangleCrop.y * (originalImage.height / cropCanvas.height);
+        const sourceWidth = rectangleCrop.width * (originalImage.width / cropCanvas.width);
+        const sourceHeight = rectangleCrop.height * (originalImage.height / cropCanvas.height);
+        
+        // Draw cropped preview
+        const scale = Math.min(previewCanvas.width / sourceWidth, previewCanvas.height / sourceHeight);
+        const previewWidth = sourceWidth * scale;
+        const previewHeight = sourceHeight * scale;
+        const offsetX = (previewCanvas.width - previewWidth) / 2;
+        const offsetY = (previewCanvas.height - previewHeight) / 2;
+        
+        previewContext.drawImage(originalImage, sourceX, sourceY, sourceWidth, sourceHeight,
+                                offsetX, offsetY, previewWidth, previewHeight);
+    }
+}
+
+async function applyCrop() {
+    if (!currentEditingPanel) return;
+    
+    try {
+        let croppedCanvas;
+        
+        if (cropMode === 'rectangle' && rectangleCrop) {
+            croppedCanvas = applyCropRectangle();
+        } else if (cropMode === 'freeform' && freeformPoints.length === 4) {
+            croppedCanvas = applyCropFreeform();
+        } else {
+            alert('Please define a crop area first');
+            return;
+        }
+        
+        if (!croppedCanvas) return;
+        
+        // Convert to blob and upload
+        croppedCanvas.toBlob(async (blob) => {
+            const formData = new FormData();
+            const timestamp = Date.now();
+            const filename = `panel_${currentEditingPanel.pageNumber}_${currentEditingPanel.panelIndex}_cropped_${timestamp}.png`;
+            formData.append('files', blob, filename);
+            
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.urls && result.urls.length > 0) {
+                    // Update panel URL
+                    updatePanelUrl(currentEditingPanel.pageNumber, currentEditingPanel.panelIndex, result.urls[0]);
+                    closePanelImageEditor();
+                    // Refresh panel editor content
+                    loadPanelEditorContent(currentEditingPanel.pageNumber);
+                }
+            }
+        }, 'image/png');
+        
+    } catch (error) {
+        console.error('Error cropping image:', error);
+        alert('Error cropping image: ' + error.message);
+    }
+}
+
+function applyCropRectangle() {
+    if (!rectangleCrop) return null;
+    
+    // Calculate crop coordinates relative to original image
+    const scaleX = originalImage.width / cropCanvas.width;
+    const scaleY = originalImage.height / cropCanvas.height;
+    
+    const cropData = {
+        x: Math.round(rectangleCrop.x * scaleX),
+        y: Math.round(rectangleCrop.y * scaleY),
+        width: Math.round(rectangleCrop.width * scaleX),
+        height: Math.round(rectangleCrop.height * scaleY)
+    };
+    
+    const croppedCanvas = document.createElement('canvas');
+    const croppedContext = croppedCanvas.getContext('2d');
+    croppedCanvas.width = cropData.width;
+    croppedCanvas.height = cropData.height;
+    
+    croppedContext.drawImage(originalImage, 
+        cropData.x, cropData.y, cropData.width, cropData.height,
+        0, 0, cropData.width, cropData.height
+    );
+    
+    return croppedCanvas;
+}
+
+function applyCropFreeform() {
+    if (freeformPoints.length !== 4) return null;
+    
+    // Calculate points relative to original image
+    const scaleX = originalImage.width / cropCanvas.width;
+    const scaleY = originalImage.height / cropCanvas.height;
+    
+    const scaledPoints = freeformPoints.map(point => ({
+        x: point.x * scaleX,
+        y: point.y * scaleY
+    }));
+    
+    // Find bounding box
+    const minX = Math.min(...scaledPoints.map(p => p.x));
+    const maxX = Math.max(...scaledPoints.map(p => p.x));
+    const minY = Math.min(...scaledPoints.map(p => p.y));
+    const maxY = Math.max(...scaledPoints.map(p => p.y));
+    
+    const width = maxX - minX;
+    const height = maxY - minY;
+    
+    const croppedCanvas = document.createElement('canvas');
+    const croppedContext = croppedCanvas.getContext('2d');
+    croppedCanvas.width = width;
+    croppedCanvas.height = height;
+    
+    // Create clipping path
+    croppedContext.beginPath();
+    croppedContext.moveTo(scaledPoints[0].x - minX, scaledPoints[0].y - minY);
+    for (let i = 1; i < scaledPoints.length; i++) {
+        croppedContext.lineTo(scaledPoints[i].x - minX, scaledPoints[i].y - minY);
+    }
+    croppedContext.closePath();
+    croppedContext.clip();
+    
+    // Draw image with clipping
+    croppedContext.drawImage(originalImage, -minX, -minY);
+    
+    return croppedCanvas;
+}
+
+function applyCropSquare() {
+    console.log('🔥 APPLY CROP BUTTON CLICKED! 🔥');
+    console.log('=== APPLY CROP STARTED ===');
+    
+    // Disable the apply button and show loading state
+    const applyBtn = document.getElementById('applyCropBtn');
+    if (applyBtn) {
+        applyBtn.disabled = true;
+        applyBtn.innerHTML = '⏳ Processing...';
+        console.log('Apply button disabled and set to loading state');
+    }
+    
+    // Re-enable function to restore button state
+    const restoreButton = () => {
+        if (applyBtn) {
+            applyBtn.disabled = false;
+            applyBtn.innerHTML = '✂️ Apply Crop';
+        }
+    };
+    
+    console.log('currentEditingPanel:', currentEditingPanel);
+    console.log('cropMode:', cropMode);
+    console.log('rectangleCrop:', rectangleCrop);
+    console.log('freeformPoints:', freeformPoints);
+    
+    if (!currentEditingPanel) {
+        console.error('ERROR: No panel is being edited');
+        alert('No panel is being edited');
+        restoreButton();
+        return;
+    }
+
+    let croppedCanvas;
+    
+    if (cropMode === 'rectangle' && rectangleCrop) {
+        console.log('Using rectangle crop mode');
+        croppedCanvas = applyCropRectangle();
+        console.log('Rectangle crop result:', croppedCanvas);
+    } else if (cropMode === 'freeform' && freeformPoints.length === 4) {
+        console.log('Using freeform crop mode');
+        croppedCanvas = applyCropFreeform();
+        console.log('Freeform crop result:', croppedCanvas);
+    } else {
+        console.warn('No valid crop area defined');
+        alert('Please define a crop area first');
+        restoreButton();
+        return;
+    }
+    
+    if (!croppedCanvas) {
+        console.error('ERROR: Failed to create cropped image');
+        alert('Failed to create cropped image');
+        restoreButton();
+        return;
+    }
+    
+    console.log('Cropped canvas created, size:', croppedCanvas.width, 'x', croppedCanvas.height);
+    
+    // Convert cropped canvas to blob and upload
+    croppedCanvas.toBlob(async (blob) => {
+        console.log('Blob created, size:', blob.size, 'bytes');
+        try {
+            const formData = new FormData();
+            const timestamp = Date.now();
+            const originalFilename = currentEditingPanel.panel.filename || 'panel.png';
+            const extension = originalFilename.split('.').pop();
+            const newFilename = `cropped_${timestamp}.${extension}`;
+            
+            console.log('Uploading file:', newFilename);
+            formData.append('files', blob, newFilename);
+            
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log('Upload response status:', response.status);
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log('Upload result:', result);
+                
+                // Handle both possible response formats
+                let newImageUrl = null;
+                if (result.urls && result.urls.length > 0) {
+                    newImageUrl = result.urls[0];
+                    console.log('Using URL from result.urls:', newImageUrl);
+                } else if (result.filenames && result.filenames.length > 0) {
+                    newImageUrl = `/uploads/${result.filenames[0]}`;
+                    console.log('Using filename from result.filenames, constructed URL:', newImageUrl);
+                } else {
+                    console.error('ERROR: No URLs or filenames in upload result:', result);
+                    alert('Failed to upload cropped image - no URLs or filenames returned');
+                    restoreButton();
+                    return;
+                }
+                
+                if (newImageUrl) {
+                    // Update panel data with new cropped image
+                    console.log('New image URL:', newImageUrl);
+                    
+                    currentEditingPanel.panel.url = newImageUrl;
+                    currentEditingPanel.panel.filename = newFilename;
+                    console.log('Panel data updated');
+                    
+                    // Update the UI immediately
+                    updatePanelInUI(currentEditingPanel.pageNumber, currentEditingPanel.panelIndex, newImageUrl);
+                    console.log('UI updated');
+                    
+                    // Update the crop editor with the new cropped image
+                    setupCropCanvas(newImageUrl);
+                    console.log('Crop canvas updated');
+                    
+                    // Reset crop tools for the new image
+                    rectangleCrop = null;
+                    freeformPoints = [];
+                    setCropMode('rectangle');
+                    console.log('Crop tools reset');
+                    
+                    // Refresh the panel editor content to show updated image
+                    loadPanelEditorContent(currentEditingPanel.pageNumber);
+                    console.log('Panel editor content refreshed');
+                    
+                    console.log('=== APPLY CROP COMPLETED SUCCESSFULLY ===');
+                    restoreButton();
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('ERROR: Upload failed with status', response.status, ':', errorText);
+                alert('Failed to upload cropped image: ' + response.status);
+                restoreButton();
+            }
+        } catch (error) {
+            console.error('ERROR: Exception during upload:', error);
+            console.error('Error applying crop: ' + error.message);
+            restoreButton();
+        }
+    }, 'image/png');
+}
+
+function setupZoomControls() {
+    const container = document.querySelector('#panelImageEditorModal .image-crop-container');
+    if (!container) {
+        console.warn('Image crop container not found for zoom controls');
+        return;
+    }
+    
+    console.log('Setting up zoom controls');
+    
+    console.log('Setting up zoom controls');
+    
+    // Remove existing zoom controls to prevent duplicates
+    const existingControls = container.querySelector('.zoom-controls');
+    if (existingControls) {
+        existingControls.remove();
+    }
+    
+    // Add new zoom controls
+    const zoomControls = document.createElement('div');
+    zoomControls.className = 'zoom-controls';
+    zoomControls.innerHTML = `
+        <button class="zoom-btn" onclick="zoomIn()" title="Zoom In (+)">+</button>
+        <span class="zoom-level">${Math.round(zoomLevel * 100)}%</span>
+        <button class="zoom-btn" onclick="zoomOut()" title="Zoom Out (-)">−</button>
+        <button class="zoom-btn" onclick="resetZoom()" title="Reset Zoom">⌂</button>
+    `;
+    zoomControls.style.cssText = `
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: linear-gradient(135deg, rgba(0,0,0,0.9), rgba(30,30,30,0.9));
+        border-radius: 12px;
+        padding: 10px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        z-index: 1000;
+        color: white;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+        border: 1px solid rgba(255,255,255,0.1);
+    `;
+    
+    // Enhanced styling
+    const existingStyle = document.getElementById('zoom-controls-style');
+    if (existingStyle) existingStyle.remove();
+    
+    const style = document.createElement('style');
+    style.id = 'zoom-controls-style';
+    style.textContent = `
+        .zoom-controls .zoom-btn {
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .zoom-controls .zoom-btn:hover {
+            background: linear-gradient(135deg, #9333ea, #8b5cf6);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+        }
+        .zoom-controls .zoom-level {
+            min-width: 60px;
+            text-align: center;
+            font-weight: 700;
+            color: #fbbf24;
+            font-size: 14px;
+            padding: 6px 10px;
+            background: rgba(251, 191, 36, 0.15);
+            border-radius: 8px;
+            border: 1px solid rgba(251, 191, 36, 0.3);
+        }
+    `;
+    document.head.appendChild(style);
+    
+    container.style.position = 'relative';
+    container.appendChild(zoomControls);
+    console.log('Enhanced zoom controls added');
+}
+
+function handleZoom(e) {
+    e.preventDefault();
+    const rect = cropCanvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    const newZoom = Math.max(0.1, Math.min(5, zoomLevel * zoomFactor));
+    
+    // Adjust pan to zoom towards mouse position
+    panX = mouseX - (mouseX - panX) * (newZoom / zoomLevel);
+    panY = mouseY - (mouseY - panY) * (newZoom / zoomLevel);
+    
+    zoomLevel = newZoom;
+    updateZoomDisplay();
+    drawImage();
+}
+
+function handlePanStart(e) {
+    if (e.button === 1 || (e.button === 0 && e.ctrlKey)) { // Middle mouse or Ctrl+Left
+        isPanning = true;
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+        e.preventDefault();
+    }
+}
+
+function handlePanMove(e) {
+    if (isPanning) {
+        const deltaX = e.clientX - lastPanX;
+        const deltaY = e.clientY - lastPanY;
+        
+        panX += deltaX;
+        panY += deltaY;
+        
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+        
+        drawImage();
+        e.preventDefault();
+    }
+}
+
+function handlePanEnd(e) {
+    isPanning = false;
+}
+
+function zoomIn() {
+    zoomLevel = Math.min(3, zoomLevel * 1.2);
+    updateCanvasZoom();
+    updateZoomDisplay();
+    console.log('Zoomed in to:', zoomLevel);
+}
+
+function zoomOut() {
+    zoomLevel = Math.max(0.5, zoomLevel / 1.2);
+    updateCanvasZoom();
+    updateZoomDisplay();
+    console.log('Zoomed out to:', zoomLevel);
+}
+
+function resetZoom() {
+    zoomLevel = 1;
+    updateCanvasZoom();
+    updateZoomDisplay();
+    console.log('Zoom reset to:', zoomLevel);
+}
+
+function updateCanvasZoom() {
+    if (cropCanvas) {
+        const baseWidth = cropCanvas.width;
+        const baseHeight = cropCanvas.height;
+        cropCanvas.style.width = (baseWidth * zoomLevel) + 'px';
+        cropCanvas.style.height = (baseHeight * zoomLevel) + 'px';
+    }
+}
+
+function updateZoomDisplay() {
+    const zoomDisplay = document.querySelector('.zoom-level');
+    if (zoomDisplay) {
+        zoomDisplay.textContent = Math.round(zoomLevel * 100) + '%';
+    }
+}
+
+function updatePanelInUI(pageNumber, panelIndex, newImageUrl) {
+    // Find and update the panel image in the current page display
+    const panelElements = document.querySelectorAll(`[data-page="${pageNumber}"] .panel-item img`);
+    if (panelElements[panelIndex]) {
+        panelElements[panelIndex].src = newImageUrl;
+        // Force reload of the image
+        panelElements[panelIndex].onload = function() {
+            console.log('Panel image updated in UI');
+        };
+    }
+    
+    // Also update any other references to this panel in the UI
+    const allPanelImages = document.querySelectorAll(`img[data-panel-page="${pageNumber}"][data-panel-index="${panelIndex}"]`);
+    allPanelImages.forEach(img => {
+        img.src = newImageUrl;
+    });
+}
+
+async function addBorderToCurrentPanel() {
+    if (!currentEditingPanel || !originalImage) {
+        alert('No panel is being edited');
+        return;
+    }
+    
+    console.log('🖼️ ADD BORDER BUTTON CLICKED! 🖼️');
+    console.log('Adding border to current panel:', currentEditingPanel);
+    
+    // Disable the border button and show loading state
+    const borderBtn = document.querySelector('button[onclick="addBorderToCurrentPanel()"]');
+    if (borderBtn) {
+        borderBtn.disabled = true;
+        borderBtn.innerHTML = '⏳ Adding Border...';
+    }
+    
+    // Re-enable function to restore button state
+    const restoreButton = () => {
+        if (borderBtn) {
+            borderBtn.disabled = false;
+            borderBtn.innerHTML = '🖼️ Add Border';
+        }
+    };
+    
+    try {
+        // Convert current image to blob
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.width = originalImage.width;
+        canvas.height = originalImage.height;
+        context.drawImage(originalImage, 0, 0);
+        
+        canvas.toBlob(async (blob) => {
+            if (!blob) {
+                alert('Failed to process image');
+                restoreButton();
+                return;
+            }
+            
+            console.log('Sending image to border API, blob size:', blob.size);
+            
+            const formData = new FormData();
+            formData.append('file', blob, 'panel.png');
+            
+            const response = await fetch('/api/panel/add-border', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log('Border API response status:', response.status);
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log('Border API result:', result);
+                
+                if (result.filenames && result.filenames.length > 0) {
+                    const newImageUrl = `/uploads/${result.filenames[0]}`;
+                    console.log('New bordered image URL:', newImageUrl);
+                    
+                    // Update panel data with new bordered image
+                    currentEditingPanel.panel.url = newImageUrl;
+                    currentEditingPanel.panel.filename = result.filenames[0];
+                    console.log('Panel data updated with bordered image');
+                    
+                    // Update the UI immediately
+                    updatePanelInUI(currentEditingPanel.pageNumber, currentEditingPanel.panelIndex, newImageUrl);
+                    console.log('UI updated with bordered image');
+                    
+                    // Update the crop editor with the new bordered image
+                    setupCropCanvas(newImageUrl);
+                    console.log('Crop canvas updated with bordered image');
+                    
+                    // Reset crop tools for the new image
+                    rectangleCrop = null;
+                    freeformPoints = [];
+                    setCropMode('rectangle');
+                    console.log('Crop tools reset for bordered image');
+                    
+                    // Refresh the panel editor content to show updated image
+                    loadPanelEditorContent(currentEditingPanel.pageNumber);
+                    console.log('Panel editor content refreshed');
+                    
+                    console.log('Border added successfully!');
+                    console.log('=== ADD BORDER COMPLETED SUCCESSFULLY ===');
+                } else {
+                    console.error('ERROR: No filenames in border result');
+                    console.error('Failed to add border - no filenames returned');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('ERROR: Border API failed with status', response.status, ':', errorText);
+                console.error('Failed to add border: ' + response.status);
+            }
+            
+            restoreButton();
+        }, 'image/png');
+        
+    } catch (error) {
+        console.error('ERROR: Exception during border addition:', error);
+        console.error('Error adding border: ' + error.message);
+        restoreButton();
+    }
+}
+
+function resetCrop() {
+    if (cropMode === 'rectangle') {
+        initializeRectangleCrop();
+    } else {
+        freeformPoints = [];
+        updateFreeformPointsDisplay();
+    }
+    
+    if (cropCanvas) {
+        drawImage();
+    }
+}
+
+function closePanelImageEditor() {
+    const modal = document.getElementById('panelImageEditorModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    
+    currentEditingPanel = null;
+    rectangleCrop = null;
+    freeformPoints = [];
+    originalImage = null;
+    
+    // Remove event listeners
+    if (cropCanvas) {
+        cropCanvas.removeEventListener('mousedown', handleCropMouseDown);
+        cropCanvas.removeEventListener('mousemove', handleCropMouseMove);
+        cropCanvas.removeEventListener('mouseup', handleCropMouseUp);
+    }
+}
+
+async function addBorderToPanel(pageNumber, panelIndex) {
+    const pages = projectData.workflow?.panels?.data || [];
+    const pageData = pages.find(p => p.page_number === pageNumber);
+    if (!pageData || !pageData.panels || !pageData.panels[panelIndex]) {
+        alert('Panel not found');
+        return;
+    }
+    
+    const panel = pageData.panels[panelIndex];
+    
+    try {
+        const response = await fetch('/api/panel/add-border', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                project_id: projectData.id,
+                page_number: pageNumber,
+                panel_index: panelIndex,
+                panel_url: panel.url,
+                border_width: 10,
+                border_color: 'black',
+                curved_border: true,
+                corner_radius: 15
+            })
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            if (result.success) {
+                // Update panel URL
+                updatePanelUrl(pageNumber, panelIndex, result.url);
+                // Refresh panel editor content
+                loadPanelEditorContent(pageNumber);
+            } else {
+                console.error('Failed to add border to panel');
+            }
+        } else {
+            const error = await response.json();
+            console.error(`Error adding border: ${error.detail || 'Unknown error'}`);
+        }
+        
+    } catch (error) {
+        console.error('Error adding border:', error);
+        console.error('Border operation failed. Please try again.');
+    }
+}
+
+function updatePanelUrl(pageNumber, panelIndex, newUrl) {
+    // Update project data
+    const pages = projectData.workflow?.panels?.data || [];
+    const pageData = pages.find(p => p.page_number === pageNumber);
+    if (pageData && pageData.panels && pageData.panels[panelIndex]) {
+        pageData.panels[panelIndex].url = newUrl;
+        pageData.panels[panelIndex].filename = newUrl.split('/').pop();
+    }
+}
+
+// Add New Panel Functionality - Enhanced
+function openAddPanelModal(pageNumber) {
+    console.log('Opening add panel modal for page:', pageNumber);
+    const modal = document.getElementById('addPanelModal');
+    if (!modal) return;
+    
+    // Clean up any existing state
+    if (addPanelCanvas) {
+        addPanelCanvas.removeEventListener('mousedown', addPanelCanvasMouseDown);
+        addPanelCanvas.removeEventListener('mousemove', addPanelCanvasMouseMove);
+        addPanelCanvas.removeEventListener('mouseup', addPanelCanvasMouseUp);
+        addPanelCanvas.removeEventListener('wheel', handleAddPanelZoom);
+    }
+    
+    currentPageForNewPanel = pageNumber;
+    console.log('Set currentPageForNewPanel to:', currentPageForNewPanel);
+    
+    // Get original page image
+    const pageFile = projectData.files[pageNumber - 1];
+    if (!pageFile) {
+        alert('Page not found');
+        return;
+    }
+    
+    // Reset zoom and pan state
+    addPanelZoomLevel = 1;
+    addPanelPanX = 0;
+    addPanelPanY = 0;
+    
+    // Reset crop mode to rectangle
+    setAddPanelCropMode('rectangle');
+    
+    // Setup canvas with original page image
+    setupAddPanelCanvas(`/uploads/${pageFile}`);
+    
+    // Setup zoom controls for add panel modal
+    setupAddPanelZoomControls();
+    
+    modal.style.display = 'block';
+}
+
+function setupAddPanelCanvas(imageUrl) {
+    addPanelCanvas = document.getElementById('addPanelCanvas');
+    addPanelContext = addPanelCanvas.getContext('2d');
+    addPanelPreviewCanvas = document.getElementById('addPanelPreviewCanvas');
+    addPanelPreviewContext = addPanelPreviewCanvas.getContext('2d');
+    
+    addPanelImage = new Image();
+    addPanelImage.crossOrigin = 'anonymous';
+    addPanelImage.onload = function() {
+        // Set canvas size to fit image while maintaining aspect ratio
+        const containerWidth = 600;
+        const containerHeight = 400;
+        let { width, height } = addPanelImage;
+        
+        const scaleX = containerWidth / width;
+        const scaleY = containerHeight / height;
+        const scale = Math.min(scaleX, scaleY, 1);
+        
+        width *= scale;
+        height *= scale;
+        
+        addPanelCanvas.width = width;
+        addPanelCanvas.height = height;
+        addPanelCanvas.style.width = width + 'px';
+        addPanelCanvas.style.height = height + 'px';
+        
+        drawAddPanelImage();
+        setupAddPanelCanvasEvents();
+        
+        // Initialize rectangle crop
+        if (addPanelCropMode === 'rectangle') {
+            initializeAddPanelRectangleCrop();
+        }
+    };
+    addPanelImage.src = imageUrl;
+}
+
+function setupAddPanelCanvasEvents() {
+    addPanelCanvas.addEventListener('mousedown', addPanelCanvasMouseDown);
+    addPanelCanvas.addEventListener('mousemove', addPanelCanvasMouseMove);
+    addPanelCanvas.addEventListener('mouseup', addPanelCanvasMouseUp);
+    addPanelCanvas.addEventListener('mouseleave', addPanelCanvasMouseUp);
+    addPanelCanvas.addEventListener('wheel', handleAddPanelZoom);
+}
+
+function setupAddPanelZoomControls() {
+    const container = document.querySelector('#addPanelModal .image-crop-container');
+    if (!container) return;
+    
+    console.log('Setting up add panel zoom controls');
+    
+    // Remove existing zoom controls
+    const existingControls = container.querySelector('.zoom-controls');
+    if (existingControls) {
+        existingControls.remove();
+    }
+    
+    // Add new zoom controls
+    const zoomControls = document.createElement('div');
+    zoomControls.className = 'zoom-controls';
+    zoomControls.innerHTML = `
+        <button class="zoom-btn" onclick="addPanelZoomIn()" title="Zoom In">+</button>
+        <span class="zoom-level">${Math.round(addPanelZoomLevel * 100)}%</span>
+        <button class="zoom-btn" onclick="addPanelZoomOut()" title="Zoom Out">−</button>
+        <button class="zoom-btn" onclick="addPanelResetZoom()" title="Reset">⌂</button>
+    `;
+    zoomControls.style.cssText = `
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: linear-gradient(135deg, rgba(0,0,0,0.9), rgba(30,30,30,0.9));
+        border-radius: 12px;
+        padding: 10px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        z-index: 1000;
+        color: white;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+        border: 1px solid rgba(255,255,255,0.1);
+    `;
+    // Add styling for add panel zoom controls
+    const existingStyle = document.getElementById('add-panel-zoom-style');
+    if (existingStyle) existingStyle.remove();
+    
+    const style = document.createElement('style');
+    style.id = 'add-panel-zoom-style';
+    style.textContent = `
+        #addPanelModal .zoom-controls .zoom-btn {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.8), rgba(124, 58, 237, 0.8));
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #addPanelModal .zoom-controls .zoom-btn:hover {
+            background: linear-gradient(135deg, rgba(147, 97, 255, 0.9), rgba(138, 73, 244, 0.9));
+            transform: translateY(-2px);
+            box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+        }
+        #addPanelModal .zoom-controls .zoom-level {
+            min-width: 60px;
+            text-align: center;
+            font-weight: 700;
+            color: #fbbf24;
+            font-size: 14px;
+            padding: 4px 8px;
+            background: rgba(251, 191, 36, 0.1);
+            border-radius: 6px;
+            border: 1px solid rgba(251, 191, 36, 0.3);
+        }
+    `;
+    document.head.appendChild(style);
+    
+    container.style.position = 'relative';
+    container.appendChild(zoomControls);
+    console.log('Add panel zoom controls added');
+}
+
+function setAddPanelCropMode(mode) {
+    addPanelCropMode = mode;
+    
+    // Update UI
+    document.querySelectorAll('#addPanelModal .crop-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    
+    // Show/hide settings
+    document.getElementById('addPanelRectangleSettings').style.display = mode === 'rectangle' ? 'block' : 'none';
+    document.getElementById('addPanelFreeformSettings').style.display = mode === 'freeform' ? 'block' : 'none';
+    
+    // Reset crop data
+    if (mode === 'rectangle') {
+        addPanelFreeformPoints = [];
+        initializeAddPanelRectangleCrop();
+        updateAddPanelFreeformPointsDisplay();
+    } else {
+        addPanelRectangleCrop = null;
+    }
+    
+    if (addPanelCanvas) {
+        drawAddPanelImage();
+    }
+}
+
+function initializeAddPanelRectangleCrop() {
+    if (!addPanelCanvas) return;
+    
+    const padding = 40;
+    addPanelRectangleCrop = {
+        x: padding,
+        y: padding,
+        width: addPanelCanvas.width - padding * 2,
+        height: addPanelCanvas.height - padding * 2
+    };
+}
+
+function drawAddPanelImage() {
+    if (!addPanelContext || !addPanelImage || !addPanelImage.complete || addPanelImage.naturalWidth === 0) {
+        console.warn('Cannot draw add panel image - image not loaded or context not available');
+        return;
+    }
+    
+    addPanelContext.clearRect(0, 0, addPanelCanvas.width, addPanelCanvas.height);
+    
+    // Save context state
+    addPanelContext.save();
+    
+    // Apply zoom and pan transformations
+    addPanelContext.translate(addPanelPanX, addPanelPanY);
+    addPanelContext.scale(addPanelZoomLevel, addPanelZoomLevel);
+    
+    // Draw the image
+    addPanelContext.drawImage(addPanelImage, 0, 0, addPanelCanvas.width / addPanelZoomLevel, addPanelCanvas.height / addPanelZoomLevel);
+    
+    // Restore context state
+    addPanelContext.restore();
+    
+    if (addPanelCropMode === 'rectangle' && addPanelRectangleCrop) {
+        drawAddPanelRectangleCrop();
+    } else if (addPanelCropMode === 'freeform') {
+        drawAddPanelFreeformCrop();
+    }
+    
+    updateAddPanelPreview();
+}
+
+function drawAddPanelRectangleCrop() {
+    if (!addPanelRectangleCrop) return;
+    
+    // Draw overlay
+    addPanelContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    addPanelContext.fillRect(0, 0, addPanelCanvas.width, addPanelCanvas.height);
+    
+    // Clear crop area
+    addPanelContext.clearRect(addPanelRectangleCrop.x, addPanelRectangleCrop.y, addPanelRectangleCrop.width, addPanelRectangleCrop.height);
+    addPanelContext.drawImage(addPanelImage,
+        addPanelRectangleCrop.x * (addPanelImage.width / addPanelCanvas.width),
+        addPanelRectangleCrop.y * (addPanelImage.height / addPanelCanvas.height),
+        addPanelRectangleCrop.width * (addPanelImage.width / addPanelCanvas.width),
+        addPanelRectangleCrop.height * (addPanelImage.height / addPanelCanvas.height),
+        addPanelRectangleCrop.x, addPanelRectangleCrop.y, addPanelRectangleCrop.width, addPanelRectangleCrop.height
+    );
+    
+    // Draw crop border
+    addPanelContext.strokeStyle = '#8b5cf6';
+    addPanelContext.lineWidth = 2;
+    addPanelContext.setLineDash([5, 5]);
+    addPanelContext.strokeRect(addPanelRectangleCrop.x, addPanelRectangleCrop.y, addPanelRectangleCrop.width, addPanelRectangleCrop.height);
+    addPanelContext.setLineDash([]);
+    
+    // Draw resize handles
+    const handleSize = 8;
+    addPanelContext.fillStyle = '#8b5cf6';
+    
+    // Corner handles
+    addPanelContext.fillRect(addPanelRectangleCrop.x - handleSize/2, addPanelRectangleCrop.y - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x + addPanelRectangleCrop.width - handleSize/2, addPanelRectangleCrop.y - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x - handleSize/2, addPanelRectangleCrop.y + addPanelRectangleCrop.height - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x + addPanelRectangleCrop.width - handleSize/2, addPanelRectangleCrop.y + addPanelRectangleCrop.height - handleSize/2, handleSize, handleSize);
+    
+    // Edge handles
+    addPanelContext.fillRect(addPanelRectangleCrop.x + addPanelRectangleCrop.width/2 - handleSize/2, addPanelRectangleCrop.y - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x + addPanelRectangleCrop.width/2 - handleSize/2, addPanelRectangleCrop.y + addPanelRectangleCrop.height - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x - handleSize/2, addPanelRectangleCrop.y + addPanelRectangleCrop.height/2 - handleSize/2, handleSize, handleSize);
+    addPanelContext.fillRect(addPanelRectangleCrop.x + addPanelRectangleCrop.width - handleSize/2, addPanelRectangleCrop.y + addPanelRectangleCrop.height/2 - handleSize/2, handleSize, handleSize);
+}
+
+function drawAddPanelFreeformCrop() {
+    if (addPanelFreeformPoints.length === 0) return;
+    
+    // Draw points
+    addPanelContext.fillStyle = '#8b5cf6';
+    addPanelFreeformPoints.forEach((point, index) => {
+        addPanelContext.beginPath();
+        addPanelContext.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+        addPanelContext.fill();
+        
+        // Draw point number
+        addPanelContext.fillStyle = 'white';
+        addPanelContext.font = '12px Arial';
+        addPanelContext.textAlign = 'center';
+        addPanelContext.fillText(index + 1, point.x, point.y + 4);
+        addPanelContext.fillStyle = '#8b5cf6';
+    });
+    
+    // Draw lines connecting points
+    if (addPanelFreeformPoints.length > 1) {
+        addPanelContext.strokeStyle = '#8b5cf6';
+        addPanelContext.lineWidth = 2;
+        addPanelContext.setLineDash([5, 5]);
+        addPanelContext.beginPath();
+        addPanelContext.moveTo(addPanelFreeformPoints[0].x, addPanelFreeformPoints[0].y);
+        for (let i = 1; i < addPanelFreeformPoints.length; i++) {
+            addPanelContext.lineTo(addPanelFreeformPoints[i].x, addPanelFreeformPoints[i].y);
+        }
+        if (addPanelFreeformPoints.length === 4) {
+            addPanelContext.closePath();
+        }
+        addPanelContext.stroke();
+        addPanelContext.setLineDash([]);
+    }
+}
+
+function setupAddPanelCanvasEvents() {
+    addPanelCanvas.removeEventListener('mousedown', addPanelCanvasMouseDown);
+    addPanelCanvas.removeEventListener('mousemove', addPanelCanvasMouseMove);
+    addPanelCanvas.removeEventListener('mouseup', addPanelCanvasMouseUp);
+    addPanelCanvas.removeEventListener('wheel', handleAddPanelZoom);
+    
+    addPanelCanvas.addEventListener('mousedown', addPanelCanvasMouseDown);
+    addPanelCanvas.addEventListener('mousemove', addPanelCanvasMouseMove);
+    addPanelCanvas.addEventListener('mouseup', addPanelCanvasMouseUp);
+    addPanelCanvas.addEventListener('mouseleave', addPanelCanvasMouseUp);
+    addPanelCanvas.addEventListener('wheel', handleAddPanelZoom);
+}
+
+// Add Panel Canvas Mouse Events with Zoom Support
+function addPanelCanvasMouseDown(e) {
+    const rect = addPanelCanvas.getBoundingClientRect();
+    // Adjust coordinates for zoom and pan
+    const x = (e.clientX - rect.left - addPanelPanX) / addPanelZoomLevel;
+    const y = (e.clientY - rect.top - addPanelPanY) / addPanelZoomLevel;
+    
+    console.log('Add panel mouse down at:', x, y, 'zoom:', addPanelZoomLevel);
+    
+    if (addPanelCropMode === 'freeform') {
+        // Add point for freeform crop
+        if (addPanelFreeformPoints.length < 4) {
+            addPanelFreeformPoints.push({ x, y });
+            updateAddPanelFreeformPointsDisplay();
+            drawAddPanelImage();
+        }
+        return;
+    }
+    
+    if (addPanelCropMode === 'rectangle') {
+        handleAddPanelRectangleMouseDown(x, y);
+    }
+}
+
+function addPanelCanvasMouseMove(e) {
+    const rect = addPanelCanvas.getBoundingClientRect();
+    // Adjust coordinates for zoom and pan
+    const x = (e.clientX - rect.left - addPanelPanX) / addPanelZoomLevel;
+    const y = (e.clientY - rect.top - addPanelPanY) / addPanelZoomLevel;
+    
+    if (addPanelCropMode === 'rectangle') {
+        handleAddPanelRectangleMouseMove(x, y);
+    }
+}
+
+function addPanelCanvasMouseUp(e) {
+    addPanelDragging = false;
+    addPanelResizing = false;
+    addPanelResizeHandle = null;
+}
+
+function handleAddPanelRectangleMouseDown(x, y) {
+    if (!addPanelRectangleCrop) return;
+    
+    const handleSize = 8;
+    const handles = [
+        { name: 'nw', x: addPanelRectangleCrop.x, y: addPanelRectangleCrop.y },
+        { name: 'ne', x: addPanelRectangleCrop.x + addPanelRectangleCrop.width, y: addPanelRectangleCrop.y },
+        { name: 'sw', x: addPanelRectangleCrop.x, y: addPanelRectangleCrop.y + addPanelRectangleCrop.height },
+        { name: 'se', x: addPanelRectangleCrop.x + addPanelRectangleCrop.width, y: addPanelRectangleCrop.y + addPanelRectangleCrop.height },
+        { name: 'n', x: addPanelRectangleCrop.x + addPanelRectangleCrop.width/2, y: addPanelRectangleCrop.y },
+        { name: 's', x: addPanelRectangleCrop.x + addPanelRectangleCrop.width/2, y: addPanelRectangleCrop.y + addPanelRectangleCrop.height },
+        { name: 'w', x: addPanelRectangleCrop.x, y: addPanelRectangleCrop.y + addPanelRectangleCrop.height/2 },
+        { name: 'e', x: addPanelRectangleCrop.x + addPanelRectangleCrop.width, y: addPanelRectangleCrop.y + addPanelRectangleCrop.height/2 }
+    ];
+    
+    // Check if clicking on a handle
+    for (const handle of handles) {
+        if (x >= handle.x - handleSize/2 && x <= handle.x + handleSize/2 &&
+            y >= handle.y - handleSize/2 && y <= handle.y + handleSize/2) {
+            addPanelResizing = true;
+            addPanelResizeHandle = handle.name;
+            addPanelDragStart = { x, y };
+            return;
+        }
+    }
+    
+    // Check if clicking inside crop area
+    if (x >= addPanelRectangleCrop.x && x <= addPanelRectangleCrop.x + addPanelRectangleCrop.width &&
+        y >= addPanelRectangleCrop.y && y <= addPanelRectangleCrop.y + addPanelRectangleCrop.height) {
+        addPanelDragging = true;
+        addPanelDragStart = { x: x - addPanelRectangleCrop.x, y: y - addPanelRectangleCrop.y };
+    }
+}
+
+function handleAddPanelRectangleMouseMove(x, y) {
+    if (addPanelDragging && addPanelRectangleCrop) {
+        const newX = x - addPanelDragStart.x;
+        const newY = y - addPanelDragStart.y;
+        
+        // Keep within bounds
+        addPanelRectangleCrop.x = Math.max(0, Math.min(newX, addPanelCanvas.width - addPanelRectangleCrop.width));
+        addPanelRectangleCrop.y = Math.max(0, Math.min(newY, addPanelCanvas.height - addPanelRectangleCrop.height));
+        
+        drawAddPanelImage();
+    } else if (addPanelResizing && addPanelRectangleCrop && addPanelResizeHandle) {
+        const dx = x - addPanelDragStart.x;
+        const dy = y - addPanelDragStart.y;
+        const aspectRatio = addPanelRectangleCrop.width / addPanelRectangleCrop.height;
+        addPanelMaintainAspect = document.getElementById('addPanelMaintainAspect')?.checked || false;
+        
+        const originalCrop = { ...addPanelRectangleCrop };
+        
+        switch (addPanelResizeHandle) {
+            case 'nw':
+                addPanelRectangleCrop.x += dx;
+                addPanelRectangleCrop.y += dy;
+                addPanelRectangleCrop.width -= dx;
+                addPanelRectangleCrop.height -= dy;
+                break;
+            case 'ne':
+                addPanelRectangleCrop.y += dy;
+                addPanelRectangleCrop.width += dx;
+                addPanelRectangleCrop.height -= dy;
+                break;
+            case 'sw':
+                addPanelRectangleCrop.x += dx;
+                addPanelRectangleCrop.width -= dx;
+                addPanelRectangleCrop.height += dy;
+                break;
+            case 'se':
+                addPanelRectangleCrop.width += dx;
+                addPanelRectangleCrop.height += dy;
+                break;
+            case 'n':
+                addPanelRectangleCrop.y += dy;
+                addPanelRectangleCrop.height -= dy;
+                break;
+            case 's':
+                addPanelRectangleCrop.height += dy;
+                break;
+            case 'w':
+                addPanelRectangleCrop.x += dx;
+                addPanelRectangleCrop.width -= dx;
+                break;
+            case 'e':
+                addPanelRectangleCrop.width += dx;
+                break;
+        }
+        
+        if (addPanelMaintainAspect) {
+            if (addPanelResizeHandle.includes('e') || addPanelResizeHandle.includes('w')) {
+                addPanelRectangleCrop.height = addPanelRectangleCrop.width / aspectRatio;
+            } else if (addPanelResizeHandle.includes('n') || addPanelResizeHandle.includes('s')) {
+                addPanelRectangleCrop.width = addPanelRectangleCrop.height * aspectRatio;
+            }
+        }
+        
+        // Ensure minimum size
+        if (addPanelRectangleCrop.width < 20 || addPanelRectangleCrop.height < 20) {
+            addPanelRectangleCrop = originalCrop;
+        }
+        
+        // Keep within bounds
+        if (addPanelRectangleCrop.x < 0 || addPanelRectangleCrop.y < 0 || 
+            addPanelRectangleCrop.x + addPanelRectangleCrop.width > addPanelCanvas.width ||
+            addPanelRectangleCrop.y + addPanelRectangleCrop.height > addPanelCanvas.height) {
+            addPanelRectangleCrop = originalCrop;
+        }
+        
+        addPanelDragStart = { x, y };
+        drawAddPanelImage();
+    }
+}
+
+function handleAddPanelFreeformMouseDown(x, y) {
+    if (addPanelFreeformPoints.length < 4) {
+        addPanelFreeformPoints.push({ x, y });
+        updateAddPanelFreeformPointsDisplay();
+        drawAddPanelImage();
+    }
+}
+
+function updateAddPanelFreeformPointsDisplay() {
+    const pointsDiv = document.getElementById('addPanelFreeformPoints');
+    if (!pointsDiv) return;
+    
+    pointsDiv.innerHTML = '';
+    if (addPanelFreeformPoints.length === 0) {
+        pointsDiv.innerHTML = '<div style="text-align: center; color: var(--text-muted);">No points selected</div>';
+        return;
+    }
+    
+    addPanelFreeformPoints.forEach((point, index) => {
+        const pointDiv = document.createElement('div');
+        pointDiv.className = 'freeform-point';
+        pointDiv.innerHTML = `
+            <span>Point ${index + 1}:</span>
+            <span>(${Math.round(point.x)}, ${Math.round(point.y)})</span>
+        `;
+        pointsDiv.appendChild(pointDiv);
+    });
+}
+
+function clearAddPanelFreeformPoints() {
+    addPanelFreeformPoints = [];
+    updateAddPanelFreeformPointsDisplay();
+    if (addPanelCanvas) {
+        drawAddPanelImage();
+    }
+}
+
+function updateAddPanelPreview() {
+    if (!addPanelPreviewContext || !addPanelImage) return;
+    
+    addPanelPreviewContext.clearRect(0, 0, addPanelPreviewCanvas.width, addPanelPreviewCanvas.height);
+    
+    if (addPanelCropMode === 'rectangle' && addPanelRectangleCrop) {
+        // Calculate source coordinates
+        const sourceX = addPanelRectangleCrop.x * (addPanelImage.width / addPanelCanvas.width);
+        const sourceY = addPanelRectangleCrop.y * (addPanelImage.height / addPanelCanvas.height);
+        const sourceWidth = addPanelRectangleCrop.width * (addPanelImage.width / addPanelCanvas.width);
+        const sourceHeight = addPanelRectangleCrop.height * (addPanelImage.height / addPanelCanvas.height);
+        
+        // Draw cropped preview
+        const scale = Math.min(addPanelPreviewCanvas.width / sourceWidth, addPanelPreviewCanvas.height / sourceHeight);
+        const previewWidth = sourceWidth * scale;
+        const previewHeight = sourceHeight * scale;
+        const offsetX = (addPanelPreviewCanvas.width - previewWidth) / 2;
+        const offsetY = (addPanelPreviewCanvas.height - previewHeight) / 2;
+        
+        addPanelPreviewContext.drawImage(addPanelImage, sourceX, sourceY, sourceWidth, sourceHeight,
+                                        offsetX, offsetY, previewWidth, previewHeight);
+    }
+}
+
+async function createNewPanel() {
+    console.log('Creating new panel for page:', currentPageForNewPanel);
+    
+    if (!currentPageForNewPanel) {
+        console.error('No page selected for new panel');
+        return;
+    }
+    
+    try {
+        let croppedCanvas;
+        
+        if (addPanelCropMode === 'rectangle' && addPanelRectangleCrop) {
+            console.log('Applying rectangle crop:', addPanelRectangleCrop);
+            croppedCanvas = applyAddPanelCropRectangle();
+        } else if (addPanelCropMode === 'freeform' && addPanelFreeformPoints.length === 4) {
+            console.log('Applying freeform crop with points:', addPanelFreeformPoints);
+            croppedCanvas = applyAddPanelCropFreeform();
+        } else {
+            console.error('No valid crop area defined. Mode:', addPanelCropMode, 'Rectangle crop:', addPanelRectangleCrop, 'Freeform points:', addPanelFreeformPoints.length);
+            return;
+        }
+        
+        if (!croppedCanvas) {
+            console.error('Failed to create cropped canvas');
+            return;
+        }
+        
+        console.log('Cropped canvas created, converting to blob...');
+        
+        // Convert to blob and upload
+        croppedCanvas.toBlob(async (blob) => {
+            console.log('Blob created, size:', blob.size);
+            const formData = new FormData();
+            const timestamp = Date.now();
+            const filename = `panel_${currentPageForNewPanel}_new_${timestamp}.png`;
+            formData.append('files', blob, filename);
+            
+            console.log('Uploading panel:', filename);
+            
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            
+            console.log('Upload response status:', response.status);
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log('Upload result:', result);
+                
+                if (result.filenames && result.filenames.length > 0) {
+                    // Add new panel to project data
+                    const panelUrl = `/uploads/${result.filenames[0]}`;
+                    console.log('Adding new panel to page:', currentPageForNewPanel, 'URL:', panelUrl);
+                    
+                    // Store the page number before closing modal (which resets currentPageForNewPanel)
+                    const targetPageNumber = currentPageForNewPanel;
+                    
+                    addNewPanelToPage(targetPageNumber, panelUrl);
+                    closeAddPanelModal();
+                    
+                    // Save the updated project data to the backend
+                    try {
+                        const response = await fetch(`/api/manga/${projectData.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                workflow: projectData.workflow
+                            })
+                        });
+                        
+                        if (response.ok) {
+                            console.log('Project data saved after adding new panel');
+                        } else {
+                            console.error('Failed to save project data:', response.status, await response.text());
+                        }
+                    } catch (error) {
+                        console.error('Failed to save project data:', error);
+                    }
+                    
+                    // Small delay to ensure data is updated before opening panel editor
+                    setTimeout(() => {
+                        // Open the panel editor modal to show the new panel
+                        console.log('Opening panel editor modal for page:', targetPageNumber);
+                        const panelEditorModal = document.getElementById('panelEditorModal');
+                        if (panelEditorModal) {
+                            panelEditorModal.style.display = 'block';
+                        } else {
+                            console.error('Panel editor modal not found');
+                        }
+                        
+                        // Refresh panel editor content
+                        console.log('Loading panel editor content after panel creation for page:', targetPageNumber);
+                        console.log('Project data after panel creation:', {
+                            hasWorkflow: !!projectData.workflow,
+                            hasPanels: !!(projectData.workflow?.panels),
+                            panelsDataLength: projectData.workflow?.panels?.data?.length || 0,
+                            targetPageData: projectData.workflow?.panels?.data?.find(p => parseInt(p.page_number) === parseInt(targetPageNumber))
+                        });
+                        loadPanelEditorContent(targetPageNumber);
+                        console.log('New panel created successfully');
+                    }, 100);
+                } else {
+                    console.error('No filenames in upload response:', result);
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('Upload failed:', response.status, errorText);
+            }
+        }, 'image/png');
+        
+    } catch (error) {
+        console.error('Error creating panel:', error);
+    }
+}
+
+function applyAddPanelCropRectangle() {
+    if (!addPanelRectangleCrop) return null;
+    
+    // Calculate crop coordinates relative to original image
+    const scaleX = addPanelImage.width / addPanelCanvas.width;
+    const scaleY = addPanelImage.height / addPanelCanvas.height;
+    
+    const cropData = {
+        x: Math.round(addPanelRectangleCrop.x * scaleX),
+        y: Math.round(addPanelRectangleCrop.y * scaleY),
+        width: Math.round(addPanelRectangleCrop.width * scaleX),
+        height: Math.round(addPanelRectangleCrop.height * scaleY)
+    };
+    
+    const croppedCanvas = document.createElement('canvas');
+    const croppedContext = croppedCanvas.getContext('2d');
+    croppedCanvas.width = cropData.width;
+    croppedCanvas.height = cropData.height;
+    
+    croppedContext.drawImage(addPanelImage, 
+        cropData.x, cropData.y, cropData.width, cropData.height,
+        0, 0, cropData.width, cropData.height
+    );
+    
+    return croppedCanvas;
+}
+
+function applyAddPanelCropFreeform() {
+    if (addPanelFreeformPoints.length !== 4) return null;
+    
+    // Calculate points relative to original image
+    const scaleX = addPanelImage.width / addPanelCanvas.width;
+    const scaleY = addPanelImage.height / addPanelCanvas.height;
+    
+    const scaledPoints = addPanelFreeformPoints.map(point => ({
+        x: point.x * scaleX,
+        y: point.y * scaleY
+    }));
+    
+    // Find bounding box
+    const minX = Math.min(...scaledPoints.map(p => p.x));
+    const maxX = Math.max(...scaledPoints.map(p => p.x));
+    const minY = Math.min(...scaledPoints.map(p => p.y));
+    const maxY = Math.max(...scaledPoints.map(p => p.y));
+    
+    const width = maxX - minX;
+    const height = maxY - minY;
+    
+    const croppedCanvas = document.createElement('canvas');
+    const croppedContext = croppedCanvas.getContext('2d');
+    croppedCanvas.width = width;
+    croppedCanvas.height = height;
+    
+    // Create clipping path
+    croppedContext.beginPath();
+    croppedContext.moveTo(scaledPoints[0].x - minX, scaledPoints[0].y - minY);
+    for (let i = 1; i < scaledPoints.length; i++) {
+        croppedContext.lineTo(scaledPoints[i].x - minX, scaledPoints[i].y - minY);
+    }
+    croppedContext.closePath();
+    croppedContext.clip();
+    
+    // Draw image with clipping
+    croppedContext.drawImage(addPanelImage, -minX, -minY);
+    
+    return croppedCanvas;
+}
+
+function resetAddPanelCrop() {
+    if (addPanelCropMode === 'rectangle') {
+        initializeAddPanelRectangleCrop();
+    } else {
+        addPanelFreeformPoints = [];
+        updateAddPanelFreeformPointsDisplay();
+    }
+    
+    if (addPanelCanvas) {
+        drawAddPanelImage();
+    }
+}
+
+function closeAddPanelModal() {
+    const modal = document.getElementById('addPanelModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    
+    currentPageForNewPanel = null;
+    addPanelRectangleCrop = null;
+    addPanelFreeformPoints = [];
+    addPanelImage = null;
+    
+    // Remove event listeners
+    if (addPanelCanvas) {
+        addPanelCanvas.removeEventListener('mousedown', addPanelCanvasMouseDown);
+        addPanelCanvas.removeEventListener('mousemove', addPanelCanvasMouseMove);
+        addPanelCanvas.removeEventListener('mouseup', addPanelCanvasMouseUp);
+    }
+}
+
+function addNewPanelToPage(pageNumber, panelUrl) {
+    console.log('Adding new panel to page:', pageNumber, 'URL:', panelUrl);
+    
+    // Get or create page data
+    if (!projectData.workflow) projectData.workflow = {};
+    if (!projectData.workflow.panels) projectData.workflow.panels = { status: 'pending', data: [] };
+    
+    let pageData = projectData.workflow.panels.data.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+    if (!pageData) {
+        pageData = {
+            page_number: parseInt(pageNumber),
+            filename: '', // Will be updated if needed
+            panels: [],
+            boxes: []
+        };
+        projectData.workflow.panels.data.push(pageData);
+        console.log('Created new page data for page:', pageNumber);
+    }
+    
+    // Add new panel - using matched_text instead of text to match existing structure
+    const newPanel = {
+        filename: panelUrl.split('/').pop(),
+        url: panelUrl,
+        matched_text: '', // Use matched_text instead of text
+        effect: 'slide_lr',
+        transition: 'fade'
+    };
+    
+    pageData.panels.push(newPanel);
+    console.log('Added panel to page. Page now has', pageData.panels.length, 'panels');
+    console.log('New panel:', newPanel);
+    console.log('Full page data after adding panel:', pageData);
+}
+
+// Make functions globally available
+window.openPanelImageEditor = openPanelImageEditor;
+window.closePanelImageEditor = closePanelImageEditor;
+window.setCropMode = setCropMode;
+window.applyCropSquare = applyCropSquare;
+window.resetCrop = resetCrop;
+window.addBorderToPanel = addBorderToPanel;
+window.addBorderToCurrentPanel = addBorderToCurrentPanel;
+window.clearFreeformPoints = clearFreeformPoints;
+window.updatePanelInUI = updatePanelInUI;
+window.zoomIn = zoomIn;
+window.zoomOut = zoomOut;
+window.resetZoom = resetZoom;
+window.openAddPanelModal = openAddPanelModal;
+window.closeAddPanelModal = closeAddPanelModal;
+window.setAddPanelCropMode = setAddPanelCropMode;
+window.createNewPanel = createNewPanel;
+window.resetAddPanelCrop = resetAddPanelCrop;
+window.clearAddPanelFreeformPoints = clearAddPanelFreeformPoints;
+window.addPanelZoomIn = addPanelZoomIn;
+window.addPanelZoomOut = addPanelZoomOut;
+window.addPanelResetZoom = addPanelResetZoom;
+
+function handleAddPanelZoom(e) {
+    e.preventDefault();
+    const rect = addPanelCanvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    const newZoom = Math.max(0.1, Math.min(5, addPanelZoomLevel * zoomFactor));
+    
+    // Adjust pan to zoom towards mouse position
+    addPanelPanX = mouseX - (mouseX - addPanelPanX) * (newZoom / addPanelZoomLevel);
+    addPanelPanY = mouseY - (mouseY - addPanelPanY) * (newZoom / addPanelZoomLevel);
+    
+    addPanelZoomLevel = newZoom;
+    updateAddPanelZoomDisplay();
+    drawAddPanelImage();
+}
+
+function addPanelZoomIn() {
+    addPanelZoomLevel = Math.min(5, addPanelZoomLevel * 1.2);
+    updateAddPanelZoomDisplay();
+    drawAddPanelImage();
+    console.log('Add panel zoomed in to:', addPanelZoomLevel);
+}
+
+function addPanelZoomOut() {
+    addPanelZoomLevel = Math.max(0.1, addPanelZoomLevel / 1.2);
+    updateAddPanelZoomDisplay();
+    drawAddPanelImage();
+    console.log('Add panel zoomed out to:', addPanelZoomLevel);
+}
+
+function addPanelResetZoom() {
+    addPanelZoomLevel = 1;
+    addPanelPanX = 0;
+    addPanelPanY = 0;
+    updateAddPanelZoomDisplay();
+    drawAddPanelImage();
+    console.log('Add panel zoom reset');
+}
+
+function updateAddPanelZoomDisplay() {
+    const zoomDisplay = document.querySelector('#addPanelModal .zoom-level');
+    if (zoomDisplay) {
+        zoomDisplay.textContent = `${Math.round(addPanelZoomLevel * 100)}%`;
+    }
+}
+window.addPanelZoomIn = addPanelZoomIn;
+window.addPanelZoomOut = addPanelZoomOut;
+window.addPanelResetZoom = addPanelResetZoom;
+
+function handleAddPanelZoom(e) {
+    e.preventDefault();
+    const rect = addPanelCanvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    const newZoom = Math.max(0.1, Math.min(5, addPanelZoomLevel * zoomFactor));
+    
+    // Adjust pan to zoom towards mouse position
+    addPanelPanX = mouseX - (mouseX - addPanelPanX) * (newZoom / addPanelZoomLevel);
+    addPanelPanY = mouseY - (mouseY - addPanelPanY) * (newZoom / addPanelZoomLevel);
+    
+    addPanelZoomLevel = newZoom;
+    updateAddPanelZoomDisplay();
+    drawAddPanelImage();
+}
+
+// Add keyboard shortcuts for panel editing modals
+document.addEventListener('keydown', function(e) {
+    // Panel Image Editor shortcuts
+    const panelImageModal = document.getElementById('panelImageEditorModal');
+    const addPanelModal = document.getElementById('addPanelModal');
+    
+    if (panelImageModal && panelImageModal.style.display === 'block') {
+        if (e.key === 'Escape') {
+            closePanelImageEditor();
+        } else if (e.key === 'Enter') {
+            applyCropSquare();
+        } else if (e.key === 'r' || e.key === 'R') {
+            resetCrop();
+        }
+    }
+    
+    if (addPanelModal && addPanelModal.style.display === 'block') {
+        if (e.key === 'Escape') {
+            closeAddPanelModal();
+        } else if (e.key === 'Enter') {
+            createNewPanel();
+        } else if (e.key === 'r' || e.key === 'R') {
+            resetAddPanelCrop();
+        }
+    }
+});

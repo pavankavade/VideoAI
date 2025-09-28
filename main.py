@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
-from PIL import Image
+from PIL import Image, ImageDraw
 # from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
 
 # Logging setup
@@ -164,15 +164,61 @@ async def stream_progress(job_id: str):
     return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
 
 
+@app.get('/test-video-editor-project/{project_id}')
+def test_video_editor_project(project_id: str):
+    """Test endpoint to check how video editor handles project IDs"""
+    project = get_manga_project(project_id)
+    if not project:
+        # Project ID was provided but project doesn't exist
+        # Create a placeholder project with the provided ID for the video editor
+        logger.warning(f"Test: Project {project_id} not found, creating placeholder for video editor")
+        project = {
+            "id": project_id,
+            "title": f"Video Project - {project_id}",
+            "pages": [], 
+            "workflow": {},
+            "status": "video_editing",
+            "createdAt": datetime.now().isoformat()
+        }
+    
+    return {"project": project, "found_in_db": project is not None}
+
+
 @app.get('/video-editor', response_class=HTMLResponse)
 def video_editor(request: Request):
     """Render a simple video editor page for a project id query param (optional)."""
     project_id = request.query_params.get('project_id')
     project = None
+    
     if project_id:
+        # Try to find the existing project
         project = get_manga_project(project_id)
-    # If no project, pass an empty placeholder
-    context = {"request": request, "project": project or {"id": "", "pages": [], "workflow": {}}}
+        if not project:
+            # Project ID was provided but project doesn't exist
+            # Create a placeholder project with the provided ID for the video editor
+            logger.warning(f"Project {project_id} not found, creating placeholder for video editor")
+            project = {
+                "id": project_id,
+                "title": f"Video Project - {project_id}",
+                "pages": [], 
+                "workflow": {},
+                "status": "video_editing",
+                "createdAt": datetime.now().isoformat()
+            }
+    else:
+        # No project ID provided, create a temporary one
+        temp_project_id = f"temp-video-{int(datetime.now().timestamp() * 1000)}"
+        project = {
+            "id": temp_project_id,
+            "title": f"Video Editor Session - {temp_project_id}",
+            "pages": [], 
+            "workflow": {},
+            "status": "video_editing",
+            "createdAt": datetime.now().isoformat()
+        }
+        logger.info(f"Created temporary video editor project: {temp_project_id}")
+    
+    context = {"request": request, "project": project}
     return templates.TemplateResponse('video_editor.html', context)
 
 
@@ -181,43 +227,101 @@ async def save_project_endpoint(request: Request):
     """Save editor state (layers) into the project workflow and persist projects.json.
     Expects JSON: { project_id: str, layers: [...] }
     """
+    logger.info("=== SAVE PROJECT REQUEST START ===")
+    
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail='Invalid JSON')
+        # Log raw request info
+        logger.info(f"Request method: {request.method}")
+        logger.info(f"Request headers: {dict(request.headers)}")
+        logger.info(f"Content-Type: {request.headers.get('content-type')}")
+        
+        # Read and log raw body
+        raw_body = await request.body()
+        logger.info(f"Raw body length: {len(raw_body)}")
+        logger.info(f"Raw body preview: {raw_body[:500].decode('utf-8', errors='ignore')}")
+        
+        # Parse JSON
+        payload = json.loads(raw_body.decode('utf-8'))
+        logger.info(f"Successfully parsed JSON payload")
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e}")
+        logger.error(f"Failed to parse body: {raw_body[:1000] if 'raw_body' in locals() else 'No raw_body'}")
+        raise HTTPException(status_code=400, detail=f'Invalid JSON: {str(e)}')
+    except Exception as e:
+        logger.error(f"Unexpected error reading request: {e}")
+        raise HTTPException(status_code=400, detail=f'Request error: {str(e)}')
+    
+    # Extract and validate payload
     project_id = payload.get('project_id')
     layers = payload.get('layers')
+    
+    logger.info(f"Extracted project_id: {repr(project_id)} (type: {type(project_id)})")
+    logger.info(f"Extracted layers: {type(layers)} with {len(layers) if layers else 'None'} items")
+    logger.info(f"Full payload keys: {list(payload.keys())}")
+    
     if not project_id:
+        logger.error(f"Missing or empty project_id. Payload: {payload}")
         raise HTTPException(status_code=400, detail='project_id required')
     if layers is None:
+        logger.error(f"Missing layers. Payload: {payload}")
         raise HTTPException(status_code=400, detail='layers required')
-    # Load project and patch workflow.video_editing.data
-    projects = get_manga_projects()
-    for i, p in enumerate(projects):
-        if p.get('id') == project_id:
-            # store layers under workflow.video_editing.data for later retrieval
-            if 'workflow' not in p:
-                p['workflow'] = {}
-            if 'video_editing' not in p['workflow']:
-                p['workflow']['video_editing'] = {}
-            p['workflow']['video_editing']['status'] = 'edited'
-            p['workflow']['video_editing']['data'] = {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}
-            projects[i] = p
+    
+    try:
+        # Load project and patch workflow.video_editing.data
+        logger.info("Loading manga projects from storage...")
+        projects = get_manga_projects()
+        logger.info(f"Loaded {len(projects)} projects from storage")
+        
+        # Find project
+        found_project = False
+        for i, p in enumerate(projects):
+            if p.get('id') == project_id:
+                logger.info(f"Found project at index {i}: {p.get('title', 'No title')}")
+                found_project = True
+                
+                # store layers under workflow.video_editing.data for later retrieval
+                if 'workflow' not in p:
+                    p['workflow'] = {}
+                if 'video_editing' not in p['workflow']:
+                    p['workflow']['video_editing'] = {}
+                p['workflow']['video_editing']['status'] = 'edited'
+                p['workflow']['video_editing']['data'] = {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}
+                projects[i] = p
+                
+                # Save updated projects
+                logger.info("Saving updated projects to storage...")
+                save_manga_projects(projects)
+                logger.info(f"Successfully saved project {project_id}")
+                return JSONResponse({'ok': True, 'project_id': project_id})
+        
+        if not found_project:
+            # If project not found, create a lightweight project entry
+            logger.info(f"Project {project_id} not found, creating new project entry")
+            new_proj = {
+                'id': project_id,
+                'title': project_id,
+                'pages': [],
+                'workflow': {
+                    'video_editing': {'status': 'edited', 'data': {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}}
+                },
+                'createdAt': datetime.utcnow().isoformat()
+            }
+            projects.append(new_proj)
             save_manga_projects(projects)
-            return JSONResponse({'ok': True, 'project_id': project_id})
-    # If project not found, create a lightweight project entry
-    new_proj = {
-        'id': project_id,
-        'title': project_id,
-        'pages': [],
-        'workflow': {
-            'video_editing': {'status': 'edited', 'data': {'layers': layers, 'savedAt': datetime.utcnow().isoformat()}}
-        },
-        'createdAt': datetime.utcnow().isoformat()
-    }
-    projects.append(new_proj)
-    save_manga_projects(projects)
-    return JSONResponse({'ok': True, 'project_id': project_id, 'created': True})
+            logger.info(f"Successfully created and saved new project {project_id}")
+            return JSONResponse({'ok': True, 'project_id': project_id, 'created': True})
+        
+    except Exception as e:
+        logger.exception(f"Failed to save project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=f'Failed to save project: {str(e)}')
+    
+    finally:
+        logger.info("=== SAVE PROJECT REQUEST END ===")
+        
+    # This should never be reached but adding for safety
+    logger.error("Unexpected code path - should not reach here")
+    raise HTTPException(status_code=500, detail='Unexpected error in save flow')
 
 # Manga project management
 def _normalize_quotes_and_commas(text: str) -> str:
@@ -414,6 +518,98 @@ def update_manga_project(project_id: str, updates: Dict[str, Any]) -> bool:
             save_manga_projects(projects)
             return True
     return False
+
+def create_rounded_rectangle_mask(size: Tuple[int, int], corner_radius: int) -> Image.Image:
+    """Create a mask for rounded rectangle with given corner radius"""
+    width, height = size
+    mask = Image.new('L', (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    
+    # Draw rounded rectangle
+    draw.rounded_rectangle(
+        [(0, 0), (width-1, height-1)], 
+        radius=corner_radius, 
+        fill=255
+    )
+    return mask
+
+def add_curved_border(image: Image.Image, border_width: int = 4, border_color: str = "black", corner_radius: int = 20) -> Image.Image:
+    """Add a curved border to an image using the same parameters as panel detection API"""
+    # Convert border color name to RGB if needed
+    if border_color == "black":
+        border_rgb = (0, 0, 0)
+    elif border_color == "white":
+        border_rgb = (255, 255, 255)
+    else:
+        # Try to parse as hex color
+        try:
+            if border_color.startswith('#'):
+                border_rgb = tuple(int(border_color[i:i+2], 16) for i in (1, 3, 5))
+            else:
+                border_rgb = (0, 0, 0)  # Default to black
+        except:
+            border_rgb = (0, 0, 0)
+    
+    # Create image with border
+    bordered_width = image.width + 2 * border_width
+    bordered_height = image.height + 2 * border_width
+    
+    # Create background with border color
+    bordered_image = Image.new('RGB', (bordered_width, bordered_height), border_rgb)
+    
+    if corner_radius > 0:
+        # Create rounded mask for the inner image area
+        inner_mask = create_rounded_rectangle_mask((image.width, image.height), corner_radius)
+        
+        # Create rounded mask for the outer border
+        outer_mask = create_rounded_rectangle_mask((bordered_width, bordered_height), corner_radius)
+        
+        # Paste the original image with rounded corners
+        bordered_image.paste(image, (border_width, border_width), inner_mask)
+        
+        # Apply outer rounded corners to the final image
+        final_image = Image.new('RGB', (bordered_width, bordered_height), (255, 255, 255, 0))
+        final_image.paste(bordered_image, (0, 0), outer_mask)
+        return final_image
+    else:
+        # Simple rectangular border
+        bordered_image.paste(image, (border_width, border_width))
+        return bordered_image
+
+@app.post("/api/panel/add-border")
+async def add_border_to_panel(request: Request):
+    """Add border to a panel image using the same configuration as panel detection API"""
+    try:
+        form = await request.form()
+        uploaded_file = form.get("file")
+        
+        if not uploaded_file or not hasattr(uploaded_file, "read"):
+            raise HTTPException(status_code=400, detail="No file uploaded")
+        
+        # Read the uploaded image
+        image_data = await uploaded_file.read()
+        image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        
+        # Apply border with same settings as panel detection API
+        bordered_image = add_curved_border(
+            image,
+            border_width=PANEL_API_BORDER_WIDTH,
+            border_color=PANEL_API_BORDER_COLOR,
+            corner_radius=PANEL_API_CORNER_RADIUS if PANEL_API_CURVED_BORDER else 0
+        )
+        
+        # Save the bordered image
+        timestamp = int(datetime.now().timestamp() * 1000)
+        filename = f"bordered_{timestamp}.png"
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        
+        bordered_image.save(file_path, "PNG")
+        
+        return {"filenames": [filename]}
+        
+    except Exception as e:
+        logger.exception("Error adding border to panel")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
 def delete_manga_project(project_id: str) -> bool:
     """Delete a manga project and its files"""
@@ -2418,6 +2614,136 @@ async def update_effect_config(config: dict):
             "transition_smoothing": TRANSITION_SMOOTHING
         }
     }
+
+
+def create_rounded_rectangle_mask(width: int, height: int, radius: int) -> Image.Image:
+    """Create a mask for rounded corners."""
+    mask = Image.new('L', (width, height), 0)
+    
+    try:
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(mask)
+        
+        # Draw rounded rectangle using PIL's rounded_rectangle if available (PIL >= 8.2.0)
+        if hasattr(draw, 'rounded_rectangle'):
+            draw.rounded_rectangle([(0, 0), (width, height)], radius=radius, fill=255)
+        else:
+            # Fallback for older PIL versions
+            # Draw rectangle with rounded corners manually
+            draw.rectangle([(radius, 0), (width - radius, height)], fill=255)
+            draw.rectangle([(0, radius), (width, height - radius)], fill=255)
+            
+            # Draw corner circles
+            draw.ellipse([(0, 0), (radius * 2, radius * 2)], fill=255)
+            draw.ellipse([(width - radius * 2, 0), (width, radius * 2)], fill=255)
+            draw.ellipse([(0, height - radius * 2), (radius * 2, height)], fill=255)
+            draw.ellipse([(width - radius * 2, height - radius * 2), (width, height)], fill=255)
+            
+    except Exception as e:
+        logger.error(f"Error creating rounded mask: {e}")
+        # Return a simple rectangular mask as fallback
+        mask = Image.new('L', (width, height), 255)
+    
+    return mask
+
+
+def add_curved_border(image: Image.Image, 
+                     border_width: int = 10, 
+                     border_color: str = "black",
+                     corner_radius: int = 15) -> Image.Image:
+    """Add curved border to an image without shadow or white margins."""
+    try:
+        from PIL import ImageOps
+        
+        # Add border first (only if border_width > 0)
+        if border_width > 0:
+            bordered_img = ImageOps.expand(image, border=border_width, fill=border_color)
+        else:
+            bordered_img = image.copy()
+        
+        # Create rounded corners
+        width, height = bordered_img.size
+        mask = create_rounded_rectangle_mask(width, height, corner_radius)
+        
+        # Apply rounded corners directly without creating transparent background
+        output = Image.new('RGB', (width, height), 'white')
+        output.paste(bordered_img, (0, 0))
+        
+        # Create a version with transparency for masking
+        temp_rgba = bordered_img.convert('RGBA')
+        temp_rgba.putalpha(mask)
+        
+        # Paste the masked image onto white background
+        output.paste(temp_rgba, (0, 0), temp_rgba)
+        
+        return output
+        
+    except Exception as e:
+        logger.error(f"Error adding curved border: {e}")
+        return image
+
+
+@app.post("/api/panel/add-border")
+async def add_border_to_panel(request: Request):
+    """Add border to a panel image"""
+    try:
+        data = await request.json()
+        project_id = data.get('project_id')
+        page_number = data.get('page_number')
+        panel_index = data.get('panel_index')
+        panel_url = data.get('panel_url')
+        border_width = data.get('border_width', 10)
+        border_color = data.get('border_color', 'black')
+        curved_border = data.get('curved_border', True)
+        corner_radius = data.get('corner_radius', 15)
+        
+        # Validate project
+        project = get_manga_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get the image from URL
+        if panel_url.startswith('/uploads/'):
+            image_path = os.path.join(BASE_DIR, panel_url.lstrip('/'))
+        else:
+            # For full URLs, try to get local path
+            image_path = os.path.join(UPLOAD_DIR, os.path.basename(panel_url))
+        
+        if not os.path.exists(image_path):
+            raise HTTPException(status_code=404, detail="Panel image not found")
+        
+        # Load and process image
+        with Image.open(image_path) as img:
+            img = img.convert('RGB')
+            
+            if curved_border:
+                processed_img = add_curved_border(
+                    img, 
+                    border_width=border_width,
+                    border_color=border_color,
+                    corner_radius=corner_radius
+                )
+            else:
+                # Simple border
+                from PIL import ImageOps
+                processed_img = ImageOps.expand(img, border=border_width, fill=border_color)
+        
+        # Save processed image
+        timestamp = int(datetime.now().timestamp() * 1000)
+        filename = f"panel_{project_id}_{page_number}_{panel_index}_bordered_{timestamp}.png"
+        output_path = os.path.join(UPLOAD_DIR, filename)
+        
+        processed_img.save(output_path, 'PNG')
+        
+        return JSONResponse({
+            "success": True,
+            "url": f"/uploads/{filename}",
+            "filename": filename
+        })
+        
+    except Exception as e:
+        logger.exception(f"Error adding border to panel: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing panel: {str(e)}")
 
 
 if __name__ == "__main__":

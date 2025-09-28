@@ -1306,6 +1306,250 @@
             margin: 0;
         }
         
+        /* Panel Image Editing Styles */
+        .panel-edit-overlay {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            display: none;
+            gap: 4px;
+            z-index: 10;
+        }
+        
+        .panel-editor-item:hover .panel-edit-overlay {
+            display: flex;
+        }
+        
+        .edit-panel-btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .edit-panel-btn:hover {
+            background: #2563eb;
+        }
+        
+        .add-border-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .add-border-btn:hover {
+            background: #059669;
+        }
+        
+        .add-panel-btn {
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: 500;
+            margin: 16px 0;
+            width: 100%;
+        }
+        
+        .add-panel-btn:hover {
+            background: #7c3aed;
+        }
+        
+        .image-crop-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 400px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin: 16px 0;
+            position: relative;
+        }
+        
+        .crop-controls {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+        }
+        
+        .crop-mode-selector {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .crop-mode-btn {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .crop-mode-btn:hover {
+            background: var(--bg-secondary);
+        }
+        
+        .crop-mode-btn.active {
+            background: #3b82f6;
+            color: white;
+            border-color: #3b82f6;
+        }
+        
+        .panel-editor-body {
+            display: flex;
+            gap: 16px;
+            padding: 0;
+            min-height: 500px;
+        }
+        
+        .crop-sidebar {
+            width: 250px;
+            padding: 16px;
+            background: var(--bg-tertiary);
+            border-right: 1px solid var(--border-color);
+        }
+        
+        .crop-settings h3, .crop-preview h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+        
+        .crop-settings-section {
+            margin-bottom: 20px;
+        }
+        
+        .setting-group {
+            margin-bottom: 12px;
+        }
+        
+        .setting-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        
+        .setting-group input[type="number"] {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+        
+        .setting-group input[type="checkbox"] {
+            margin-right: 6px;
+        }
+        
+        .crop-preview {
+            margin-top: 20px;
+        }
+        
+        .crop-preview canvas {
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: white;
+            width: 100%;
+            height: auto;
+            max-height: 150px;
+            object-fit: contain;
+        }
+        
+        .freeform-points {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px;
+            margin: 8px 0;
+            min-height: 60px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        
+        .freeform-point {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+        
+        .freeform-point:last-child {
+            border-bottom: none;
+        }
+        
+        .btn-sm {
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+        
+        #cropCanvas {
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-width: 100%;
+            max-height: 100%;
+        }
+        
+        .crop-point {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: #3b82f6;
+            border: 2px solid white;
+            border-radius: 50%;
+            cursor: move;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            z-index: 10;
+        }
+        
+        .crop-point:hover {
+            background: #2563eb;
+            transform: translate(-50%, -50%) scale(1.2);
+        }
+        
+        .crop-handle {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: #3b82f6;
+            border: 1px solid white;
+            cursor: nw-resize;
+        }
+        
+        .crop-handle.nw { top: -4px; left: -4px; cursor: nw-resize; }
+        .crop-handle.ne { top: -4px; right: -4px; cursor: ne-resize; }
+        .crop-handle.sw { bottom: -4px; left: -4px; cursor: sw-resize; }
+        .crop-handle.se { bottom: -4px; right: -4px; cursor: se-resize; }
+        .crop-handle.n { top: -4px; left: 50%; transform: translateX(-50%); cursor: n-resize; }
+        .crop-handle.s { bottom: -4px; left: 50%; transform: translateX(-50%); cursor: s-resize; }
+        .crop-handle.w { top: 50%; left: -4px; transform: translateY(-50%); cursor: w-resize; }
+        .crop-handle.e { top: 50%; right: -4px; transform: translateY(-50%); cursor: e-resize; }
+        
     </style>
     <script defer src="/static/manga_view.js"></script>
 </head>
@@ -1625,6 +1869,113 @@
                         Overwrite existing text when matching to all panels
                     </label>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Panel Image Editor Modal -->
+    <div id="panelImageEditorModal" class="panel-editor-modal">
+        <div class="panel-editor-content">
+            <div class="panel-editor-header">
+                <h2>Edit Panel Image</h2>
+                <div class="crop-mode-selector">
+                    <button class="crop-mode-btn active" onclick="setCropMode('rectangle')" data-mode="rectangle">📐 Rectangle</button>
+                    <button class="crop-mode-btn" onclick="setCropMode('freeform')" data-mode="freeform">🔷 Free Form</button>
+                </div>
+                <button class="close-panel-editor" onclick="closePanelImageEditor()">&times;</button>
+            </div>
+            <div class="panel-editor-body">
+                <div class="crop-sidebar">
+                    <div class="crop-settings">
+                        <h3>Crop Settings</h3>
+                        <div id="rectangleSettings" class="crop-settings-section">
+                            <div class="setting-group">
+                                <label>Width:</label>
+                                <input type="number" id="cropWidth" placeholder="Auto" min="50">
+                            </div>
+                            <div class="setting-group">
+                                <label>Height:</label>
+                                <input type="number" id="cropHeight" placeholder="Auto" min="50">
+                            </div>
+                            <div class="setting-group">
+                                <label>
+                                    <input type="checkbox" id="maintainAspect"> Lock Aspect Ratio
+                                </label>
+                            </div>
+                        </div>
+                        <div id="freeformSettings" class="crop-settings-section" style="display: none;">
+                            <p>Click 4 points on the image to define crop area</p>
+                            <div class="freeform-points" id="freeformPoints"></div>
+                            <button class="btn-secondary btn-sm" onclick="clearFreeformPoints()">Clear Points</button>
+                        </div>
+                    </div>
+                    <div class="crop-preview">
+                        <h3>Preview</h3>
+                        <canvas id="previewCanvas" width="150" height="150"></canvas>
+                    </div>
+                </div>
+                <div class="image-crop-container">
+                    <canvas id="cropCanvas" style="cursor: crosshair;"></canvas>
+                </div>
+            </div>
+            <div class="crop-controls">
+                <button class="btn-secondary" onclick="resetCrop()">🔄 Reset</button>
+                <button class="btn-secondary" onclick="addBorderToCurrentPanel()">🖼️ Add Border</button>
+                <button class="btn-secondary" onclick="closePanelImageEditor()">❌ Cancel</button>
+                <button class="btn-primary" onclick="applyCropSquare()" id="applyCropBtn">✂️ Apply Crop</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add New Panel Modal -->
+    <div id="addPanelModal" class="panel-editor-modal">
+        <div class="panel-editor-content">
+            <div class="panel-editor-header">
+                <h2>Add New Panel</h2>
+                <div class="crop-mode-selector">
+                    <button class="crop-mode-btn active" onclick="setAddPanelCropMode('rectangle')" data-mode="rectangle">📐 Rectangle</button>
+                    <button class="crop-mode-btn" onclick="setAddPanelCropMode('freeform')" data-mode="freeform">🔷 Free Form</button>
+                </div>
+                <button class="close-panel-editor" onclick="closeAddPanelModal()">&times;</button>
+            </div>
+            <div class="panel-editor-body">
+                <div class="crop-sidebar">
+                    <div class="crop-settings">
+                        <h3>Panel Settings</h3>
+                        <div id="addPanelRectangleSettings" class="crop-settings-section">
+                            <div class="setting-group">
+                                <label>Width:</label>
+                                <input type="number" id="addPanelCropWidth" placeholder="Auto" min="50">
+                            </div>
+                            <div class="setting-group">
+                                <label>Height:</label>
+                                <input type="number" id="addPanelCropHeight" placeholder="Auto" min="50">
+                            </div>
+                            <div class="setting-group">
+                                <label>
+                                    <input type="checkbox" id="addPanelMaintainAspect"> Lock Aspect Ratio
+                                </label>
+                            </div>
+                        </div>
+                        <div id="addPanelFreeformSettings" class="crop-settings-section" style="display: none;">
+                            <p>Click 4 points on the image to define panel area</p>
+                            <div class="freeform-points" id="addPanelFreeformPoints"></div>
+                            <button class="btn-secondary btn-sm" onclick="clearAddPanelFreeformPoints()">Clear Points</button>
+                        </div>
+                    </div>
+                    <div class="crop-preview">
+                        <h3>Preview</h3>
+                        <canvas id="addPanelPreviewCanvas" width="150" height="150"></canvas>
+                    </div>
+                </div>
+                <div class="image-crop-container">
+                    <canvas id="addPanelCanvas" style="cursor: crosshair;"></canvas>
+                </div>
+            </div>
+            <div class="crop-controls">
+                <button class="btn-secondary" onclick="resetAddPanelCrop()">🔄 Reset</button>
+                <button class="btn-secondary" onclick="closeAddPanelModal()">❌ Cancel</button>
+                <button class="btn-primary" onclick="createNewPanel()" id="createPanelBtn">➕ Create Panel</button>
             </div>
         </div>
     </div>
