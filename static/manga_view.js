@@ -2,10 +2,46 @@
 let currentImageIndex = 0;
 let projectData = null;
 
+// Ensure all panels have effect and transition properties
+function migrateProjectEffects() {
+    if (!projectData || !projectData.workflow || !projectData.workflow.panels || !projectData.workflow.panels.data) {
+        return;
+    }
+    
+    let hasChanges = false;
+    projectData.workflow.panels.data.forEach(pageData => {
+        if (pageData.panels) {
+            pageData.panels.forEach((panel, index) => {
+                // Ensure effect property exists (default to 'none')
+                if (!panel.effect) {
+                    panel.effect = 'none';
+                    hasChanges = true;
+                }
+                // Ensure transition property exists (default to 'none' for first panel, 'slide_book' for others)
+                if (!panel.transition) {
+                    panel.transition = index === 0 ? 'none' : 'slide_book';
+                    hasChanges = true;
+                }
+            });
+        }
+    });
+    
+    if (hasChanges) {
+        // Save changes to the server (async)
+        fetch(`/api/manga/${projectData.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workflow: projectData.workflow })
+        }).catch(err => console.error('Failed to save migrated project data:', err));
+        console.log('Migrated panels to include effect and transition properties');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     projectData = window.projectData;
     updateCarouselControls();
     initializeTheme();
+    migrateProjectEffects(); // Ensure all panels have effect property
     loadExistingNarration();
     loadExistingPanels();
     loadExistingTextMatching();
@@ -1218,12 +1254,40 @@ function openPanelEditor(pageNumber) {
                 const panelAudio = panelTtsData?.find(p => p.panelIndex === index);
                 const hasAudio = panelAudio && panelAudio.audioFile;
                 
-                return `
+                                // Determine current effect (default none if missing)
+                                const effectVal = panel.effect || 'none';
+                                // Simple config note (hardcoded)
+                                const effectConfigHelp = 'Effects animate up to 5s then hold. Zoom amount = 25%.';
+                                return `
                     <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
                         <div class="drag-handle">⋮⋮</div>
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
+                                                        <div class="panel-effect-row" style="display:flex;gap:8px;align-items:center;margin:6px 0;">
+                                                            <label style="font-size:12px;color:#9fbfdc;">Effect</label>
+                                                            <select class="panel-effect-select" data-panel-index="${index}" style="flex:1;background:transparent;border:1px solid rgba(255,255,255,0.12);color:#dff3ff;padding:4px;border-radius:6px">
+                                                                <option value="none" ${effectVal==='none'?'selected':''}>No Effect</option>
+                                                                <option value="slide_lr" ${effectVal==='slide_lr'?'selected':''}>Slide: left → right</option>
+                                                                <option value="slide_rl" ${effectVal==='slide_rl'?'selected':''}>Slide: right → left</option>
+                                                                <option value="slide_tb" ${effectVal==='slide_tb'?'selected':''}>Slide: top → bottom</option>
+                                                                <option value="slide_bt" ${effectVal==='slide_bt'?'selected':''}>Slide: bottom → top</option>
+                                                                <option value="zoom_in" ${effectVal==='zoom_in'?'selected':''}>Zoom in</option>
+                                                                <option value="zoom_out" ${effectVal==='zoom_out'?'selected':''}>Zoom out</option>
+                                                            </select>
+                                                            <span style="font-size:11px;opacity:0.7" title="${effectConfigHelp}">ⓘ</span>
+                                                        </div>
+                                                        <div class="panel-transition-row" style="display:flex;gap:8px;align-items:center;margin:6px 0;">
+                                                            <label style="font-size:12px;color:#9fbfdc;">Transition</label>
+                                                            <select class="panel-transition-select" data-panel-index="${index}" style="flex:1;background:transparent;border:1px solid rgba(255,255,255,0.12);color:#dff3ff;padding:4px;border-radius:6px">
+                                                                <option value="none" ${(panel.transition||'none')==='none'?'selected':''}>No Transition</option>
+                                                                <option value="slide_book" ${(panel.transition||'slide_book')==='slide_book'?'selected':''}>Slide Book</option>
+                                                                <option value="fade" ${(panel.transition||'')==='fade'?'selected':''}>Fade</option>
+                                                                <option value="wipe_lr" ${(panel.transition||'')==='wipe_lr'?'selected':''}>Wipe Left → Right</option>
+                                                                <option value="wipe_rl" ${(panel.transition||'')==='wipe_rl'?'selected':''}>Wipe Right → Left</option>
+                                                            </select>
+                                                            <span style="font-size:11px;opacity:0.7" title="How this panel transitions from the previous panel">ⓘ</span>
+                                                        </div>
                             <textarea class="panel-editor-textarea ${hasText ? 'has-text' : ''}" data-panel-index="${index}" placeholder="Enter narration text for this panel...">${existingText}</textarea>
                             <div class="panel-audio-controls">
                                 ${hasText ? (
@@ -1343,6 +1407,22 @@ function openPanelEditor(pageNumber) {
     textareas.forEach(textarea => {
         textarea.addEventListener('input', updatePanelStats);
     });
+        // Effect change handlers
+        const effectSelects = contentDiv.querySelectorAll('.panel-effect-select');
+        console.log(`Found ${effectSelects.length} effect dropdowns`); // Debug log
+        effectSelects.forEach(sel => {
+                sel.addEventListener('change', (e)=>{
+                        try{
+                            const idx = parseInt(sel.dataset.panelIndex);
+                            const panelsData = projectData.workflow?.panels?.data || [];
+                            const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+                            if (pageData && pageData.panels && pageData.panels[idx]){
+                                pageData.panels[idx].effect = sel.value;
+                                projectData.workflow.panels.data = panelsData;
+                            }
+                        }catch(err){ console.warn('effect change err', err); }
+                });
+        });
     
     // Add drag and drop functionality
     initializeDragAndDrop();
@@ -1421,12 +1501,26 @@ function loadPanelEditorContent(pageNumber) {
                 const panelAudio = panelTtsData?.find(p => p.panelIndex === index);
                 const hasAudio = panelAudio && panelAudio.audioFile;
                 
-                return `
+                                const effectVal2 = panel.effect || 'slide_lr';
+                                const effectConfigHelp2 = 'Effects animate up to 5s then hold. Zoom amount = 25%.';
+                                return `
                     <div class="panel-editor-item" data-panel-index="${index}" draggable="true">
                         <div class="drag-handle">⋮⋮</div>
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
+                                                        <div class="panel-effect-row" style="display:flex;gap:8px;align-items:center;margin:6px 0;">
+                                                            <label style="font-size:12px;color:#9fbfdc;">Effect</label>
+                                                            <select class="panel-effect-select" data-panel-index="${index}" style="flex:1;background:transparent;border:1px solid rgba(255,255,255,0.12);color:#dff3ff;padding:4px;border-radius:6px">
+                                                                <option value="slide_lr" ${effectVal2==='slide_lr'?'selected':''}>Slide: left → right</option>
+                                                                <option value="slide_rl" ${effectVal2==='slide_rl'?'selected':''}>Slide: right → left</option>
+                                                                <option value="slide_tb" ${effectVal2==='slide_tb'?'selected':''}>Slide: top → bottom</option>
+                                                                <option value="slide_bt" ${effectVal2==='slide_bt'?'selected':''}>Slide: bottom → top</option>
+                                                                <option value="zoom_in" ${effectVal2==='zoom_in'?'selected':''}>Zoom in</option>
+                                                                <option value="zoom_out" ${effectVal2==='zoom_out'?'selected':''}>Zoom out</option>
+                                                            </select>
+                                                            <span style="font-size:11px;opacity:0.7" title="${effectConfigHelp2}">ⓘ</span>
+                                                        </div>
                             <textarea class="panel-editor-textarea ${hasText ? 'has-text' : ''}" data-panel-index="${index}" placeholder="Enter narration text for this panel...">${existingText}</textarea>
                             <div class="panel-audio-controls">
                                 ${hasText ? (
@@ -1518,6 +1612,25 @@ function loadPanelEditorContent(pageNumber) {
     const textareas = contentDiv.querySelectorAll('.panel-editor-textarea');
     textareas.forEach(textarea => {
         textarea.addEventListener('input', updatePanelStats);
+    });
+    
+    // Add effect change handlers
+    const effectSelects = contentDiv.querySelectorAll('.panel-effect-select');
+    effectSelects.forEach(sel => {
+        sel.addEventListener('change', (e) => {
+            try {
+                const idx = parseInt(sel.dataset.panelIndex);
+                const panelsData = projectData.workflow?.panels?.data || [];
+                const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+                if (pageData && pageData.panels && pageData.panels[idx]) {
+                    pageData.panels[idx].effect = sel.value;
+                    projectData.workflow.panels.data = panelsData;
+                    console.log(`Panel ${idx} effect changed to: ${sel.value}`);
+                }
+            } catch (err) { 
+                console.warn('Effect change error:', err); 
+            }
+        });
     });
     
     // Add drag and drop functionality
@@ -2670,7 +2783,7 @@ function reorderPanels(fromIndex, toIndex) {
     const textareas = document.querySelectorAll('.panel-editor-textarea');
     const currentTexts = Array.from(textareas).map(textarea => textarea.value);
     
-    // Reorder the panels array
+    // Reorder the panels array (effect travels with its panel)
     const panels = pageData.panels;
     const movedPanel = panels.splice(fromIndex, 1)[0];
     panels.splice(toIndex, 0, movedPanel);
@@ -2727,11 +2840,28 @@ async function savePanelTexts() {
     saveBtn.innerHTML = '<span class="loading"></span> Saving...';
     
     try {
-        // Collect panel texts
+        // Collect panel texts and effects
         const panelTexts = {};
+        const panelEffects = {};
+        const panelTransitions = {};
+        
         textareas.forEach(textarea => {
             const panelIndex = parseInt(textarea.dataset.panelIndex);
             panelTexts[panelIndex] = textarea.value.trim();
+        });
+        
+        // Collect effect selections
+        const effectSelects = document.querySelectorAll('.panel-effect-select');
+        effectSelects.forEach(select => {
+            const panelIndex = parseInt(select.dataset.panelIndex);
+            panelEffects[panelIndex] = select.value;
+        });
+        
+        // Collect transition selections
+        const transitionSelects = document.querySelectorAll('.panel-transition-select');
+        transitionSelects.forEach(select => {
+            const panelIndex = parseInt(select.dataset.panelIndex);
+            panelTransitions[panelIndex] = select.value;
         });
         
         // Get current panels data
@@ -2742,9 +2872,13 @@ async function savePanelTexts() {
             throw new Error('Page data not found');
         }
         
-        // Update panel texts
+        // Update panel texts and effects
         pageData.panels.forEach((panel, index) => {
             panel.matched_text = panelTexts[index] || '';
+            // Persist selected effect (default to none)
+            panel.effect = panelEffects[index] || panel.effect || 'none';
+            // Persist selected transition (default to slide_book for panels after first)
+            panel.transition = panelTransitions[index] || panel.transition || (index === 0 ? 'none' : 'slide_book');
         });
         
         // Update project data
@@ -2902,11 +3036,26 @@ function openVideoEditorWithPanels() {
         return;
     }
     
+    // Build panels metadata map: { pageNumber: [ { filename, effect, transition } ] }
+    const panelsMeta = {};
+    try{
+        const panelsData = projectData.workflow?.panels?.data || [];
+        panelsData.forEach(page => {
+            const pn = parseInt(page.page_number);
+            panelsMeta[pn] = (page.panels || []).map((p, index) => ({ 
+                filename: p.filename, 
+                effect: p.effect || 'none',
+                transition: p.transition || (index === 0 ? 'none' : 'slide_book')
+            }));
+        });
+    }catch(e){ console.warn('Failed to build panelsMeta', e); }
+
     // Store panel data for video editor
     sessionStorage.setItem('panelVideoData', JSON.stringify({
         projectId: projectData.id,
         projectTitle: projectData.title,
         panelTtsData: panelTtsData,
+        panelsMeta: panelsMeta,
         mode: 'panels'
     }));
     

@@ -43,6 +43,18 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(MANGA_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "cv_model"), exist_ok=True)
 
+# Global Effect Configuration Variables
+EFFECT_ANIMATION_SPEED = 0.5  # Speed multiplier (1.0 = normal, 2.0 = 2x faster, 0.5 = half speed)
+EFFECT_SCREEN_MARGIN = 0.3  # Margin as fraction of screen (0.1 = 10% margin on all sides)
+EFFECT_ZOOM_AMOUNT = 0.25  # Zoom range (0.25 = 25% zoom in/out)
+EFFECT_MAX_DURATION = 5.0  # Maximum animation duration in seconds
+PANEL_BASE_SIZE = 0.9  # Base size multiplier for panels (0.5 = 50%, 0.8 = 80%, 1.0 = 100% of screen)
+EFFECT_SMOOTHING = 2.0  # Smoothing intensity (0.0 = linear, 1.0 = smooth, 2.0 = very smooth)
+
+# Global Transition Configuration Variables
+TRANSITION_DURATION = 0.8  # Duration of panel transitions in seconds
+TRANSITION_OVERLAP = 0.4  # Overlap duration for transitions (how long both panels are visible)
+TRANSITION_SMOOTHING = 2.0  # Smoothing for transition animation
 
 gemini_available = False
 genai = None
@@ -559,6 +571,95 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
         logger.exception("ONNX inference failed; returning full-page fallback")
 
 
+def apply_panel_transitions(clips: List[Any]) -> List[Any]:
+    """Apply transitions between panel clips."""
+    if len(clips) <= 1:
+        return clips
+    
+    # Import moviepy components needed for transitions
+    from moviepy.video.fx import all as vfx
+    
+    result_clips = []
+    
+    # Process clips in sequence, applying transitions
+    for i, clip in enumerate(clips):
+        current_clip = clip
+        
+        # Check if this clip has a transition (skip first clip)
+        if i > 0:
+            transition = getattr(clip, '_transition', None)
+            if transition and transition != 'none':
+                # Apply transition effect
+                current_clip = apply_transition_effect(clips[i-1], clip, transition)
+        
+        result_clips.append(current_clip)
+    
+    return result_clips
+
+
+def apply_transition_effect(prev_clip, current_clip, transition_type: str):
+    """Apply a specific transition effect between two clips."""
+    from moviepy.video.fx import all as vfx
+    
+    # Get transition timing
+    transition_duration = TRANSITION_DURATION
+    overlap_duration = TRANSITION_OVERLAP
+    
+    try:
+        if transition_type == 'slide_book':
+            # Book-like slide: previous clip moves left, current slides in from right
+            return apply_slide_book_transition(prev_clip, current_clip, transition_duration)
+        elif transition_type == 'fade':
+            # Simple crossfade transition
+            return apply_fade_transition(prev_clip, current_clip, transition_duration, overlap_duration)
+        elif transition_type in ['wipe_lr', 'wipe_rl']:
+            # Wipe transition (complex, fallback to fade for now)
+            return apply_fade_transition(prev_clip, current_clip, transition_duration, overlap_duration)
+        else:
+            # No transition, return current clip as-is
+            return current_clip
+    except Exception as e:
+        logger.exception(f'Failed to apply transition {transition_type}; using current clip as-is')
+        return current_clip
+
+
+def apply_slide_book_transition(prev_clip, current_clip, duration: float):
+    """Apply a book-like sliding transition."""
+    try:
+        from moviepy.video.fx import all as vfx
+        
+        # For now, implement as a simple crossfade
+        # TODO: Implement actual slide animation
+        current_start = float(getattr(current_clip, 'start', 0) or 0)
+        overlap_start = max(0, current_start - duration/2)
+        
+        # Modify clip timing for overlap
+        modified_clip = current_clip.set_start(overlap_start)
+        return modified_clip
+        
+    except Exception as e:
+        logger.exception('Failed to apply slide book transition')
+        return current_clip
+
+
+def apply_fade_transition(prev_clip, current_clip, duration: float, overlap: float):
+    """Apply a crossfade transition between clips."""
+    try:
+        from moviepy.video.fx import all as vfx
+        
+        current_start = float(getattr(current_clip, 'start', 0) or 0)
+        overlap_start = max(0, current_start - overlap)
+        
+        # Create fade-in effect on current clip
+        fade_in_clip = current_clip.fx(vfx.fadein, overlap).set_start(overlap_start)
+        
+        return fade_in_clip
+        
+    except Exception as e:
+        logger.exception('Failed to apply fade transition')
+        return current_clip
+
+
 @app.post('/api/video/render')
 async def api_video_render(request: Request):
     """Render video from editor timeline.
@@ -639,6 +740,8 @@ async def api_video_render(request: Request):
                 clip._layerIndex = (layer_index if layer_index is not None else (0 if is_bg else 999))
                 clip._transform = item.get('transform') or None
                 clip._crop = item.get('crop') or None
+                clip._effect = item.get('effect') or None  # Extract effect for animation
+                clip._transition = item.get('transition') or None  # Extract transition for panel transitions
                 if is_bg:
                     clips.append(clip)
                 else:
@@ -718,6 +821,7 @@ async def api_video_render(request: Request):
         def process_image_clip(iclip: ImageClip) -> ImageClip:
             tr = getattr(iclip, '_transform', None)
             cr = getattr(iclip, '_crop', None)
+            effect = getattr(iclip, '_effect', None)
             out = iclip
             # Crop first
             try:
@@ -745,22 +849,145 @@ async def api_video_render(request: Request):
                     tw = original_w * scale; th = original_h * scale
                     tx = target_w / 2.0; ty = target_h / 2.0; rot = 0.0
                 else:
-                    # Panels/images default to 50% centered
-                    tw = target_w * 0.5; th = target_h * 0.5
+                    # Panels/images use configurable base size, centered
+                    tw = target_w * PANEL_BASE_SIZE; th = target_h * PANEL_BASE_SIZE
                     tx = target_w / 2.0; ty = target_h / 2.0; rot = 0.0
 
-            # Resize, rotate, position
-            try:
-                out = out.resize(newsize=(max(1, int(tw)), max(1, int(th))))
-            except Exception:
-                logger.exception('Failed to resize image clip; leaving original size')
+            # Apply visual effects for position/scale animation (mirroring canvas logic)
+            if effect and isinstance(effect, str):
+                clip_duration = float(getattr(iclip, 'duration', 2.0))
+                anim_duration = min(EFFECT_MAX_DURATION, clip_duration) / EFFECT_ANIMATION_SPEED
+                
+                # Calculate margins
+                margin_x = int(target_w * EFFECT_SCREEN_MARGIN)
+                margin_y = int(target_h * EFFECT_SCREEN_MARGIN)
+                
+                def smooth_easing(t):
+                    """Configurable easing function for animation smoothness"""
+                    if EFFECT_SMOOTHING <= 0:
+                        return t  # Linear
+                    elif EFFECT_SMOOTHING >= 2.0:
+                        # Very smooth (smoothstep)
+                        return t * t * (3.0 - 2.0 * t)
+                    elif EFFECT_SMOOTHING >= 1.0:
+                        # Smooth (ease-in-out)
+                        if t < 0.5:
+                            return 2 * t * t
+                        return 1 - pow(-2 * t + 2, 2) / 2
+                    else:
+                        # Blend between linear and smooth
+                        smooth_t = 2 * t * t if t < 0.5 else 1 - pow(-2 * t + 2, 2) / 2
+                        return t + EFFECT_SMOOTHING * (smooth_t - t)
+                
+                def effect_position_func(t):
+                    # Calculate animation progress (0 to 1) with smooth easing
+                    raw_progress = min(1.0, t / anim_duration) if anim_duration > 0 else 1.0
+                    progress = smooth_easing(raw_progress)
+                    
+                    # End position (centered)
+                    end_x, end_y = int(tx - tw/2.0), int(ty - th/2.0)
+                    
+                    # Calculate start position based on effect with margins
+                    if effect == 'slide_lr':  # slide left → right
+                        start_x = margin_x - int(tw)  # Start from left margin
+                        curr_x = int(start_x + (end_x - start_x) * progress)
+                        return (curr_x, end_y)
+                    elif effect == 'slide_rl':  # slide right → left
+                        start_x = target_w - margin_x  # Start from right margin
+                        curr_x = int(start_x + (end_x - start_x) * progress)
+                        return (curr_x, end_y)
+                    elif effect == 'slide_tb':  # slide top → bottom
+                        start_y = margin_y - int(th)  # Start from top margin
+                        curr_y = int(start_y + (end_y - start_y) * progress)
+                        return (end_x, curr_y)
+                    elif effect == 'slide_bt':  # slide bottom → top
+                        start_y = target_h - margin_y  # Start from bottom margin
+                        curr_y = int(start_y + (end_y - start_y) * progress)
+                        return (end_x, curr_y)
+                    else:  # no slide effect, use end position
+                        return (end_x, end_y)
+                
+                def zoom_size_func(t):
+                    """Calculate zoom size with integer rounding to prevent shaking"""
+                    raw_progress = min(1.0, t / anim_duration) if anim_duration > 0 else 1.0
+                    progress = smooth_easing(raw_progress)
+                    
+                    if effect == 'zoom_in':
+                        scale = (1.0 - EFFECT_ZOOM_AMOUNT) + EFFECT_ZOOM_AMOUNT * progress
+                    else:  # zoom_out
+                        scale = 1.0 - EFFECT_ZOOM_AMOUNT * progress
+                    
+                    # Use integer rounding to prevent fractional pixel shaking
+                    new_w = max(10, int(round(tw * scale)))
+                    new_h = max(10, int(round(th * scale)))
+                    return (new_w, new_h)
+                
+                def zoom_position_func(t):
+                    """Calculate zoom position to keep image centered during scaling"""
+                    raw_progress = min(1.0, t / anim_duration) if anim_duration > 0 else 1.0
+                    progress = smooth_easing(raw_progress)
+                    
+                    if effect == 'zoom_in':
+                        scale = (1.0 - EFFECT_ZOOM_AMOUNT) + EFFECT_ZOOM_AMOUNT * progress
+                    else:  # zoom_out
+                        scale = 1.0 - EFFECT_ZOOM_AMOUNT * progress
+                    
+                    # Calculate the scaled dimensions
+                    scaled_w = tw * scale
+                    scaled_h = th * scale
+                    
+                    # Position so the CENTER of the scaled image is at (tx, ty)
+                    # MoviePy positions by top-left corner, so we offset by half the image size
+                    centered_x = tx - scaled_w/2
+                    centered_y = ty - scaled_h/2
+                    
+                    return (int(round(centered_x)), int(round(centered_y)))
+                
+                # Apply effect animation
+                if effect in ['slide_lr', 'slide_rl', 'slide_tb', 'slide_bt']:
+                    # Resize first, then animate position for slide effects
+                    try:
+                        out = out.resize(newsize=(max(1, int(tw)), max(1, int(th))))
+                    except Exception:
+                        logger.exception('Failed to resize image clip; leaving original size')
+                    out = out.set_position(effect_position_func)
+                elif effect in ['zoom_in', 'zoom_out']:
+                    # Use integer coordinates for resize and position to prevent shaking
+                    try:
+                        out = out.resize(zoom_size_func).set_position(zoom_position_func)
+                    except Exception:
+                        logger.exception('Failed to apply zoom effect; using fallback')
+                        # Fallback to static transform
+                        try:
+                            out = out.resize(newsize=(max(1, int(tw)), max(1, int(th))))
+                        except Exception:
+                            logger.exception('Failed to resize image clip; leaving original size')
+                        dx = int(tx - tw/2.0); dy = int(ty - th/2.0)
+                        out = out.set_position((dx, dy))
+                else:
+                    # No effect or unknown effect, use static transform
+                    try:
+                        out = out.resize(newsize=(max(1, int(tw)), max(1, int(th))))
+                    except Exception:
+                        logger.exception('Failed to resize image clip; leaving original size')
+                    dx = int(tx - tw/2.0); dy = int(ty - th/2.0)
+                    out = out.set_position((dx, dy))
+            else:
+                # No effect, use static transform
+                try:
+                    out = out.resize(newsize=(max(1, int(tw)), max(1, int(th))))
+                except Exception:
+                    logger.exception('Failed to resize image clip; leaving original size')
+                dx = int(tx - tw/2.0); dy = int(ty - th/2.0)
+                out = out.set_position((dx, dy))
+
+            # Apply rotation (after position/resize)
             try:
                 if abs(float(rot)) > 1e-3:
                     out = out.rotate(float(rot), unit='deg', resample='bilinear')
             except Exception:
                 logger.exception('Failed to rotate clip; skipping rotation')
-            dx = int(tx - tw/2.0); dy = int(ty - th/2.0)
-            out = out.set_position((dx, dy))
+                
             out = out.set_start(getattr(iclip, 'start', 0)).set_duration(iclip.duration)
             out._layerIndex = getattr(iclip, '_layerIndex', 999)
             return out
@@ -772,12 +999,16 @@ async def api_video_render(request: Request):
                 logger.exception('Failed to process image clip; using original placement')
                 processed_all.append(ic)
         processed_all.sort(key=lambda c: getattr(c, '_layerIndex', 999))
+        
+        # Apply transitions between clips
+        processed_all = apply_panel_transitions(processed_all)
+        
         push_progress(job_id, stage="process_foreground", status="complete")
 
         # Composite
         try:
             push_progress(job_id, stage="composite", status="start")
-            video = CompositeVideoClip([base_video] + processed_all, size=(target_w, target_h))
+            video = CompositeVideoClip([base_video] + processed_all, size=(target_w, target_h)).set_fps(24)
             push_progress(job_id, stage="composite", status="complete")
         except Exception:
             logger.exception('Composite assembly failed; falling back to base only')
@@ -920,7 +1151,7 @@ def save_panel_crops(page_path: str, boxes: List[Tuple[int, int, int, int]]) -> 
             crop.save(out_path, format="PNG")
             rel_path = os.path.relpath(out_path, start=BASE_DIR).replace("\\", "/")
             url = f"/uploads/{rel_path.split('uploads/', 1)[1]}"
-            crops_meta.append({"filename": out_name, "url": url})
+            crops_meta.append({"filename": out_name, "url": url, "effect": "slide_lr"})  # Default effect
     return crops_meta
 
 def save_panel_crops_to_project(page_path: str, boxes: List[Tuple[int, int, int, int]], project_dir: str) -> List[Dict[str, str]]:
@@ -949,7 +1180,7 @@ def save_panel_crops_to_project(page_path: str, boxes: List[Tuple[int, int, int,
             out_name = f"panel_{idx:02d}.png"
             out_path = os.path.join(dest_dir, out_name)
             crop.save(out_path, format="PNG")
-            crops_meta.append({"filename": out_name, "url": ""})  # URL will be set by caller
+            crops_meta.append({"filename": out_name, "url": "", "effect": "slide_lr"})  # URL set by caller, default effect
     return crops_meta
 
 
@@ -2130,6 +2361,63 @@ async def process_chapter():
         "pages": chapter_results,
         "used_fallback": any(p.get("source") == "fallback" for p in chapter_results),
     })
+
+
+# Effect Configuration Endpoints
+@app.get("/api/effect-config")
+async def get_effect_config():
+    """Get current effect configuration"""
+    return {
+        "animation_speed": EFFECT_ANIMATION_SPEED,
+        "screen_margin": EFFECT_SCREEN_MARGIN, 
+        "zoom_amount": EFFECT_ZOOM_AMOUNT,
+        "max_duration": EFFECT_MAX_DURATION,
+        "panel_base_size": PANEL_BASE_SIZE,
+        "smoothing": EFFECT_SMOOTHING,
+        "transition_duration": TRANSITION_DURATION,
+        "transition_overlap": TRANSITION_OVERLAP,
+        "transition_smoothing": TRANSITION_SMOOTHING
+    }
+
+@app.post("/api/effect-config") 
+async def update_effect_config(config: dict):
+    """Update effect configuration"""
+    global EFFECT_ANIMATION_SPEED, EFFECT_SCREEN_MARGIN, EFFECT_ZOOM_AMOUNT, EFFECT_MAX_DURATION, PANEL_BASE_SIZE, EFFECT_SMOOTHING
+    global TRANSITION_DURATION, TRANSITION_OVERLAP, TRANSITION_SMOOTHING
+    
+    if "animation_speed" in config:
+        EFFECT_ANIMATION_SPEED = max(0.1, min(10.0, float(config["animation_speed"])))
+    if "screen_margin" in config:
+        EFFECT_SCREEN_MARGIN = max(0.0, min(0.5, float(config["screen_margin"])))
+    if "zoom_amount" in config:
+        EFFECT_ZOOM_AMOUNT = max(0.1, min(1.0, float(config["zoom_amount"])))
+    if "max_duration" in config:
+        EFFECT_MAX_DURATION = max(1.0, min(30.0, float(config["max_duration"])))
+    if "panel_base_size" in config:
+        PANEL_BASE_SIZE = max(0.1, min(2.0, float(config["panel_base_size"])))
+    if "smoothing" in config:
+        EFFECT_SMOOTHING = max(0.0, min(3.0, float(config["smoothing"])))
+    if "transition_duration" in config:
+        TRANSITION_DURATION = max(0.1, min(5.0, float(config["transition_duration"])))
+    if "transition_overlap" in config:
+        TRANSITION_OVERLAP = max(0.1, min(2.0, float(config["transition_overlap"])))
+    if "transition_smoothing" in config:
+        TRANSITION_SMOOTHING = max(0.0, min(3.0, float(config["transition_smoothing"])))
+    
+    return {
+        "status": "updated",
+        "config": {
+            "animation_speed": EFFECT_ANIMATION_SPEED,
+            "screen_margin": EFFECT_SCREEN_MARGIN,
+            "zoom_amount": EFFECT_ZOOM_AMOUNT, 
+            "max_duration": EFFECT_MAX_DURATION,
+            "panel_base_size": PANEL_BASE_SIZE,
+            "smoothing": EFFECT_SMOOTHING,
+            "transition_duration": TRANSITION_DURATION,
+            "transition_overlap": TRANSITION_OVERLAP,
+            "transition_smoothing": TRANSITION_SMOOTHING
+        }
+    }
 
 
 if __name__ == "__main__":

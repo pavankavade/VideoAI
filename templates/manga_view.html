@@ -1093,6 +1093,35 @@
             position: relative;
         }
         
+        /* Panel Effect Row Styles */
+        .panel-effect-row {
+            margin: 6px 0;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .panel-effect-select {
+            flex: 1;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: #dff3ff;
+            padding: 4px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        
+        .panel-effect-select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        
+        .panel-effect-select option {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+        
         /* Panel Audio Controls */
         .panel-audio-controls {
             margin-top: 8px;

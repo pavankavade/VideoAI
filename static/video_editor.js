@@ -2,9 +2,24 @@
 // Layered timeline model: layers is array of {id, name, clips: []}
 let timeline = []; // legacy flat timeline kept for compatibility but UI shows layers
 let layers = [ { id: 'layer-1', name: 'Layer 1', clips: [] } ];
+
 // Background config
 const DEFAULT_BG_SRC = '/static/blur_glitch_background.png';
 const BACKGROUND_LAYER_ID = 'background';
+
+// Effect configuration variables (match server-side)
+let EFFECT_ANIMATION_SPEED = 1.0;
+let EFFECT_SCREEN_MARGIN = 0.1;  
+let EFFECT_ZOOM_AMOUNT = 0.25;
+let EFFECT_MAX_DURATION = 5.0;
+let PANEL_BASE_SIZE = 0.5;  // Base size multiplier for panels
+let EFFECT_SMOOTHING = 1.0;  // Smoothing intensity
+
+// Transition configuration variables
+let TRANSITION_DURATION = 0.8;  // Duration of panel transitions
+let TRANSITION_OVERLAP = 0.4;   // Overlap duration for transitions
+let TRANSITION_SMOOTHING = 2.0; // Smoothing for transitions
+
 let activeLayerId = 'layer-1';
 let panels = [];
 let audios = [];
@@ -95,7 +110,54 @@ document.addEventListener('readystatechange', () => {
   DBG('Document readyState changed to:', document.readyState);
 });
 
-document.addEventListener('DOMContentLoaded', () => {
+// Load effect configuration from server
+async function loadEffectConfig() {
+  try {
+    const response = await fetch('/api/effect-config');
+    if (response.ok) {
+      const config = await response.json();
+      EFFECT_ANIMATION_SPEED = config.animation_speed || 1.0;
+      EFFECT_SCREEN_MARGIN = config.screen_margin || 0.1;
+      EFFECT_ZOOM_AMOUNT = config.zoom_amount || 0.25;
+      EFFECT_MAX_DURATION = config.max_duration || 5.0;
+      PANEL_BASE_SIZE = config.panel_base_size || 0.5;
+      EFFECT_SMOOTHING = config.smoothing || 2.0;
+      TRANSITION_DURATION = config.transition_duration || 0.8;
+      TRANSITION_OVERLAP = config.transition_overlap || 0.4;
+      TRANSITION_SMOOTHING = config.transition_smoothing || 2.0;
+      console.log('Effect and transition config loaded:', config);
+    }
+  } catch (err) {
+    console.warn('Failed to load effect config:', err);
+  }
+}
+
+// Update effect configuration on server
+async function updateEffectConfig(config) {
+  try {
+    const response = await fetch('/api/effect-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    if (response.ok) {
+      const result = await response.json();
+      // Update local variables
+      EFFECT_ANIMATION_SPEED = result.config.animation_speed;
+      EFFECT_SCREEN_MARGIN = result.config.screen_margin;
+      EFFECT_ZOOM_AMOUNT = result.config.zoom_amount;
+      EFFECT_MAX_DURATION = result.config.max_duration;
+      PANEL_BASE_SIZE = result.config.panel_base_size;
+      EFFECT_SMOOTHING = result.config.smoothing;
+      console.log('Effect config updated:', result.config);
+      return result;
+    }
+  } catch (err) {
+    console.warn('Failed to update effect config:', err);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
   // Prevent re-initialization if already loaded
   if (window.videoEditorLoaded) {
     DBG('Video editor already loaded, skipping re-initialization');
@@ -104,6 +166,9 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Show loading modal immediately
   showLoadingModal('Initializing video editor...');
+  
+  // Load effect configuration from server
+  await loadEffectConfig();
   
   DBG('DOMContentLoaded fired - starting video editor initialization');
   
@@ -157,7 +222,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (panelVideoData) {
     // Panel mode: load from panel TTS data
     updateLoadingProgress(0, 100, 'Loading panels from TTS data...');
-    const panelTtsData = project.workflow?.panel_tts?.data || {};
+  const panelTtsData = project.workflow?.panel_tts?.data || {};
+  const panelsMeta = (parsedData && parsedData.panelsMeta) || {};
     
     // Count total assets to load
     let totalPanels = 0;
@@ -183,13 +249,29 @@ document.addEventListener('DOMContentLoaded', () => {
         // This should match the structure from panel detection
         const panelImageUrl = `/manga_projects/${project.id}/panels/Page ${pageNumber}/${panelData.filename}`;
         
+        // Determine effect and transition by matching filename if available
+        let effectVal = 'none';
+        let transitionVal = panelIdx === 0 ? 'none' : 'slide_book';
+        try{
+          const metaList = panelsMeta[pageNumber];
+          if (Array.isArray(metaList)){
+            const match = metaList.find(m => String(m.filename||'').toLowerCase() === String(panelData.filename||'').toLowerCase());
+            if (match) {
+              if (match.effect) effectVal = match.effect;
+              if (match.transition) transitionVal = match.transition;
+            }
+          }
+        }catch(e){}
+
         panels.push({
           id: panelId,
           src: panelImageUrl,
           filename: panelData.filename,
           pageNumber: pageNumber,
           panelIndex: panelIdx,
-          displayName: displayName
+          displayName: displayName,
+          effect: effectVal,
+          transition: transitionVal
         });
         
         const panelEl = document.createElement('div');
@@ -258,7 +340,9 @@ document.addEventListener('DOMContentLoaded', () => {
           filename: panel.filename,
           pageNumber: pageNumber,
           panelIndex: panelIdx,
-          displayName: displayName
+          displayName: displayName,
+          effect: panel.effect || 'none',  // Include effect from panel data
+          transition: panel.transition || (panelIdx === 0 ? 'none' : 'slide_book')  // Include transition from panel data
         });
         
         const el = document.createElement('div');
@@ -626,9 +710,35 @@ function drawFrame(timeSec){
   const all = flattenLayersToTimeline();
   const bg = all.find(c=> c.type==='image' && c._isBackground);
   if (bg) { renderClipToCanvas(bg, timeSec); }
-  // draw image clips in ascending layer order
+  // draw image clips in ascending layer order with transition handling
   const imgs = all.filter(c=> c.type==='image' && !c._isBackground).sort((a,b)=> (a._layerIndex||0) - (b._layerIndex||0));
-  for (const c of imgs){ renderClipToCanvas(c, timeSec); }
+  
+  // Handle transitions between panels
+  for (let i = 0; i < imgs.length; i++) {
+    const currentClip = imgs[i];
+    const nextClip = imgs[i + 1];
+    
+    // Check if we're in a transition zone
+    if (nextClip && nextClip.transition && nextClip.transition !== 'none') {
+      const transitionDuration = TRANSITION_DURATION; // Use configured duration
+      const transitionStart = (nextClip.startTime || 0) - transitionDuration * 0.5; // Start transition before next clip
+      const transitionEnd = (nextClip.startTime || 0) + transitionDuration * 0.5; // End transition after next clip starts
+      
+      if (timeSec >= transitionStart && timeSec <= transitionEnd) {
+        // Calculate transition progress (0 to 1)
+        const progress = Math.max(0, Math.min(1, (timeSec - transitionStart) / transitionDuration));
+        
+        // Render both clips with transition effect
+        renderClipWithTransition(currentClip, nextClip, timeSec, progress);
+        i++; // Skip the next clip in normal rendering since we handled it in transition
+        continue;
+      }
+    }
+    
+    // Normal rendering
+    renderClipToCanvas(currentClip, timeSec);
+  }
+  
   // overlays (selection/crop) when paused
   if (!isPlaying) renderOverlays();
   const tr = document.getElementById('timeReadout'); if (tr) tr.textContent = formatTime(timeSec);
@@ -693,10 +803,74 @@ function renderClipToCanvas(clip, t){
   }
   
   clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-  const dx = Math.round(clip.transform.x - clip.transform.w/2);
-  const dy = Math.round(clip.transform.y - clip.transform.h/2);
-  const dw = Math.max(1, Math.round(clip.transform.w));
-  const dh = Math.max(1, Math.round(clip.transform.h));
+  // Target placement (end of animation)
+  const endCx = clip.transform.x, endCy = clip.transform.y;
+  const endW = clip.transform.w, endH = clip.transform.h;
+
+  // Apply effect animation with stable, smooth motion for canvas preview
+  const eff = (clip.effect || '').toLowerCase();
+  const animMax = 5.0; // Fixed duration for stable canvas preview
+  const animDur = Math.min(animMax, dur);
+  const rawProgress = Math.max(0, Math.min(1, (t - st) / (animDur > 0 ? animDur : 1))); // 0..1
+  
+  // Configurable easing for canvas smoothness
+  const configSmoothEasing = (t) => {
+    if (EFFECT_SMOOTHING <= 0) {
+      return t; // Linear
+    } else if (EFFECT_SMOOTHING >= 2.0) {
+      // Very smooth (smoothstep)
+      return t * t * (3.0 - 2.0 * t);
+    } else if (EFFECT_SMOOTHING >= 1.0) {
+      // Smooth (ease-in-out)
+      if (t < 0.5) return 2 * t * t;
+      return 1 - Math.pow(-2 * t + 2, 2) / 2;
+    } else {
+      // Blend between linear and smooth
+      const smooth_t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      return t + EFFECT_SMOOTHING * (smooth_t - t);
+    }
+  };
+  const rel = configSmoothEasing(rawProgress);
+  
+  // Use fixed margin for stable canvas preview
+  const marginX = canvas.width * 0.1; // 10% margin
+  const marginY = canvas.height * 0.1;
+
+  let curCx = endCx, curCy = endCy, curW = endW, curH = endH;
+  if (eff && animDur > 0){
+    if (eff === 'slide_lr'){
+      const startCx = -endW/2; // Classic off-screen start for smooth slide
+      curCx = startCx + (endCx - startCx) * rel;
+    } else if (eff === 'slide_rl'){
+      const startCx = canvas.width + endW/2;
+      curCx = startCx + (endCx - startCx) * rel;
+    } else if (eff === 'slide_tb'){
+      const startCy = -endH/2;
+      curCy = startCy + (endCy - startCy) * rel;
+    } else if (eff === 'slide_bt'){
+      const startCy = canvas.height + endH/2;
+      curCy = startCy + (endCy - startCy) * rel;
+    } else if (eff === 'zoom_in' || eff === 'zoom_out'){
+      // Ultra-stable zoom calculation with consistent precision
+      const zoomAmount = 0.25; // Fixed 25% for stable preview
+      const s0 = (eff==='zoom_in')? (1.0 - zoomAmount) : 1.0; 
+      const s1 = (eff==='zoom_in')? 1.0 : (1.0 - zoomAmount);
+      const s = s0 + (s1 - s0) * rel; 
+      
+      // Use consistent rounding to prevent sub-pixel jitter
+      curW = Math.max(10, Math.round(endW * s)); 
+      curH = Math.max(10, Math.round(endH * s));
+      
+      // Keep center position perfectly stable - no recalculation needed
+      curCx = endCx; 
+      curCy = endCy;
+    }
+  }
+
+  const dx = Math.round(curCx - curW/2);
+  const dy = Math.round(curCy - curH/2);
+  const dw = Math.max(1, Math.round(curW));
+  const dh = Math.max(1, Math.round(curH));
   const sx = Math.max(0, Math.min(clip.crop.x, img.naturalWidth-1));
   const sy = Math.max(0, Math.min(clip.crop.y, img.naturalHeight-1));
   const sw = Math.max(1, Math.min(clip.crop.w, img.naturalWidth - sx));
@@ -704,13 +878,124 @@ function renderClipToCanvas(clip, t){
   try{
     ctx.save();
     if (clip.transform.rotation){
-      ctx.translate(clip.transform.x, clip.transform.y);
+      // Rotate around current center
+      ctx.translate(curCx, curCy);
       ctx.rotate((clip.transform.rotation || 0) * Math.PI/180);
-      ctx.translate(-clip.transform.x, -clip.transform.y);
+      ctx.translate(-curCx, -curCy);
     }
     ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
     ctx.restore();
   }catch(e){ /* ignore draw errors */ }
+}
+
+function renderClipWithTransition(currentClip, nextClip, t, progress) {
+  // Smooth easing function using configured smoothing
+  const smoothEasing = (t) => {
+    if (TRANSITION_SMOOTHING <= 0) {
+      return t; // Linear
+    } else if (TRANSITION_SMOOTHING >= 2.0) {
+      return t * t * (3.0 - 2.0 * t); // Smoothstep
+    } else {
+      // Blend between linear and smooth
+      const smooth_t = t * t * (3.0 - 2.0 * t);
+      return t + TRANSITION_SMOOTHING/2.0 * (smooth_t - t);
+    }
+  };
+  
+  const easedProgress = smoothEasing(progress);
+  
+  // Save current canvas state
+  ctx.save();
+  
+  const transitionType = nextClip.transition || 'slide_book';
+  
+  switch (transitionType) {
+    case 'slide_book':
+      // Book-like sliding: current panel moves left, new panel slides in from right
+      renderSlideBookTransition(currentClip, nextClip, t, easedProgress);
+      break;
+      
+    case 'fade':
+      // Simple fade transition
+      renderFadeTransition(currentClip, nextClip, t, easedProgress);
+      break;
+      
+    case 'wipe_lr':
+      // Wipe from left to right
+      renderWipeTransition(currentClip, nextClip, t, easedProgress, 'lr');
+      break;
+      
+    case 'wipe_rl':
+      // Wipe from right to left
+      renderWipeTransition(currentClip, nextClip, t, easedProgress, 'rl');
+      break;
+      
+    default:
+      // Fallback to normal rendering
+      renderClipToCanvas(currentClip, t);
+      if (progress > 0.5) {
+        renderClipToCanvas(nextClip, t);
+      }
+  }
+  
+  ctx.restore();
+}
+
+function renderSlideBookTransition(currentClip, nextClip, t, progress) {
+  const canvasWidth = canvas.width;
+  const slideDistance = canvasWidth * 0.8; // 80% of canvas width
+  
+  // Render current clip moving left
+  ctx.save();
+  ctx.translate(-slideDistance * progress, 0);
+  renderClipToCanvas(currentClip, t);
+  ctx.restore();
+  
+  // Render next clip sliding in from right
+  ctx.save();
+  ctx.translate(slideDistance * (1 - progress), 0);
+  renderClipToCanvas(nextClip, t);
+  ctx.restore();
+}
+
+function renderFadeTransition(currentClip, nextClip, t, progress) {
+  // Render current clip with decreasing opacity
+  ctx.save();
+  ctx.globalAlpha = 1 - progress;
+  renderClipToCanvas(currentClip, t);
+  ctx.restore();
+  
+  // Render next clip with increasing opacity
+  ctx.save();
+  ctx.globalAlpha = progress;
+  renderClipToCanvas(nextClip, t);
+  ctx.restore();
+}
+
+function renderWipeTransition(currentClip, nextClip, t, progress, direction) {
+  const canvasWidth = canvas.width;
+  const canvasHeight = canvas.height;
+  
+  // Render current clip
+  renderClipToCanvas(currentClip, t);
+  
+  // Create a clipping mask for the next clip based on wipe progress
+  ctx.save();
+  ctx.beginPath();
+  
+  if (direction === 'lr') {
+    // Wipe from left to right
+    const wipeX = canvasWidth * progress;
+    ctx.rect(0, 0, wipeX, canvasHeight);
+  } else {
+    // Wipe from right to left
+    const wipeX = canvasWidth * (1 - progress);
+    ctx.rect(wipeX, 0, canvasWidth - wipeX, canvasHeight);
+  }
+  
+  ctx.clip();
+  renderClipToCanvas(nextClip, t);
+  ctx.restore();
 }
 
 function renderOverlays(){
@@ -1490,7 +1775,7 @@ function onDropToTimeline(e) {
   if (type === 'image') {
     const panel = panels.find(p => p.id === id);
     if (!panel) return;
-    const clip = {type:'image', src: panel.src, id: panel.id, duration: 2, startTime: 0};
+    const clip = {type:'image', src: panel.src, id: panel.id, duration: 2, startTime: 0, effect: panel.effect || 'slide_lr'};
     insertClipIntoLayerAt(layer, clip, dropSec);
     scheduleAutosave();
   } else if (type === 'audio') {
@@ -1841,7 +2126,7 @@ function onDropToLayer(e, layerId){
   const dropSec = computeDropSecondsFromEvent(e);
   if (type === 'image'){
     const panel = panels.find(p => p.id === id); if (!panel) return;
-    const clip = {type:'image', src: panel.src, id: panel.id, duration:2, startTime:0};
+    const clip = {type:'image', src: panel.src, id: panel.id, duration:2, startTime:0, effect: panel.effect || 'slide_lr'};
     insertClipIntoLayerAt(layer, clip, dropSec);
     scheduleAutosave();
   } else if (type === 'audio'){
@@ -2164,8 +2449,8 @@ function computeCoverFit(srcW, srcH, dstW, dstH){
 }
 
 function computePanelFit(srcW, srcH, dstW, dstH) {
-  // For panels: render at 50% size and center in canvas
-  const scaleFactor = 0.5;
+  // For panels: render at configurable size and center in canvas
+  const scaleFactor = PANEL_BASE_SIZE;
   const scaledDstW = dstW * scaleFactor;
   const scaledDstH = dstH * scaleFactor;
   
@@ -2428,7 +2713,10 @@ async function onExport(){
   const t0 = performance.now();
 
   try {
-    const project = window.projectData || {};
+    // Refresh project data to get the latest effects and transitions
+    const latestProject = await refreshProjectData();
+    const project = latestProject || window.projectData || {};
+    
     const sel = document.getElementById('resolutionSelect') || document.getElementById('resolutionSelectFooter');
     const res = sel ? parseInt(sel.value, 10) : 480;
     const jobId = `render-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
@@ -2476,6 +2764,27 @@ async function onExport(){
       }
     };
 
+    // Update clip effects and transitions from latest project data
+    if (project.workflow?.panels?.data) {
+      const panelsData = project.workflow.panels.data;
+      flattenLayersToTimeline().forEach(clip => {
+        if (clip.type === 'image' && clip.filename) {
+          // Find matching panel in project data
+          for (const pageData of panelsData) {
+            if (pageData.panels) {
+              const matchingPanel = pageData.panels.find(p => p.filename === clip.filename);
+              if (matchingPanel) {
+                clip.effect = matchingPanel.effect || 'none';
+                clip.transition = matchingPanel.transition || 'none';
+                DBG(`Updated clip ${clip.filename}: effect=${clip.effect}, transition=${clip.transition}`);
+                break;
+              }
+            }
+          }
+        }
+      });
+    }
+
     // Build export timeline with normalized src
     const exportTimeline = flattenLayersToTimeline().map((c)=>{
       const copy = Object.assign({}, c);
@@ -2484,6 +2793,8 @@ async function onExport(){
       // pass layer z-order and background info to backend
       copy._layerIndex = c._layerIndex;
       copy._isBackground = !!c._isBackground;
+      if (c.effect) copy.effect = c.effect;
+      if (c.transition) copy.transition = c.transition; // Include transition data
       if (copy.type === 'image') ensureTransformAndCrop(copy);
       return copy;
     });
@@ -2682,8 +2993,55 @@ window.pageMonitorInterval = setInterval(() => {
 }, 2000);
 
 // Generate automatic timeline from panels and their audio
+// Refresh project data from server
+async function refreshProjectData() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const projectId = urlParams.get('project_id');
+  
+  if (!projectId) {
+    console.error('No project ID found in URL parameters');
+    return null;
+  }
+  
+  try {
+    const response = await fetch(`/api/manga/${projectId}`);
+    if (response.ok) {
+      const projectData = await response.json();
+      window.projectData = projectData; // Update global project data
+      DBG('Project data refreshed from server:', projectData.id);
+      return projectData;
+    } else {
+      console.error('Failed to fetch project data:', response.status);
+      return null;
+    }
+  } catch (error) {
+    console.error('Error fetching project data:', error);
+    return null;
+  }
+}
+
 async function generatePanelTimeline() {
   DBG('generatePanelTimeline called');
+  
+  // Refresh project data from server to get latest effects and transitions
+  const latestProject = await refreshProjectData();
+  if (!latestProject) {
+    console.error('Failed to refresh project data');
+    return;
+  }
+  
+  const panelsData = latestProject.workflow?.panels?.data || [];
+  
+  // Update effects and transitions in panels array from latest project data
+  panels.forEach(panel => {
+    const pageData = panelsData.find(p => p.page_number === panel.pageNumber);
+    if (pageData && pageData.panels && pageData.panels[panel.panelIndex]) {
+      const projectPanel = pageData.panels[panel.panelIndex];
+      panel.effect = projectPanel.effect || 'none';
+      panel.transition = projectPanel.transition || (panel.panelIndex === 0 ? 'none' : 'slide_book');
+      DBG(`Updated panel ${panel.pageNumber}-${panel.panelIndex}: effect=${panel.effect}, transition=${panel.transition}`);
+    }
+  });
   
   if (panels.length === 0) {
     console.error('No panels available. Please load a project with panels first.');
@@ -2761,7 +3119,9 @@ async function generatePanelTimeline() {
       type: 'image',
       layer: 'video-layer',
       filename: panelData.filename,
-      displayName: panelData.displayName
+      displayName: panelData.displayName,
+      effect: panelData.effect || 'none',
+      transition: panelData.transition || (index === 0 ? 'none' : 'slide_book')
     };
     
     // Add audio to audio layer
