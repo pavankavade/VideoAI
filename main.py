@@ -1841,6 +1841,92 @@ async def redo_panel_detection_for_page_api(project_id: str, page_number: int):
 
     return {"page": page_result}
 
+@app.post("/api/manga/update-panels")
+async def update_panels_api(request: Request):
+    """Update panel data for a specific page, handling deletions and reordering"""
+    try:
+        payload = await request.json()
+        project_id = payload.get('project_id')
+        page_number = payload.get('page_number')
+        panels = payload.get('panels', [])
+        deleted_panel = payload.get('deleted_panel')
+        
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
+        if page_number is None:
+            raise HTTPException(status_code=400, detail="page_number is required")
+        
+        project = get_manga_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Manga project not found")
+        
+        # Update project workflow.panels.data
+        panels_data = project.get("workflow", {}).get("panels", {}).get("data") or []
+        
+        # Find and update the page
+        page_found = False
+        for i, p in enumerate(panels_data):
+            if int(p.get("page_number", 0)) == int(page_number):
+                panels_data[i]["panels"] = panels
+                page_found = True
+                break
+        
+        if not page_found:
+            # If page doesn't exist, create it
+            panels_data.append({
+                "page_number": int(page_number),
+                "panels": panels
+            })
+        
+        # Optional: Clean up the actual panel file if it exists
+        if deleted_panel and deleted_panel.get('filename'):
+            project_dir = os.path.join(MANGA_DIR, project_id)
+            
+            # Try to find and delete the physical file
+            possible_paths = [
+                os.path.join(project_dir, "panels", deleted_panel['filename']),
+                os.path.join(UPLOAD_DIR, deleted_panel['filename']),
+            ]
+            
+            # Also check in page-specific panel directories
+            try:
+                filename_without_ext = None
+                if "pages" in project:
+                    for page in project["pages"]:
+                        if int(page.get("page_number", 0)) == int(page_number):
+                            filename_without_ext = os.path.splitext(page.get("filename", ""))[0]
+                            break
+                
+                if filename_without_ext:
+                    page_panels_dir = os.path.join(project_dir, "panels", filename_without_ext)
+                    possible_paths.append(os.path.join(page_panels_dir, deleted_panel['filename']))
+            except Exception as e:
+                logger.warning(f"Could not determine page-specific panel directory: {e}")
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        logger.info(f"Deleted panel file: {path}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to delete panel file {path}: {e}")
+        
+        # Persist updates
+        update_manga_project(project_id, {
+            "workflow.panels.data": panels_data
+        })
+        
+        return {
+            "success": True,
+            "message": f"Panels updated for page {page_number}",
+            "panels_count": len(panels)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error updating panels: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update panels: {str(e)}")
+
 @app.post("/api/manga/{project_id}/text-matching")
 async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
     """Match narrative text to panels for each page"""

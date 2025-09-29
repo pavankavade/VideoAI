@@ -2,6 +2,9 @@
 let currentImageIndex = 0;
 let projectData = null;
 
+// Version check for delete functionality
+console.log('manga_view.js loaded - Delete panel functionality available v1.1');
+
 // Ensure all panels have effect and transition properties
 function migrateProjectEffects() {
     if (!projectData || !projectData.workflow || !projectData.workflow.panels || !projectData.workflow.panels.data) {
@@ -1187,6 +1190,8 @@ function openPanelEditor(pageNumber) {
     const contentDiv = document.getElementById('panelEditorContent');
     const statsDiv = document.getElementById('panelEditorStats');
     
+    console.log('Opening panel editor for page:', pageNumber, 'with delete functionality'); // Debug log
+    
     // Update title and navigation
     title.textContent = `Panel Editor - Page ${pageNumber}`;
     updatePanelEditorNavigation(pageNumber);
@@ -1264,7 +1269,9 @@ function openPanelEditor(pageNumber) {
                         <div class="panel-edit-overlay">
                             <button class="edit-panel-btn" onclick="openPanelImageEditor(${pageNumber}, ${index})" title="Edit Panel">✂️</button>
                             <button class="add-border-btn" onclick="addBorderToPanel(${pageNumber}, ${index})" title="Add Border">⭕</button>
+                            <button class="delete-panel-btn" onclick="deletePanel(${pageNumber}, ${index})" title="Delete Panel">🗑️</button>
                         </div>
+                        <!-- Delete button added in openPanelEditor function -->
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
@@ -1539,7 +1546,9 @@ function loadPanelEditorContent(pageNumber) {
                         <div class="panel-edit-overlay">
                             <button class="edit-panel-btn" onclick="openPanelImageEditor(${pageNumber}, ${index})" title="Edit Panel">✂️</button>
                             <button class="add-border-btn" onclick="addBorderToPanel(${pageNumber}, ${index})" title="Add Border">⭕</button>
+                            <button class="delete-panel-btn" onclick="deletePanel(${pageNumber}, ${index})" title="Delete Panel">🗑️</button>
                         </div>
+                        <!-- Delete button added in loadPanelEditorContent function -->
                         <img src="${panel.url}" alt="Panel ${index + 1}" class="panel-editor-image" onclick="viewPanelFullscreen('${panel.url}', '${panel.filename}')">
                         <div class="panel-editor-info">
                             <div class="panel-editor-label">Panel ${index + 1}${hasText ? ' ✓' : ''}${hasAudio ? ' 🎵' : ''}</div>
@@ -2829,6 +2838,20 @@ function reorderPanels(fromIndex, toIndex) {
     // Update panel matched_text with the reordered text content
     panels.forEach((panel, index) => {
         panel.matched_text = currentTexts[index] || '';
+        
+        // Update panel properties to reflect new index
+        panel.panel_index = index;
+        
+        // Update filename if it contains panel numbering
+        const oldFilename = panel.filename;
+        if (oldFilename.includes('panel_')) {
+            // Replace panel number in filename (e.g., panel_01 -> panel_00, panel_02 -> panel_01)
+            const newFilename = oldFilename.replace(/panel_(\d+)/, (match, num) => {
+                const paddedIndex = String(index + 1).padStart(2, '0');
+                return `panel_${paddedIndex}`;
+            });
+            panel.filename = newFilename;
+        }
     });
     
     // Update panel data
@@ -3163,6 +3186,211 @@ async function synthesizeAllPanelsFromEditor() {
 
 // Make function globally available
 window.synthesizeAllPanelsFromEditor = synthesizeAllPanelsFromEditor;
+
+// Delete panel functionality
+async function deletePanel(pageNumber, panelIndex) {
+    if (!confirm(`Are you sure you want to delete Panel ${panelIndex + 1}? This action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        console.log(`Deleting panel ${panelIndex} from page ${pageNumber}`);
+        
+        // Find the page data
+        const panelsData = projectData.workflow?.panels?.data || [];
+        const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+        
+        if (!pageData || !pageData.panels) {
+            throw new Error('Page data not found');
+        }
+        
+        if (panelIndex < 0 || panelIndex >= pageData.panels.length) {
+            throw new Error('Invalid panel index');
+        }
+        
+        if (pageData.panels.length <= 1) {
+            if (!confirm('This is the last panel on this page. Deleting it will leave the page with no panels. Continue?')) {
+                return;
+            }
+        }
+        
+        const panelToDelete = pageData.panels[panelIndex];
+        console.log('Panel to delete:', panelToDelete);
+        
+        // Store original panel count for validation
+        const originalPanelCount = pageData.panels.length;
+        
+        // Remove the panel from the array
+        pageData.panels.splice(panelIndex, 1);
+        
+        // Renumber remaining panels
+        pageData.panels.forEach((panel, newIndex) => {
+            // Update panel properties to reflect new index
+            panel.panel_index = newIndex;
+            
+            // Update filename if it contains panel numbering
+            const oldFilename = panel.filename;
+            if (oldFilename.includes('panel_')) {
+                // Replace panel number in filename (e.g., panel_01 -> panel_00, panel_02 -> panel_01)
+                const newFilename = oldFilename.replace(/panel_(\d+)/, (match, num) => {
+                    const paddedIndex = String(newIndex + 1).padStart(2, '0');
+                    return `panel_${paddedIndex}`;
+                });
+                panel.filename = newFilename;
+            }
+        });
+        
+        // Validate that we actually removed a panel
+        if (pageData.panels.length !== originalPanelCount - 1) {
+            throw new Error('Panel deletion validation failed - incorrect panel count after deletion');
+        }
+        
+        // Also clean up related data
+        
+        // Remove from text matching data if exists
+        const textMatchingData = projectData.workflow?.text_matching?.data || [];
+        const tmPageData = textMatchingData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+        if (tmPageData && tmPageData.panels && tmPageData.panels.length > panelIndex) {
+            tmPageData.panels.splice(panelIndex, 1);
+            console.log('Removed panel from text matching data');
+        }
+        
+        // Remove from panel TTS data if exists
+        const panelTtsData = projectData.workflow?.panel_tts?.data;
+        if (panelTtsData) {
+            const pageKey = `page${pageNumber}`;
+            if (panelTtsData[pageKey]) {
+                // Store original count for validation
+                const originalTtsCount = panelTtsData[pageKey].length;
+                
+                // Remove the panel's TTS data
+                panelTtsData[pageKey] = panelTtsData[pageKey].filter(tts => tts.panelIndex !== panelIndex);
+                
+                // Renumber remaining panel TTS data
+                panelTtsData[pageKey].forEach(tts => {
+                    if (tts.panelIndex > panelIndex) {
+                        tts.panelIndex = tts.panelIndex - 1;
+                    }
+                });
+                
+                console.log(`TTS data: removed ${originalTtsCount - panelTtsData[pageKey].length} entries, renumbered remaining`);
+            }
+        }
+        
+        // Remove from original panel texts cache
+        if (originalPanelTexts) {
+            delete originalPanelTexts[panelIndex];
+            // Renumber remaining original texts
+            const updatedOriginalTexts = {};
+            Object.keys(originalPanelTexts).forEach(key => {
+                const oldIndex = parseInt(key);
+                if (oldIndex > panelIndex) {
+                    updatedOriginalTexts[oldIndex - 1] = originalPanelTexts[key];
+                } else if (oldIndex < panelIndex) {
+                    updatedOriginalTexts[key] = originalPanelTexts[key];
+                }
+            });
+            originalPanelTexts = updatedOriginalTexts;
+            console.log('Updated original panel texts cache');
+        }
+        
+        // Save the updated project data
+        const response = await fetch('/api/manga/update-panels', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                project_id: projectData.id,
+                page_number: pageNumber,
+                panels: pageData.panels,
+                deleted_panel: panelToDelete
+            })
+        });
+        
+        if (!response.ok) {
+            let errorMessage = 'Failed to update panels on server';
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.detail || errorMessage;
+            } catch (parseError) {
+                console.warn('Could not parse error response:', parseError);
+            }
+            throw new Error(errorMessage);
+        }
+        
+        const result = await response.json();
+        console.log('Panel deletion result:', result);
+        
+        // Reload the panel editor content to reflect changes
+        loadPanelEditorContent(pageNumber);
+        
+        // Update panel stats
+        updatePanelStats();
+        
+        // Show success message
+        const successMessage = pageData.panels.length === 0 
+            ? `Panel ${panelIndex + 1} deleted successfully. Page now has no panels.`
+            : `Panel ${panelIndex + 1} deleted successfully. Remaining ${pageData.panels.length} panels have been renumbered.`;
+        showToast(successMessage, 'success');
+        
+    } catch (error) {
+        console.error('Error deleting panel:', error);
+        
+        // Try to restore the panel if we modified data locally but failed to save
+        try {
+            // Reload the panel editor to restore the original state
+            loadPanelEditorContent(pageNumber);
+        } catch (restoreError) {
+            console.error('Failed to restore panel editor state:', restoreError);
+        }
+        
+        showToast(`Failed to delete panel: ${error.message}`, 'error');
+    }
+}
+
+// Simple toast notification function
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: white;
+        font-weight: 500;
+        z-index: 10000;
+        max-width: 300px;
+        word-wrap: break-word;
+    `;
+    
+    switch (type) {
+        case 'success':
+            toast.style.backgroundColor = '#10b981';
+            break;
+        case 'error':
+            toast.style.backgroundColor = '#ef4444';
+            break;
+        default:
+            toast.style.backgroundColor = '#3b82f6';
+    }
+    
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    // Auto remove after 3 seconds
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
+        }
+    }, 3000);
+}
+
+// Make functions globally available
+window.deletePanel = deletePanel;
+window.showToast = showToast;
 
 async function synthesizeIndividualPanel(pageNumber, panelIndex) {
     // Get the current text for this panel
