@@ -52,8 +52,8 @@ PANEL_BASE_SIZE = 0.9  # Base size multiplier for panels (0.5 = 50%, 0.8 = 80%, 
 EFFECT_SMOOTHING = 2.0  # Smoothing intensity (0.0 = linear, 1.0 = smooth, 2.0 = very smooth)
 
 # Global Transition Configuration Variables
-TRANSITION_DURATION = 0.8  # Duration of panel transitions in seconds
-TRANSITION_OVERLAP = 0.4  # Overlap duration for transitions (how long both panels are visible)
+TRANSITION_DURATION = 0.3  # Duration of panel transitions in seconds
+TRANSITION_OVERLAP = 0.3  # Overlap duration for transitions (how long both panels are visible)
 TRANSITION_SMOOTHING = 2.0  # Smoothing for transition animation
 
 gemini_available = False
