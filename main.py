@@ -768,29 +768,68 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
 
 
 def apply_panel_transitions(clips: List[Any]) -> List[Any]:
-    """Apply transitions between panel clips."""
-    if len(clips) <= 1:
+    """Create a single concatenated clip with transitions between sequential clips."""
+    logger.info(f"[apply_panel_transitions] Received {len(clips)} clips to process.")
+    if not clips:
+        return []
+    if len(clips) == 1:
         return clips
-    
-    # Import moviepy components needed for transitions
-    from moviepy.video.fx import all as vfx
-    
-    result_clips = []
-    
-    # Process clips in sequence, applying transitions
-    for i, clip in enumerate(clips):
-        current_clip = clip
+
+    from moviepy.editor import concatenate_videoclips, CompositeVideoClip
+
+    transition_duration = TRANSITION_DURATION
+    final_segments: List[Any] = []
+
+    # We won't wrap bodies anymore to avoid per-segment compositing; sizes will be unified by compose at concat
+
+    # Add the first clip body trimmed to leave room for the first transition
+    first_clip = clips[0]
+    first_body_end = float(first_clip.duration) - float(transition_duration)
+    if first_body_end > 1e-3:
+        segment = first_clip.subclip(0, first_body_end)
+        final_segments.append(segment)
+        logger.info(f"[apply_panel_transitions] Added first clip body, duration: {segment.duration:.2f}s")
+    else:
+        # If the first clip is too short, include it fully so something shows before the first transition
+        final_segments.append(first_clip)
+        logger.info(f"[apply_panel_transitions] First clip too short for trim; added full clip, duration: {first_clip.duration:.2f}s")
+
+    # Iterate through clip pairs to create transitions
+    for i in range(len(clips) - 1):
+        prev_clip = clips[i]
+        current_clip = clips[i+1]
         
-        # Check if this clip has a transition (skip first clip)
-        if i > 0:
-            transition = getattr(clip, '_transition', None)
-            if transition and transition != 'none':
-                # Apply transition effect
-                current_clip = apply_transition_effect(clips[i-1], clip, transition)
-        
-        result_clips.append(current_clip)
-    
-    return result_clips
+        transition_type = getattr(current_clip, '_transition', 'slide_book') or 'slide_book'
+        logger.info(f"[apply_panel_transitions] Processing transition between clip {i} and {i+1}. Type: {transition_type}")
+
+        # Generate and add the transition clip
+        transition_clip = apply_transition_effect(prev_clip, current_clip, transition_type)
+        if transition_clip:
+            final_segments.append(transition_clip)
+            logger.info(f"[apply_panel_transitions] Added transition clip, duration: {transition_clip.duration:.2f}s")
+
+        # After transition, ensure the incoming image remains visible.
+        body_start = transition_duration
+        if float(current_clip.duration) <= float(body_start) + 1e-3:
+            # Clip too short to have post-transition body: append a freeze-frame hold
+            try:
+                hold = current_clip.to_ImageClip(t=max(0, current_clip.duration - 0.01)).set_duration(transition_duration)
+                final_segments.append(hold)
+                logger.info(f"[apply_panel_transitions] Added freeze hold for short clip {i+1}, duration: {hold.duration:.2f}s")
+            except Exception:
+                logger.warning("[apply_panel_transitions] Failed to create freeze hold; skipping")
+        else:
+            # Show the remainder of the current clip after the transition so an image stays on screen
+            segment = current_clip.subclip(body_start, current_clip.duration)
+            final_segments.append(segment)
+            logger.info(f"[apply_panel_transitions] Added clip {i+1} body, duration: {segment.duration:.2f}s")
+
+    if final_segments:
+        logger.info(f"[apply_panel_transitions] Concatenating {len(final_segments)} final segments.")
+        return [concatenate_videoclips(final_segments, method="compose")]
+    else:
+        logger.warning("[apply_panel_transitions] No segments were created, falling back to concatenating original clips.")
+        return [concatenate_videoclips(clips, method="compose")]
 
 
 def apply_transition_effect(prev_clip, current_clip, transition_type: str):
@@ -819,23 +858,48 @@ def apply_transition_effect(prev_clip, current_clip, transition_type: str):
         return current_clip
 
 
-def apply_slide_book_transition(prev_clip, current_clip, duration: float):
-    """Apply a book-like sliding transition."""
-    try:
-        from moviepy.video.fx import all as vfx
-        
-        # For now, implement as a simple crossfade
-        # TODO: Implement actual slide animation
-        current_start = float(getattr(current_clip, 'start', 0) or 0)
-        overlap_start = max(0, current_start - duration/2)
-        
-        # Modify clip timing for overlap
-        modified_clip = current_clip.set_start(overlap_start)
-        return modified_clip
-        
-    except Exception as e:
-        logger.exception('Failed to apply slide book transition')
-        return current_clip
+def apply_slide_book_transition(prev_clip, current_clip, duration: float) -> Any:
+    """
+    Applies a slide book transition effect by creating a composite video clip.
+    The previous clip's last frame slides out to the left while the current clip slides in from the right.
+    This is designed to match the canvas preview behavior.
+    Returns a single CompositeVideoClip of the transition.
+    """
+    from moviepy.editor import CompositeVideoClip
+
+    # Canvas size: prefer metadata injected during processing; fallback to clip size
+    canvas_w = int(getattr(current_clip, '_canvas_w', 0) or getattr(prev_clip, '_canvas_w', 0) or getattr(current_clip, 'w', 0) or getattr(prev_clip, 'w', 0) or current_clip.size[0])
+    canvas_h = int(getattr(current_clip, '_canvas_h', 0) or getattr(prev_clip, '_canvas_h', 0) or getattr(current_clip, 'h', 0) or getattr(prev_clip, 'h', 0) or current_clip.size[1])
+
+    # Slide distance matches canvas preview (80% of canvas width)
+    slide_distance = int(round(canvas_w * 0.8))
+
+    # Previous clip: use the last frame as a static image for the duration of the transition
+    prev_static = prev_clip.to_ImageClip(t=max(0, prev_clip.duration - 0.01)).set_duration(duration).set_start(0)
+    # Center positions (top-left) for each clip content
+    prev_base_x = int((canvas_w - prev_static.w) / 2)
+    prev_base_y = int((canvas_h - prev_static.h) / 2)
+
+    # Current clip: we only need its visual during transition duration (no audio change here)
+    curr_for_tx = current_clip.set_duration(duration).set_start(0)
+    curr_base_x = int((canvas_w - curr_for_tx.w) / 2)
+    curr_base_y = int((canvas_h - curr_for_tx.h) / 2)
+
+    # Linear progress across duration (no fade, no easing as per canvas render)
+    def prev_pos(t):
+        p = 0 if duration <= 0 else (t / duration)
+        return (int(prev_base_x - slide_distance * p), prev_base_y)
+
+    def curr_pos(t):
+        p = 0 if duration <= 0 else (t / duration)
+        return (int(curr_base_x + slide_distance * (1 - p)), curr_base_y)
+
+    # Ensure layers are aligned from t=0 with explicit positions
+    prev_layer = prev_static.set_start(0).set_position(prev_pos)
+    curr_layer = curr_for_tx.set_start(0).set_position(curr_pos)
+
+    # Composite with canvas size so background remains static behind
+    return CompositeVideoClip([prev_layer, curr_layer], size=(canvas_w, canvas_h)).set_duration(duration)
 
 
 def apply_fade_transition(prev_clip, current_clip, duration: float, overlap: float):
@@ -1182,10 +1246,18 @@ async def api_video_render(request: Request):
                 if abs(float(rot)) > 1e-3:
                     out = out.rotate(float(rot), unit='deg', resample='bilinear')
             except Exception:
-                logger.exception('Failed to rotate clip; skipping rotation')
+                logger.exception('Failed to rotate clip; skipping')
                 
             out = out.set_start(getattr(iclip, 'start', 0)).set_duration(iclip.duration)
+            # Preserve layer and transition/effect metadata and tag canvas size for transitions
             out._layerIndex = getattr(iclip, '_layerIndex', 999)
+            out._transition = getattr(iclip, '_transition', None)
+            out._effect = getattr(iclip, '_effect', None)
+            try:
+                out._canvas_w = int(target_w)
+                out._canvas_h = int(target_h)
+            except Exception:
+                pass
             return out
 
         for ic in clips + fg_clips:
@@ -1195,16 +1267,21 @@ async def api_video_render(request: Request):
                 logger.exception('Failed to process image clip; using original placement')
                 processed_all.append(ic)
         processed_all.sort(key=lambda c: getattr(c, '_layerIndex', 999))
-        
-        # Apply transitions between clips
-        processed_all = apply_panel_transitions(processed_all)
-        
-        push_progress(job_id, stage="process_foreground", status="complete")
 
-        # Composite
+        # Build final foreground track using processed clips (ensures transform/effects are baked) with panel transitions
         try:
+            processed_fg = [pc for pc in processed_all if getattr(pc, '_layerIndex', 999) != 0]
+            processed_fg_sorted = sorted(processed_fg, key=lambda c: getattr(c, 'start', 0))
+            final_video_clip_list = apply_panel_transitions(processed_fg_sorted)
+
+            # Use processed backgrounds so they are scaled/centered, and keep them static during transitions
+            processed_bg = [pc for pc in processed_all if getattr(pc, '_layerIndex', 999) == 0]
+            video = CompositeVideoClip([base_video] + processed_bg + final_video_clip_list, size=(target_w, target_h)).set_fps(24)
+
+            push_progress(job_id, stage="process_foreground", status="complete")
+
+            # Composite step is now integrated above
             push_progress(job_id, stage="composite", status="start")
-            video = CompositeVideoClip([base_video] + processed_all, size=(target_w, target_h)).set_fps(24)
             push_progress(job_id, stage="composite", status="complete")
         except Exception:
             logger.exception('Composite assembly failed; falling back to base only')
@@ -1622,6 +1699,7 @@ async def generate_narrative_api(project_id: str):
             # Create full narration by combining all page narrations
             full_narration = "\n\n".join([f"**{item[0]}:** {item[1]}" for item in page_narrations])
             logger.info(f"Successfully parsed {len(page_narrations)} page narrations")
+       
         else:
             # Invalid format, fallback to old format
             logger.warning("Invalid page narration format, falling back to raw text")
@@ -2771,7 +2849,7 @@ def add_curved_border(image: Image.Image,
 
 @app.post("/api/panel/add-border")
 async def add_border_to_panel(request: Request):
-    """Add border to a panel image"""
+    """Add border to a panel image using the same configuration as panel detection API"""
     try:
         data = await request.json()
         project_id = data.get('project_id')
