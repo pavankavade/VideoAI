@@ -1233,6 +1233,87 @@
             gap: 12px;
         }
         
+        .effect-controls-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .effect-control-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .effect-control-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        
+        .global-effect-select,
+        .global-transition-select {
+            min-width: 140px;
+            padding: 6px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+        }
+        
+        .global-effect-select:focus,
+        .global-transition-select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        
+        .apply-effects-btn {
+            padding: 6px 12px;
+            background: #059669;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .apply-effects-btn:hover {
+            background: #047857;
+        }
+        
+        .apply-effects-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        
+        /* Responsive design for effect controls */
+        @media (max-width: 768px) {
+            .effect-controls-group {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 16px;
+            }
+            
+            .effect-control-item {
+                width: 100%;
+            }
+            
+            .global-effect-select,
+            .global-transition-select {
+                min-width: auto;
+                width: 100%;
+            }
+            
+            .apply-effects-btn {
+                width: 100%;
+                padding: 10px 16px;
+            }
+        }
+        
         .no-panels-message {
             text-align: center;
             padding: 40px;
@@ -1863,6 +1944,35 @@
                         <button class="btn-secondary" onclick="detectPanelsForCurrentPage()" id="detectPanelsForPageBtn">Panel Detection</button>
                         <button class="btn-secondary" onclick="closePanelEditor()">Cancel</button>
                         <button class="btn-primary" onclick="savePanelTexts()" id="savePanelTextsBtn">Save Changes</button>
+                    </div>
+                </div>
+                <div class="action-row">
+                    <div class="effect-controls-group">
+                        <div class="effect-control-item">
+                            <label class="effect-control-label">Apply Effect to All Panels (All Pages):</label>
+                            <select class="global-effect-select" id="globalEffectSelect">
+                                <option value="">Select Effect</option>
+                                <option value="none">No Effect</option>
+                                <option value="slide_lr">Slide: left → right</option>
+                                <option value="slide_rl">Slide: right → left</option>
+                                <option value="slide_tb">Slide: top → bottom</option>
+                                <option value="slide_bt">Slide: bottom → top</option>
+                                <option value="zoom_in">Zoom in</option>
+                                <option value="zoom_out">Zoom out</option>
+                            </select>
+                        </div>
+                        <div class="effect-control-item">
+                            <label class="effect-control-label">Apply Transition to All Panels (All Pages):</label>
+                            <select class="global-transition-select" id="globalTransitionSelect">
+                                <option value="">Select Transition</option>
+                                <option value="none">No Transition</option>
+                                <option value="slide_book">Slide Book</option>
+                                <option value="fade">Fade</option>
+                                <option value="wipe_lr">Wipe Left → Right</option>
+                                <option value="wipe_rl">Wipe Right → Left</option>
+                            </select>
+                        </div>
+                        <button class="apply-effects-btn" onclick="applyEffectsToAllPanels()">Apply to All Pages</button>
                     </div>
                 </div>
                 <div class="action-row">

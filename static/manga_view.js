@@ -1439,6 +1439,23 @@ function openPanelEditor(pageNumber) {
                         }catch(err){ console.warn('effect change err', err); }
                 });
         });
+        
+        // Transition change handlers
+        const transitionSelects = contentDiv.querySelectorAll('.panel-transition-select');
+        console.log(`Found ${transitionSelects.length} transition dropdowns`); // Debug log
+        transitionSelects.forEach(sel => {
+                sel.addEventListener('change', (e)=>{
+                        try{
+                            const idx = parseInt(sel.dataset.panelIndex);
+                            const panelsData = projectData.workflow?.panels?.data || [];
+                            const pageData = panelsData.find(p => parseInt(p.page_number) === parseInt(pageNumber));
+                            if (pageData && pageData.panels && pageData.panels[idx]){
+                                pageData.panels[idx].transition = sel.value;
+                                projectData.workflow.panels.data = panelsData;
+                            }
+                        }catch(err){ console.warn('transition change err', err); }
+                });
+        });
     
     // Add drag and drop functionality
     initializeDragAndDrop();
@@ -3391,6 +3408,100 @@ function showToast(message, type = 'info') {
 // Make functions globally available
 window.deletePanel = deletePanel;
 window.showToast = showToast;
+
+// Apply effects to all panels functionality
+async function applyEffectsToAllPanels() {
+    const effectSelect = document.getElementById('globalEffectSelect');
+    const transitionSelect = document.getElementById('globalTransitionSelect');
+    
+    const selectedEffect = effectSelect.value;
+    const selectedTransition = transitionSelect.value;
+    
+    if (!selectedEffect && !selectedTransition) {
+        showToast('Please select an effect or transition to apply', 'warning');
+        return;
+    }
+    
+    // Confirm action
+    const effectText = selectedEffect ? `Effect: ${effectSelect.options[effectSelect.selectedIndex].text}` : '';
+    const transitionText = selectedTransition ? `Transition: ${transitionSelect.options[transitionSelect.selectedIndex].text}` : '';
+    const actionText = [effectText, transitionText].filter(t => t).join(', ');
+    
+    if (!confirm(`Apply ${actionText} to ALL panels across ALL pages in this project?`)) {
+        return;
+    }
+    
+    try {
+        let totalPanelsUpdated = 0;
+        let pagesUpdated = 0;
+        
+        // Update projectData for all pages
+        if (projectData && projectData.workflow && projectData.workflow.panels && projectData.workflow.panels.data) {
+            const panelsData = projectData.workflow.panels.data;
+            
+            panelsData.forEach(pageData => {
+                if (pageData && pageData.panels && pageData.panels.length > 0) {
+                    let panelsUpdatedInPage = 0;
+                    
+                    pageData.panels.forEach(panel => {
+                        if (selectedEffect) {
+                            panel.effect = selectedEffect;
+                            panelsUpdatedInPage++;
+                        }
+                        if (selectedTransition) {
+                            panel.transition = selectedTransition;
+                            if (!selectedEffect) { // Only count once if both are being applied
+                                panelsUpdatedInPage++;
+                            }
+                        }
+                    });
+                    
+                    if (panelsUpdatedInPage > 0) {
+                        totalPanelsUpdated += pageData.panels.length;
+                        pagesUpdated++;
+                    }
+                }
+            });
+        }
+        
+        // If we're currently viewing a page in the panel editor, update the UI dropdowns too
+        const currentPageMatch = document.getElementById('panelEditorTitle')?.textContent.match(/Page (\d+)/);
+        if (currentPageMatch) {
+            const contentDiv = document.getElementById('panelEditorContent');
+            
+            if (selectedEffect) {
+                const effectSelects = contentDiv.querySelectorAll('.panel-effect-select');
+                effectSelects.forEach(select => {
+                    select.value = selectedEffect;
+                });
+            }
+            
+            if (selectedTransition) {
+                const transitionSelects = contentDiv.querySelectorAll('.panel-transition-select');
+                transitionSelects.forEach(select => {
+                    select.value = selectedTransition;
+                });
+            }
+        }
+        
+        if (totalPanelsUpdated > 0) {
+            showToast(`Applied ${actionText} to ${totalPanelsUpdated} panels across ${pagesUpdated} pages!`, 'success');
+        } else {
+            showToast('No panels found to update', 'warning');
+        }
+        
+        // Reset the dropdowns
+        effectSelect.value = '';
+        transitionSelect.value = '';
+        
+    } catch (error) {
+        console.error('Error applying effects to all panels:', error);
+        showToast('Error applying effects to all panels', 'error');
+    }
+}
+
+// Make function globally available
+window.applyEffectsToAllPanels = applyEffectsToAllPanels;
 
 async function synthesizeIndividualPanel(pageNumber, panelIndex) {
     // Get the current text for this panel
