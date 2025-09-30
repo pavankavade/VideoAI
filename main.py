@@ -1330,15 +1330,39 @@ async def api_video_render(request: Request):
         try:
             logger.info("[render] Starting video write: %s", str(out_path))
             push_progress(job_id, stage="encode", status="start")
-            video.write_videofile(
-                str(out_path),
-                fps=24,
-                codec='libx264',
-                audio_codec='aac',
-                threads=0,
-                verbose=True,
-                logger='bar'
-            )
+            # Encoder selection: default to GPU (NVENC) unless explicitly disabled
+            req_use_gpu = data.get('useGpu')
+            env_use_gpu = os.environ.get('USE_GPU')
+            if req_use_gpu is None:
+                if env_use_gpu is None:
+                    use_gpu = True  # default ON
+                else:
+                    use_gpu = env_use_gpu.lower() in {'1','true','yes'}
+            else:
+                use_gpu = bool(req_use_gpu)
+            threads_count = max(1, (os.cpu_count() or 2) - 1)
+
+            def write_with(codec_name: str, extra_params: List[str]):
+                video.write_videofile(
+                    str(out_path),
+                    fps=24,
+                    codec=codec_name,
+                    audio_codec='aac',
+                    threads=threads_count,
+                    ffmpeg_params=extra_params,
+                    verbose=True,
+                    logger='bar'
+                )
+
+            if use_gpu:
+                try:
+                    logger.info("[render] Trying GPU encoder h264_nvenc")
+                    write_with('h264_nvenc', ['-preset', 'p5', '-rc', 'vbr', '-cq', '23', '-pix_fmt', 'yuv420p'])
+                except Exception:
+                    logger.exception('[render] GPU encode failed, falling back to CPU libx264')
+                    write_with('libx264', ['-preset', 'veryfast'])
+            else:
+                write_with('libx264', ['-preset', 'veryfast'])
             push_progress(job_id, stage="encode", status="complete")
             logger.info("[render] Video write complete: %s", str(out_path))
         except Exception:
