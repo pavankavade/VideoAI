@@ -8,6 +8,9 @@ import ast
 from datetime import datetime
 import asyncio
 import time
+import base64
+import threading
+from itertools import cycle
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -57,21 +60,43 @@ TRANSITION_OVERLAP = 0.3  # Overlap duration for transitions (how long both pane
 TRANSITION_SMOOTHING = 2.0  # Smoothing for transition animation
 
 gemini_available = False
-genai = None
+genai = None  # kept for backward compatibility; REST is used for multi-key support
 try:
+    # Import optional SDK, but do not rely on its global configuration.
     import google.generativeai as genai  # type: ignore
-
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if api_key:
-        genai.configure(api_key=api_key)
-        gemini_available = True
-        logger.info("Gemini configured with GOOGLE_API_KEY")
-    else:
-        logger.warning("GOOGLE_API_KEY not set; will use narration fallback unless REQUIRE_GEMINI is set. Ensure key is in shell or .env")
 except Exception:
     genai = None
-    gemini_available = False
-    logger.exception("Failed to import/configure google-generativeai; will use narration fallback")
+
+# Multi-key support: accept comma-separated keys in either GOOGLE_API_KEYS or GOOGLE_API_KEY
+def _parse_api_keys() -> List[str]:
+    raw = (os.environ.get("GOOGLE_API_KEYS") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if not raw:
+        return []
+    # Split by comma and strip whitespace; ignore empties
+    keys = [k.strip() for k in raw.split(",")]
+    return [k for k in keys if k]
+
+_GEMINI_KEYS: List[str] = _parse_api_keys()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+if _GEMINI_KEYS:
+    gemini_available = True
+    logger.info(f"Gemini configured with {_GEMINI_KEYS and len(_GEMINI_KEYS) or 0} API key(s)")
+else:
+    logger.warning("No GOOGLE_API_KEYS/GOOGLE_API_KEY provided; using fallback unless REQUIRE_GEMINI is set.")
+
+# Round-robin key selection (thread-safe)
+_keys_lock = threading.Lock()
+_keys_cycle = cycle(_GEMINI_KEYS) if _GEMINI_KEYS else None
+
+def _next_gemini_key() -> Optional[str]:
+    if not _keys_cycle:
+        return None
+    with _keys_lock:
+        try:
+            return next(_keys_cycle)
+        except Exception:
+            return None
 
 REQUIRE_GEMINI = os.environ.get("REQUIRE_GEMINI", "0").lower() in {"1", "true", "yes"}
 
@@ -1493,66 +1518,95 @@ def run_panel_detector(image: Image.Image) -> List[Tuple[int, int, int, int]]:
         return []
 
 def call_gemini(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
-    """Call Gemini with text+image prompt.
-    - Accepts optional system_instructions for caller-specific guidance.
-    - Returns a dict with 'text' (markdown code fences removed) and 'source'.
-    Parsing of JSON schemas is handled by callers.
+    """Call Gemini (multi-key REST) with text+image prompt.
+    - Uses GOOGLE_API_KEYS/GOOGLE_API_KEY (comma-separated allowed) in round-robin per request.
+    - Returns a dict with 'text' and 'source'. Removes markdown code fences if present.
     """
-    if not gemini_available or genai is None:
+    if not gemini_available:
         if REQUIRE_GEMINI:
             raise HTTPException(status_code=503, detail="Gemini not available and REQUIRE_GEMINI is set.")
-        api_present = bool(os.environ.get("GOOGLE_API_KEY"))
-        lib_present = genai is not None
-        reason = (
-            "GOOGLE_API_KEY missing" if not api_present else (
-                "google-generativeai import failed" if not lib_present else "unknown"
-            )
-        )
-        logger.warning("Using FAKE narration fallback because Gemini unavailable: %s", reason)
-        # Fallback text only; callers decide how to parse
-        return {
-            "text": f"[FAKE] {prompt[:500]}",
-            "source": "fallback",
-        }
+        logger.warning("Using FAKE narration fallback because Gemini unavailable: no API keys configured")
+        return {"text": f"[FAKE] {prompt[:500]}", "source": "fallback"}
 
+    api_key = _next_gemini_key() or (_GEMINI_KEYS[0] if _GEMINI_KEYS else None)
+    if not api_key:
+        if REQUIRE_GEMINI:
+            raise HTTPException(status_code=503, detail="No Google API key configured")
+        return {"text": f"[FAKE] {prompt[:500]}", "source": "fallback"}
+
+    # Build REST payload for v1beta generateContent
     try:
-        # Convert PIL images to bytes for upload
-        image_parts = []
-        for pil in panel_images:
+        parts: List[Dict[str, Any]] = []
+        if system_instructions:
+            parts.append({"text": system_instructions})
+        if prompt:
+            parts.append({"text": prompt})
+        for pil in panel_images or []:
             buf = io.BytesIO()
             pil.save(buf, format="PNG")
-            buf.seek(0)
-            image_parts.append({"mime_type": "image/png", "data": buf.read()})
+            img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            parts.append({
+                "inlineData": {
+                    "mimeType": "image/png",
+                    "data": img_b64,
+                }
+            })
 
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        # Build parts: optional system instructions then user prompt and images
-        parts: List[Any] = []
-        if system_instructions:
-            parts.append(system_instructions)
-        parts.append(prompt)
-        for ip in image_parts:
-            parts.append({"mime_type": ip["mime_type"], "data": ip["data"]})
-        response = model.generate_content(parts)
+        body = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": parts if parts else [{"text": prompt or ""}],
+                }
+            ]
+        }
 
-        raw = response.text or ""
-        cleaned = raw.strip()
-        # Remove markdown code fences if present
+        import requests  # lazy import within call
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}"
+        resp = requests.post(url, json=body, timeout=120)
+        if resp.status_code != 200:
+            logger.warning("Gemini HTTP error %s: %s", resp.status_code, resp.text[:300])
+            if REQUIRE_GEMINI:
+                raise HTTPException(status_code=502, detail=f"Gemini API error: {resp.status_code}")
+            return {"text": f"[ERROR] {resp.status_code}: {resp.text[:200]}", "source": "gemini"}
+
+        data = resp.json()
+        # Extract text from candidates
+        raw_text = ""
+        try:
+            candidates = data.get("candidates") or []
+            if candidates:
+                parts_out = (candidates[0].get("content") or {}).get("parts") or []
+                # Concatenate all text parts if multiple
+                texts = []
+                for p in parts_out:
+                    t = p.get("text") or ""
+                    if t:
+                        texts.append(t)
+                raw_text = "\n".join(texts)
+        except Exception:
+            logger.exception("Failed to parse Gemini response JSON")
+        cleaned = (raw_text or "").strip()
         if "```json" in cleaned:
-            json_match = re.search(r'```json\s*\n?([\s\S]*?)\n?```', cleaned)
-            if json_match:
-                cleaned = json_match.group(1).strip()
+            m = re.search(r'```json\s*\n?([\s\S]*?)\n?```', cleaned)
+            if m:
+                cleaned = m.group(1).strip()
         elif "```" in cleaned:
-            json_match = re.search(r'```\s*\n?([\s\S]*?)\n?```', cleaned)
-            if json_match:
-                cleaned = json_match.group(1).strip()
+            m = re.search(r'```\s*\n?([\s\S]*?)\n?```', cleaned)
+            if m:
+                cleaned = m.group(1).strip()
         return {"text": cleaned, "source": "gemini"}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception("Gemini call failed; returning error wrapper")
+        logger.exception("Gemini REST call failed")
+        if REQUIRE_GEMINI:
+            raise HTTPException(status_code=500, detail=str(e))
         return {"text": f"[ERROR] {e}", "source": "gemini"}
 
 
 async def call_gemini_async(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
-    """Run blocking Gemini call in a background thread to avoid blocking the event loop."""
+    """Run blocking Gemini REST call in a background thread to avoid blocking the event loop."""
     return await asyncio.to_thread(call_gemini, prompt, panel_images, system_instructions)
 
 @app.get("/", response_class=HTMLResponse)
@@ -1694,7 +1748,8 @@ async def generate_narrative_api(project_id: str):
         "Be vivid and engaging in your descriptions, focusing on character actions, dialogue, emotions, and visual details. "
         "Each page should have its own distinct narrative segment that flows naturally into the next. "
         "Do not mention the pages or chapters in the narration like `this chapter or page starts with` or ` This image is contrasted with a panel ` it should not feel like you are reading from pages"
-        "narration should flow in manga like fashion where we go from right to left and from top to bottom"
+        "IT IS VERY IMPORTANT  narration should flow in manga like fashion where we go from right to left and from top to bottom"
+        "Each Panel should have at least one sentence describing it"
         "IMPORTANT: Return ONLY a JSON array in this exact format: [[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...] "
         "Do NOT include any markdown code blocks do NOT include any other text. "
         "You will be provided with narration so far and the character names and their appeareances if any. "
@@ -2033,7 +2088,7 @@ async def update_panels_api(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to update panels: {str(e)}")
 
 @app.post("/api/manga/{project_id}/text-matching")
-async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
+async def match_text_to_panels_api(project_id: str, concurrency: Optional[int] = None):
     """Match narrative text to panels for each page"""
     project = get_manga_project(project_id)
     if not project:
@@ -2065,9 +2120,20 @@ async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
         "status": "text_matching"
     })
 
-    # Concurrency control and parallel processing
-    concurrency = max(1, min(32, int(concurrency)))
-    sem = asyncio.Semaphore(concurrency)
+    # Concurrency control and parallel processing: default to number of Gemini keys
+    try:
+        default_concurrency = max(1, len(_GEMINI_KEYS))
+    except Exception:
+        default_concurrency = 1
+    if concurrency is None:
+        concurrency_val = default_concurrency
+    else:
+        try:
+            concurrency_val = int(concurrency)
+        except Exception:
+            concurrency_val = default_concurrency
+    concurrency_val = max(1, min(32, concurrency_val))
+    sem = asyncio.Semaphore(concurrency_val)
 
     async def process_one(page_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         async with sem:
@@ -2109,11 +2175,12 @@ async def match_text_to_panels_api(project_id: str, concurrency: int = 5):
             # Build prompts and call model
             prompt = (
                 f"Given this page narration: '{page_narration}'\n\n"
-                f"Match appropriate parts of this narration to each of these {len(panel_images)} panels from page {page_number}. "
+                f"Match appropriate parts of this narration to each of these {len(panel_images)} "
                 f"Do not Change the original narration, just match the sentences to the panels.  "
                 f"if some sentences are not matched to any panel, just leave them as is in most close panel"
                 f"if no sentences match to any panel just randomly assign sentences to panels, do NOT drop any sentences. "
                 f"do not assign single sentences to multiple panels, each sentence can only be assigned to one panel. "
+                f"if there are more panels than sentences, just leave the extra panels with empty text. "
                 f"We have to make sure original narration is completely available after matching all panels, nothing from original narration should be lost"
                 f"Return ONLY a JSON array in this format: [['panel1', 'sentence for panel 1'], ['panel2', 'sentence for panel 2'], ...] "
                 f"Do NOT include markdown code blocks or any other text. Just return the raw JSON array."
