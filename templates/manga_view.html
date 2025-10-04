@@ -1913,6 +1913,7 @@
                     <div class="page-info" id="pageInfo">Page 1 of 1</div>
                     <button class="nav-arrow" id="nextPageBtn" onclick="navigateToPage(1)">›</button>
                 </div>
+                <button class="btn-secondary" id="toggleSidebarBtn" onclick="toggleAllPagesSidebar()" title="Hide/Show All Pages Sidebar">Hide Pages</button>
                 <button class="close-panel-editor" onclick="closePanelEditor()" title="Close Panel Editor">✕</button>
             </div>
             <div class="panel-editor-body">
@@ -2106,9 +2107,44 @@
     </div>
 
 
+    <script id="project-data" type="application/json">{{ project | tojson | safe }}</script>
     <script>
-        // Pass project data to JavaScript
-        window.projectData = {{ project | tojson | safe }};
+        // Pass project data to JavaScript without breaking static analyzers
+        (function initProjectData() {
+            try {
+                const el = document.getElementById('project-data');
+                window.projectData = el ? JSON.parse(el.textContent) : null;
+            } catch (e) {
+                window.projectData = null;
+            }
+        })();
+
+        // Toggle the visibility of the "All Pages" sidebar within the Panel Editor
+        function toggleAllPagesSidebar() {
+            // Hide/show the entire sidebar container so layout collapses/expands
+            const sidebar = document.querySelector('#panelEditorModal .panel-editor-sidebar');
+            const btn = document.getElementById('toggleSidebarBtn');
+            if (!btn) return;
+            if (!sidebar) {
+                // Sidebar not present; disable button gracefully
+                btn.disabled = true;
+                btn.textContent = 'No Sidebar';
+                return;
+            }
+            const isHidden = sidebar.classList.toggle('hidden');
+            btn.textContent = isHidden ? 'Show Pages' : 'Hide Pages';
+            btn.setAttribute('aria-pressed', (!isHidden).toString());
+        }
+
+        // Optional: initialize button label based on current sidebar visibility when available
+        document.addEventListener('DOMContentLoaded', () => {
+            const btn = document.getElementById('toggleSidebarBtn');
+            if (!btn) return;
+            const sidebar = document.querySelector('#panelEditorModal .panel-editor-sidebar');
+            if (!sidebar) return;
+            const isHidden = sidebar.classList.contains('hidden');
+            btn.textContent = isHidden ? 'Show Pages' : 'Hide Pages';
+        });
     </script>
 </body>
 </html>

@@ -1694,8 +1694,11 @@ async def generate_narrative_api(project_id: str):
         "Be vivid and engaging in your descriptions, focusing on character actions, dialogue, emotions, and visual details. "
         "Each page should have its own distinct narrative segment that flows naturally into the next. "
         "Do not mention the pages or chapters in the narration like `this chapter or page starts with` or ` This image is contrasted with a panel ` it should not feel like you are reading from pages"
+        "narration should flow in manga like fashion where we go from right to left and from top to bottom"
         "IMPORTANT: Return ONLY a JSON array in this exact format: [[\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...] "
         "Do NOT include any markdown code blocks do NOT include any other text. "
+        "You will be provided with narration so far and the character names and their appeareances if any. "
+        "Use the character names in the narration wherever possible. "
         "Just return the raw JSON [\"Page1\", \"narration text\"], [\"Page2\", \"narration text\"], ...]"
         "Example: [[\"Page1\", \"The story begins with our protagonist...\"], [\"Page2\", \"As the scene continues...\"]]"
     )
