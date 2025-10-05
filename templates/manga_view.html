@@ -857,6 +857,25 @@
             overflow-y: auto;
             padding: 20px;
         }
+
+        /* Sticky Page Narration inside the panel editor */
+        .panel-editor-main .sticky-narration {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+            margin: -20px -20px 12px -20px; /* stretch edge-to-edge within editor padding */
+            padding: 12px 20px; /* restore inner padding */
+        }
+
+        /* Ensure narration text in sticky header doesn't get too tall */
+        .panel-editor-main .sticky-narration .page-narration-text p {
+            max-height: 140px;
+            overflow-y: auto;
+            margin: 6px 0 0 0;
+        }
         
         .narration-preview {
             background: var(--bg-primary);

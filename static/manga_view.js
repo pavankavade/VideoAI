@@ -1237,8 +1237,47 @@ function openPanelEditor(pageNumber) {
     // Check if audio exists for this page
     const hasAudio = ttsData[pageNumber] && ttsData[pageNumber].audioBlob;
     
-    // Display panels with text areas
+    // Display narration at top (sticky) and panels with text areas below
     contentDiv.innerHTML = `
+        <div class="sticky-narration">
+            <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
+                ${pageNarration ? `
+                    <div class="page-narration-text">
+                        <strong>Page Narration:</strong>
+                        <p>${pageNarration}</p>
+                    </div>
+                ` : `
+                    <div class="page-narration-text">
+                        <strong>Page Narration:</strong>
+                        <p style="color: #6b7280; font-style: italic;">No narration available for this page. Generate narrative first to enable audio synthesis.</p>
+                    </div>
+                `}
+                <div class="page-audio-actions" id="panel-editor-audio-actions-${pageNumber}">
+                    ${pageNarration ? (
+                        hasAudio ? `
+                            <div class="audio-controls-container">
+                                <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
+                                    <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
+                                    Your browser does not support the audio element.
+                                </audio>
+                                <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
+                                    🔄 Re-synthesize
+                                </button>
+                            </div>
+                        ` : `
+                            <button class="btn-primary btn-sm" onclick="synthesizePageFromEditor(${pageNumber})" id="synthesize-panel-editor-${pageNumber}">
+                                🎵 Synthesize Narration
+                            </button>
+                        `
+                    ) : `
+                        <button class="btn-secondary btn-sm" disabled>
+                            🎵 Generate Narrative First
+                        </button>
+                    `}
+                </div>
+            </div>
+        </div>
+
         <div class="panels-grid-editor" id="panelsGridEditor">
             ${pageData.panels.map((panel, index) => {
                 // Get existing text from multiple sources
@@ -1332,44 +1371,6 @@ function openPanelEditor(pageNumber) {
         <button class="add-panel-btn" onclick="openAddPanelModal(${pageNumber})">
             ➕ Add New Panel
         </button>
-        
-        <!-- Audio Controls for Panel Editor -->
-        <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
-            ${pageNarration ? `
-                <div class="page-narration-text">
-                    <strong>Page Narration:</strong>
-                    <p>${pageNarration}</p>
-                </div>
-            ` : `
-                <div class="page-narration-text">
-                    <strong>Page Narration:</strong>
-                    <p style="color: #6b7280; font-style: italic;">No narration available for this page. Generate narrative first to enable audio synthesis.</p>
-                </div>
-            `}
-            <div class="page-audio-actions" id="panel-editor-audio-actions-${pageNumber}">
-                ${pageNarration ? (
-                    hasAudio ? `
-                        <div class="audio-controls-container">
-                            <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                                <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
-                                Your browser does not support the audio element.
-                            </audio>
-                            <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
-                                🔄 Re-synthesize
-                            </button>
-                        </div>
-                    ` : `
-                        <button class="btn-primary btn-sm" onclick="synthesizePageFromEditor(${pageNumber})" id="synthesize-panel-editor-${pageNumber}">
-                            🎵 Synthesize Narration
-                        </button>
-                    `
-                ) : `
-                    <button class="btn-secondary btn-sm" disabled>
-                        🎵 Generate Narrative First
-                    </button>
-                `}
-            </div>
-        </div>
     `;
     
     // Store original texts for comparison
@@ -1533,8 +1534,47 @@ function loadPanelEditorContent(pageNumber) {
     // Check if audio exists for this page
     const hasAudio = ttsData[pageNumber] && ttsData[pageNumber].audioBlob;
     
-    // Display panels with text areas
+    // Display narration at top (sticky) and panels with text areas below
     contentDiv.innerHTML = `
+        <div class="sticky-narration">
+            <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
+                ${pageNarration ? `
+                    <div class="page-narration-text">
+                        <strong>Page Narration:</strong>
+                        <p>${pageNarration}</p>
+                    </div>
+                ` : `
+                    <div class="page-narration-text">
+                        <strong>Page Narration:</strong>
+                        <p style="color: #6b7280; font-style: italic;">No narration available for this page. Generate narrative first to enable audio synthesis.</p>
+                    </div>
+                `}
+                <div class="page-audio-actions" id="panel-editor-audio-actions-${pageNumber}">
+                    ${pageNarration ? (
+                        hasAudio ? `
+                            <div class="audio-controls-container">
+                                <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
+                                    <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
+                                    Your browser does not support the audio element.
+                                </audio>
+                                <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
+                                    🔄 Re-synthesize
+                                </button>
+                            </div>
+                        ` : `
+                            <button class="btn-primary btn-sm" onclick="synthesizePageFromEditor(${pageNumber})" id="synthesize-panel-editor-${pageNumber}">
+                                🎵 Synthesize Narration
+                            </button>
+                        `
+                    ) : `
+                        <button class="btn-secondary btn-sm" disabled>
+                            🎵 Generate Narrative First
+                        </button>
+                    `}
+                </div>
+            </div>
+        </div>
+
         <div class="panels-grid-editor" id="panelsGridEditor">
             ${pageData.panels.map((panel, index) => {
                 // Get existing text from multiple sources
@@ -1608,44 +1648,6 @@ function loadPanelEditorContent(pageNumber) {
                     </div>
                 `;
             }).join('')}
-        </div>
-        
-        <!-- Audio Controls for Panel Editor -->
-        <div class="page-audio-controls" id="panel-editor-audio-controls-${pageNumber}">
-            ${pageNarration ? `
-                <div class="page-narration-text">
-                    <strong>Page Narration:</strong>
-                    <p>${pageNarration}</p>
-                </div>
-            ` : `
-                <div class="page-narration-text">
-                    <strong>Page Narration:</strong>
-                    <p style="color: #6b7280; font-style: italic;">No narration available for this page. Generate narrative first to enable audio synthesis.</p>
-                </div>
-            `}
-            <div class="page-audio-actions" id="panel-editor-audio-actions-${pageNumber}">
-                ${pageNarration ? (
-                    hasAudio ? `
-                        <div class="audio-controls-container">
-                            <audio controls id="audio-player-panel-editor-${pageNumber}" style="width: 100%; margin-bottom: 8px;">
-                                <source src="${getAudioSrc(ttsData[pageNumber])}" type="audio/wav">
-                                Your browser does not support the audio element.
-                            </audio>
-                            <button class="btn-secondary btn-sm" onclick="resynthesizePage(${pageNumber})" id="resynthesize-panel-editor-${pageNumber}">
-                                🔄 Re-synthesize
-                            </button>
-                        </div>
-                    ` : `
-                        <button class="btn-primary btn-sm" onclick="synthesizePageFromEditor(${pageNumber})" id="synthesize-panel-editor-${pageNumber}">
-                            🎵 Synthesize Narration
-                        </button>
-                    `
-                ) : `
-                    <button class="btn-secondary btn-sm" disabled>
-                        🎵 Generate Narrative First
-                    </button>
-                `}
-            </div>
         </div>
     `;
     
