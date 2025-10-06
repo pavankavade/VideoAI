@@ -53,6 +53,22 @@ uploads/
 *.ckpt
 *.safetensors
 
+# Node / frontend
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.parcel-cache/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# Generated vendor assets
+static/vendor/ffmpeg.js
+static/vendor/814.ffmpeg.js
+static/vendor/ffmpeg-core.js
+static/vendor/ffmpeg-core.wasm
+
 # Logs
 *.log
 logs/

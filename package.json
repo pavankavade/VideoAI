@@ -1,0 +1,12 @@
+{
+  "name": "videoai",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "postinstall": "node scripts/copy-ffmpeg-core.js"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@ffmpeg/core": "0.12.10"
+  }
+}
