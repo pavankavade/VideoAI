@@ -603,35 +603,82 @@ def add_curved_border(image: Image.Image, border_width: int = 4, border_color: s
 
 @app.post("/api/panel/add-border")
 async def add_border_to_panel(request: Request):
-    """Add border to a panel image using the same configuration as panel detection API"""
+    """Add border to a panel image.
+    Supports two input modes:
+    - multipart/form-data with field 'file' (returns {filenames:[...]} for backward compatibility)
+    - application/json with fields {project_id, page_number, panel_index, panel_url, border_width?, border_color?, curved_border?, corner_radius?}
+      (returns {success, url, filename} and also includes filenames[] for compatibility)
+    """
     try:
+        content_type = (request.headers.get('content-type') or '').lower()
+
+        # JSON mode: fetch image from URL/path and apply custom border params
+        if 'application/json' in content_type:
+            data = await request.json()
+            panel_url = data.get('panel_url') or ''
+            border_width = int(data.get('border_width', PANEL_API_BORDER_WIDTH))
+            border_color = str(data.get('border_color', PANEL_API_BORDER_COLOR))
+            curved_border = bool(data.get('curved_border', PANEL_API_CURVED_BORDER))
+            corner_radius = int(data.get('corner_radius', PANEL_API_CORNER_RADIUS)) if curved_border else 0
+
+            # Resolve local path
+            if panel_url.startswith('/uploads/'):
+                image_path = os.path.join(BASE_DIR, panel_url.lstrip('/'))
+            elif panel_url.startswith('/manga_projects/'):
+                image_path = os.path.join(BASE_DIR, panel_url.lstrip('/'))
+            else:
+                # Fallback: try uploads by filename
+                image_path = os.path.join(UPLOAD_DIR, os.path.basename(panel_url or ''))
+
+            if not image_path or not os.path.exists(image_path):
+                raise HTTPException(status_code=404, detail="Panel image not found")
+
+            with Image.open(image_path) as img:
+                img = img.convert('RGB')
+                processed = add_curved_border(img, border_width=border_width, border_color=border_color, corner_radius=corner_radius)
+
+            ts = int(datetime.now().timestamp() * 1000)
+            filename = f"bordered_{ts}.png"
+            out_path = os.path.join(UPLOAD_DIR, filename)
+            processed.save(out_path, 'PNG')
+            url = f"/uploads/{filename}"
+            return JSONResponse({
+                "success": True,
+                "url": url,
+                "filename": filename,
+                # also return filenames[] for callers expecting array shape
+                "filenames": [filename],
+            })
+
+        # Multipart mode: read uploaded file and use default panel API params
         form = await request.form()
         uploaded_file = form.get("file")
-        
         if not uploaded_file or not hasattr(uploaded_file, "read"):
             raise HTTPException(status_code=400, detail="No file uploaded")
-        
-        # Read the uploaded image
+
         image_data = await uploaded_file.read()
         image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        
-        # Apply border with same settings as panel detection API
         bordered_image = add_curved_border(
             image,
             border_width=PANEL_API_BORDER_WIDTH,
             border_color=PANEL_API_BORDER_COLOR,
-            corner_radius=PANEL_API_CORNER_RADIUS if PANEL_API_CURVED_BORDER else 0
+            corner_radius=PANEL_API_CORNER_RADIUS if PANEL_API_CURVED_BORDER else 0,
         )
-        
-        # Save the bordered image
-        timestamp = int(datetime.now().timestamp() * 1000)
-        filename = f"bordered_{timestamp}.png"
-        file_path = os.path.join(UPLOAD_DIR, filename)
-        
-        bordered_image.save(file_path, "PNG")
-        
-        return {"filenames": [filename]}
-        
+
+        ts = int(datetime.now().timestamp() * 1000)
+        filename = f"bordered_{ts}.png"
+        out_path = os.path.join(UPLOAD_DIR, filename)
+        bordered_image.save(out_path, "PNG")
+        return JSONResponse({
+            "filenames": [filename],
+            # add fields used by JSON callers too
+            "success": True,
+            "url": f"/uploads/{filename}",
+            "filename": filename,
+        })
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error adding border to panel")
         raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
@@ -769,27 +816,6 @@ def save_crops_from_external(page_path: str, api_result: Dict[str, Any]) -> Tupl
         return boxes, crops_meta
         
     return boxes, crops_meta
-
-    # Minimal placeholder pre/post-processing.
-    # NOTE: Replace with real preprocessing according to your model spec.
-    try:
-        resized = image.convert("RGB").resize((640, 640))
-        import numpy as np  # type: ignore
-
-        input_tensor = (np.asarray(resized).astype("float32") / 255.0)
-        # NCHW: 1x3xHxW
-        input_tensor = np.transpose(input_tensor, (2, 0, 1))[None, :]
-
-        input_name = onnx_session.get_inputs()[0].name
-        outputs = onnx_session.run(None, {input_name: input_tensor})
-
-        # Placeholder: interpret outputs into boxes if possible; otherwise fallback
-        # Here we just fallback because output schema is unknown in scaffold
-        width, height = image.size
-        logger.warning("ONNX output schema unknown; returning full-page fallback")
-        return [(0, 0, width, height)]
-    except Exception:
-        logger.exception("ONNX inference failed; returning full-page fallback")
 
 
 def apply_panel_transitions(clips: List[Any]) -> List[Any]:
@@ -1506,16 +1532,7 @@ def save_panel_crops_to_project(page_path: str, boxes: List[Tuple[int, int, int,
     return crops_meta
 
 
-def run_panel_detector(image: Image.Image) -> List[Tuple[int, int, int, int]]:
-    """Fallback panel detector used by legacy /process-chapter.
-    Returns one full-page box so downstream code continues to work.
-    """
-    try:
-        w, h = image.size
-        return [(0, 0, int(w), int(h))]
-    except Exception:
-        logger.exception("run_panel_detector fallback failed; returning empty boxes")
-        return []
+# Local panel detection fully removed; legacy code that referenced it now inlines a full-page box fallback.
 
 def call_gemini(prompt: str, panel_images: List[Image.Image], system_instructions: Optional[str] = None) -> Dict[str, Any]:
     """Call Gemini (multi-key REST) with text+image prompt.
@@ -2786,7 +2803,9 @@ async def process_chapter():
         page_path = os.path.join(UPLOAD_DIR, filename)
         with Image.open(page_path) as img:
             img = img.convert("RGB")
-            boxes = run_panel_detector(img)
+            # Local panel detection removed: use full-page fallback to keep legacy endpoint working
+            w, h = img.size
+            boxes = [(0, 0, int(w), int(h))]
             panels = crop_panels(img, boxes)
 
         prompt = (
@@ -2874,134 +2893,7 @@ async def update_effect_config(config: dict):
     }
 
 
-def create_rounded_rectangle_mask(width: int, height: int, radius: int) -> Image.Image:
-    """Create a mask for rounded corners."""
-    mask = Image.new('L', (width, height), 0)
-    
-    try:
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(mask)
-        
-        # Draw rounded rectangle using PIL's rounded_rectangle if available (PIL >= 8.2.0)
-        if hasattr(draw, 'rounded_rectangle'):
-            draw.rounded_rectangle([(0, 0), (width, height)], radius=radius, fill=255)
-        else:
-            # Fallback for older PIL versions
-            # Draw rectangle with rounded corners manually
-            draw.rectangle([(radius, 0), (width - radius, height)], fill=255)
-            draw.rectangle([(0, radius), (width, height - radius)], fill=255)
-            
-            # Draw corner circles
-            draw.ellipse([(0, 0), (radius * 2, radius * 2)], fill=255)
-            draw.ellipse([(width - radius * 2, 0), (width, radius * 2)], fill=255)
-            draw.ellipse([(0, height - radius * 2), (radius * 2, height)], fill=255)
-            draw.ellipse([(width - radius * 2, height - radius * 2), (width, height)], fill=255)
-            
-    except Exception as e:
-        logger.error(f"Error creating rounded mask: {e}")
-        # Return a simple rectangular mask as fallback
-        mask = Image.new('L', (width, height), 255)
-    
-    return mask
-
-
-def add_curved_border(image: Image.Image, 
-                     border_width: int = 10, 
-                     border_color: str = "black",
-                     corner_radius: int = 15) -> Image.Image:
-    """Add curved border to an image without shadow or white margins."""
-    try:
-        from PIL import ImageOps
-        
-        # Add border first (only if border_width > 0)
-        if border_width > 0:
-            bordered_img = ImageOps.expand(image, border=border_width, fill=border_color)
-        else:
-            bordered_img = image.copy()
-        
-        # Create rounded corners
-        width, height = bordered_img.size
-        mask = create_rounded_rectangle_mask(width, height, corner_radius)
-        
-        # Apply rounded corners directly without creating transparent background
-        output = Image.new('RGB', (width, height), 'white')
-        output.paste(bordered_img, (0, 0))
-        
-        # Create a version with transparency for masking
-        temp_rgba = bordered_img.convert('RGBA')
-        temp_rgba.putalpha(mask)
-        
-        # Paste the masked image onto white background
-        output.paste(temp_rgba, (0, 0), temp_rgba)
-        
-        return output
-        
-    except Exception as e:
-        logger.error(f"Error adding curved border: {e}")
-        return image
-
-
-@app.post("/api/panel/add-border")
-async def add_border_to_panel(request: Request):
-    """Add border to a panel image using the same configuration as panel detection API"""
-    try:
-        data = await request.json()
-        project_id = data.get('project_id')
-        page_number = data.get('page_number')
-        panel_index = data.get('panel_index')
-        panel_url = data.get('panel_url')
-        border_width = data.get('border_width', 10)
-        border_color = data.get('border_color', 'black')
-        curved_border = data.get('curved_border', True)
-        corner_radius = data.get('corner_radius', 15)
-        
-        # Validate project
-        project = get_manga_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Get the image from URL
-        if panel_url.startswith('/uploads/'):
-            image_path = os.path.join(BASE_DIR, panel_url.lstrip('/'))
-        else:
-            # For full URLs, try to get local path
-            image_path = os.path.join(UPLOAD_DIR, os.path.basename(panel_url))
-        
-        if not os.path.exists(image_path):
-            raise HTTPException(status_code=404, detail="Panel image not found")
-        
-        # Load and process image
-        with Image.open(image_path) as img:
-            img = img.convert('RGB')
-            
-            if curved_border:
-                processed_img = add_curved_border(
-                    img, 
-                    border_width=border_width,
-                    border_color=border_color,
-                    corner_radius=corner_radius
-                )
-            else:
-                # Simple border
-                from PIL import ImageOps
-                processed_img = ImageOps.expand(img, border=border_width, fill=border_color)
-        
-        # Save processed image
-        timestamp = int(datetime.now().timestamp() * 1000)
-        filename = f"panel_{project_id}_{page_number}_{panel_index}_bordered_{timestamp}.png"
-        output_path = os.path.join(UPLOAD_DIR, filename)
-        
-        processed_img.save(output_path, 'PNG')
-        
-        return JSONResponse({
-            "success": True,
-            "url": f"/uploads/{filename}",
-            "filename": filename
-        })
-        
-    except Exception as e:
-        logger.exception(f"Error adding border to panel: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing panel: {str(e)}")
+    # duplicate implementations of rounded mask, curved border, and endpoint removed (consolidated above)
 
 
 if __name__ == "__main__":
