@@ -313,6 +313,7 @@ function renderMangaTable() {
       <td>
         <div class="actions">
           <button class="btn-secondary btn-sm" onclick="viewManga('${manga.id}')">View</button>
+          <button class="btn-primary btn-sm" onclick="openMangaEditor('${manga.id}')" style="padding:6px 10px;">Manga Editor</button>
           <a class="btn-primary btn-sm" href="/video-editor?project_id=${manga.id}" style="background:#10b981; padding:6px 10px; text-decoration:none; display:inline-flex; align-items:center;">Video Editor</a>
           <button class="btn-danger btn-sm" onclick="deleteManga('${manga.id}')">Delete</button>
         </div>
@@ -330,6 +331,10 @@ function viewManga(mangaId) {
     window.location.href = `/manga/${mangaId}`;
   }
 }
+  function openMangaEditor(mangaId) {
+    window.location.href = `/editor/manga-editor/${mangaId}`;
+  }
+
 
 async function deleteManga(mangaId) {
   if (confirm('Are you sure you want to delete this manga project?')) {

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+from mangaeditor import router as editor_router
 
 from PIL import Image, ImageDraw
 # from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip, CompositeVideoClip
@@ -105,6 +106,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_projects")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+app.include_router(editor_router)
 
 # CORS: allow LAN/dev usage from other devices on the same network
 # For production, restrict allow_origins via environment variable ALLOW_ORIGINS (comma-separated)

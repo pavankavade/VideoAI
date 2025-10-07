@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Manga Editor – {{ project.title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/ui.build.css?v=1" />
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Arial,sans-serif}
+    .wrap{max-width:1200px;margin:0 auto;padding:20px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .h1{font-weight:800;font-size:22px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    /* Cards and buttons use shared styles */
+    .status{font-size:12px;color:#94a3b8}
+    .grid{display:grid;grid-template-columns:1fr 360px;gap:16px}
+    .page{background:#0b1220;border:1px solid #1e293b;border-radius:12px;padding:12px;margin-bottom:12px}
+    .page h4{margin:0 0 8px 0}
+    .panels{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+    .panel{border:1px solid #1f2937;border-radius:8px;overflow:hidden;background:#0a1322}
+    .panel img{display:block;width:100%;height:140px;object-fit:cover}
+    .panel .meta{padding:8px;font-size:12px;color:#94a3b8}
+    .nav{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+    .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#9fb}
+    .pill{display:inline-flex;align-items:center;gap:8px;background:#0b1220;border:1px solid #1e293b;padding:6px 10px;border-radius:999px;color:#cbd5e1}
+    .list{display:flex;gap:8px;flex-wrap:wrap}
+    /* Simple spinner for narration progress */
+    .loading{width:16px;height:16px;border:2px solid rgba(59,130,246,.25);border-top-color:#3b82f6;border-radius:50%;display:inline-block;animation:spin 1s linear infinite;margin-right:8px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .progress-row{display:flex;align-items:center;gap:10px;margin-top:8px;color:#94a3b8;font-size:13px}
+    .progress-row.hidden{display:none}
+    .bar-wrap{flex:1;height:6px;background:#0b172d;border:1px solid #1e293b;border-radius:999px;overflow:hidden}
+    .bar{height:100%;width:0%;background:#3b82f6;transition:width .2s}
+    .row-progress{display:flex;align-items:center;gap:10px;margin-top:8px}
+    /* Page spacing improvements */
+    #gating{margin-bottom:16px}
+    .card-pad{padding:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="h1">Manga Editor – {{ project.title }}</div>
+      <div class="row">
+        <a class="btn secondary" href="/">Back</a>
+      </div>
+    </div>
+
+    <div id="gating" class="card">
+      <div class="card-pad" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Preparation</div>
+          <div class="status" id="prepStatus">Checking panel status…</div>
+        </div>
+        <div class="row">
+          <button id="btnCreatePanels" class="btn">Create Panels</button>
+          <button id="btnOpenViewer" class="btn" disabled>View Panels</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <div class="card">
+          <div class="card-pad">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <div>
+              <div style="font-weight:700">Narration</div>
+              <div class="status">Generate a sentence per panel, sequentially by page.</div>
+            </div>
+            <div class="row">
+              <button id="btnNarrateSequential" class="btn">Create Narration (All)</button>
+              <button id="btnRedoNarration" class="btn secondary" title="Overwrite existing narration">Redo Narration</button>
+              <button id="btnNarratePage" class="btn secondary">Narrate Current Page</button>
+            </div>
+          </div>
+          <div id="narrationProgress" class="progress-row hidden">
+            <span class="loading"></span>
+            <span id="narrationProgressText">Working…</span>
+            <div class="bar-wrap"><div id="narrationBar" class="bar"></div></div>
+          </div>
+          <div id="panelsProgress" class="progress-row hidden">
+            <span class="loading"></span>
+            <span id="panelsProgressText">Detecting panels…</span>
+            <div class="bar-wrap"><div id="panelsBar" class="bar"></div></div>
+          </div>
+          <div id="pagesRoot"></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-pad">
+          <div style="font-weight:700;margin-bottom:8px">Character List (Markdown)</div>
+          <textarea id="characterMd" class="textarea" placeholder="- Character Name: appearance notes\n- …"></textarea>
+          <div class="nav">
+            <div class="status">You can prefill this before narrating, or let it auto-update after.</div>
+            <div class="row">
+              <button id="btnSaveCharacters" class="btn secondary">Save</button>
+              <button id="btnAutoCharacters" class="btn">Auto Update From Narration</button>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-pad">
+          <div style="font-weight:700;margin-bottom:8px">Shortcuts</div>
+          <div class="list">
+            <span class="pill"><span class="kbd">All</span> Create narration for all pages</span>
+            <span class="pill"><span class="kbd">Page</span> Narrate only the current page</span>
+            <span class="pill"><span class="kbd">Panels</span> Ensure panels exist before narrating</span>
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="project-data" type="application/json">{{ project|tojson|safe }}</script>
+  <script>
+    const project = JSON.parse(document.getElementById('project-data')?.textContent || '{}');
+    const projectId = project.id;
+    let pages = [];
+    let allPanelsReady = false;
+    let currentPageIndex = 0;
+
+    async function fetchSummary(){
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}`, { headers: { 'ngrok-skip-browser-warning':'true' } });
+      if(!r.ok) throw new Error('Failed to load project');
+      const d = await r.json();
+      pages = d.pages || [];
+      allPanelsReady = !!d.allPanelsReady;
+      document.getElementById('characterMd').value = d.characterList || '';
+      renderGating();
+      renderPages();
+    }
+
+    function renderGating(){
+      const st = document.getElementById('prepStatus');
+      const btnCreate = document.getElementById('btnCreatePanels');
+      const btnView = document.getElementById('btnOpenViewer');
+      if(allPanelsReady){
+        st.textContent = 'All pages have panels. You can view and narrate.';
+        btnView.disabled = false;
+      }else{
+        st.textContent = 'Panels missing. Generate them before viewing.';
+        btnView.disabled = true;
+      }
+    }
+    function setPanelsBusy(isBusy, msg, pct){
+      const pr = document.getElementById('panelsProgress');
+      const txt = document.getElementById('panelsProgressText');
+      const bar = document.getElementById('panelsBar');
+      const bCreate = document.getElementById('btnCreatePanels');
+      const bView = document.getElementById('btnOpenViewer');
+      if(isBusy){
+        if(txt) txt.textContent = msg || 'Detecting panels…';
+        pr?.classList.remove('hidden');
+        bCreate.disabled = true; bView.disabled = true;
+        if(typeof pct === 'number' && bar){ bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+      }else{
+        pr?.classList.add('hidden');
+        bCreate.disabled = false; bView.disabled = !allPanelsReady;
+        if(bar){ bar.style.width = '0%'; }
+      }
+    }
+
+    async function createPanelsWithProgress(){
+      // Build page list from summary
+      const pagesToProcess = (pages||[]);
+      if(!pagesToProcess.length){ alert('No pages to process'); return; }
+      setPanelsBusy(true, `Starting panel detection for ${pagesToProcess.length} page(s)…`, 0);
+      for(let i=0;i<pagesToProcess.length;i++){
+        const pg = pagesToProcess[i];
+        const label = `Page ${i+1}/${pagesToProcess.length} (Page ${pg.page_number})…`;
+        setPanelsBusy(true, label, (i/pagesToProcess.length)*100);
+        try{
+          const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/panels/create/page/${encodeURIComponent(pg.page_number)}`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+          if(!resp.ok){ throw new Error(`Panels failed for page ${pg.page_number}`); }
+        }catch(e){
+          setPanelsBusy(false);
+          alert((e && e.message) || 'Panel creation failed');
+          return;
+        }
+      }
+      setPanelsBusy(true, 'Finalizing…', 100);
+      await fetchSummary();
+      setPanelsBusy(false);
+      renderGating();
+    }
+
+    function renderPages(){
+      const root = document.getElementById('pagesRoot');
+      root.innerHTML = '';
+      pages.forEach((pg, i)=>{
+        const div = document.createElement('div');
+        div.className = 'page';
+        div.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+            <h4>Page ${pg.page_number}</h4>
+            <div class="row">
+              <button class="btn secondary" data-go="${i}">Go</button>
+            </div>
+          </div>
+          <div class="panels">
+            ${(pg.panels||[]).map(p => `
+              <div class="panel">
+                ${p.image ? `<img src="${p.image}" alt="panel"/>` : `<div style='height:140px;display:flex;align-items:center;justify-content:center;color:#94a3b8'>No image</div>`}
+                <div class="meta">#${p.index} ${p.text ? ('– ' + p.text) : ''}</div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+        root.appendChild(div);
+      });
+
+      root.querySelectorAll('button[data-go]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          currentPageIndex = parseInt(btn.getAttribute('data-go'))||0;
+          document.getElementById('btnNarratePage').scrollIntoView({behavior:'smooth', block:'center'});
+        });
+      });
+    }
+
+    function setNarrationBusy(isBusy, msg, pct){
+      const pr = document.getElementById('narrationProgress');
+      const txt = document.getElementById('narrationProgressText');
+      const bar = document.getElementById('narrationBar');
+      const bAll = document.getElementById('btnNarrateSequential');
+      const bRedo = document.getElementById('btnRedoNarration');
+      const bPage = document.getElementById('btnNarratePage');
+      if(isBusy){
+        if(txt) txt.textContent = msg || 'Generating narration…';
+        pr?.classList.remove('hidden');
+        bAll.disabled = true; bRedo.disabled = true; bPage.disabled = true;
+        if(typeof pct === 'number' && bar){ bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+      }else{
+        pr?.classList.add('hidden');
+        bAll.disabled = false; bRedo.disabled = false; bPage.disabled = false;
+        if(bar){ bar.style.width = '0%'; }
+      }
+    }
+
+    async function narrateAll(redo=false){
+      const mdEl = document.getElementById('characterMd');
+      const characterList = mdEl.value || '';
+      // Only pages that have panels
+      const pagesWithPanels = (pages||[]).filter(pg => (pg.panels||[]).length > 0);
+      const total = pagesWithPanels.length;
+      if(total === 0){ alert('No panels found. Create panels first.'); return; }
+
+      let accumulated = '';
+      setNarrationBusy(true, `Starting narration for ${total} page(s)…`, 0);
+      for(let i=0;i<total;i++){
+        const pg = pagesWithPanels[i];
+        const label = `Page ${i+1}/${total} (Page ${pg.page_number})…`;
+        setNarrationBusy(true, label, (i/total)*100);
+        try{
+          const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${encodeURIComponent(pg.page_number)}`, {
+            method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+            body: JSON.stringify({ characterList, context: accumulated })
+          });
+          if(!resp.ok){ throw new Error(`Narration failed for page ${pg.page_number}`); }
+          const data = await resp.json();
+          const items = (data && Array.isArray(data.panels)) ? data.panels : [];
+          // Build context like server does
+          const ctxSeg = items.map(it => `[${it.panel_index}] ${it.text||''}`.trim()).join('; ');
+          accumulated += `\nPage ${pg.page_number}: ${ctxSeg}`;
+        }catch(e){
+          setNarrationBusy(false);
+          alert((e && e.message) || 'Narration failed');
+          return;
+        }
+      }
+      setNarrationBusy(true, 'Finalizing…', 100);
+      // Optional: auto-update character list if user left it empty
+      if((characterList.trim().length === 0)){
+        try{ await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} }); }catch(_){ }
+      }
+      await fetchSummary();
+      setNarrationBusy(false);
+      if(redo){ alert('Narration updated'); }
+    }
+
+    document.getElementById('btnCreatePanels').addEventListener('click', async ()=>{
+      if(!confirm('Create panels for all pages now?')) return;
+      await createPanelsWithProgress();
+    });
+
+    document.getElementById('btnOpenViewer').addEventListener('click', ()=>{
+      // Open the new full-page panel editor
+      window.location.href = `/editor/panel-editor/${encodeURIComponent(projectId)}`;
+    });
+
+    document.getElementById('btnNarrateSequential').addEventListener('click', async ()=>{
+      narrateAll(false);
+    });
+
+    document.getElementById('btnRedoNarration').addEventListener('click', async ()=>{
+      if(!confirm('This will overwrite existing panel narrations. Continue?')) return;
+      narrateAll(true);
+    });
+
+    document.getElementById('btnNarratePage').addEventListener('click', async ()=>{
+      if(!pages.length){ alert('No pages loaded'); return; }
+      const pg = pages[currentPageIndex] || pages[0];
+      const characterList = document.getElementById('characterMd').value || '';
+      setNarrationBusy(true, `Generating narration for page ${pg.page_number}…`, 0);
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${encodeURIComponent(pg.page_number)}`, { method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ characterList }) });
+      if(!r.ok){ setNarrationBusy(false); alert('Narration failed'); return; }
+      await fetchSummary();
+      setNarrationBusy(false);
+    });
+
+    document.getElementById('btnSaveCharacters').addEventListener('click', async ()=>{
+      const markdown = document.getElementById('characterMd').value || '';
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters`, { method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ markdown }) });
+      if(!r.ok){ alert('Save failed'); return; }
+      alert('Saved');
+    });
+
+    document.getElementById('btnAutoCharacters').addEventListener('click', async ()=>{
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+      if(!r.ok){ alert('Auto update failed'); return; }
+      const d = await r.json();
+      document.getElementById('characterMd').value = d.markdown || '';
+      alert('Character list updated');
+    });
+
+    fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
+  </script>
+
+  
+</body>
+</html>

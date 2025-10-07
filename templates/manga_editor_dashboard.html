@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Manga Editor Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/ui.build.css?v=1" />
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif}
+    /* Fallback component styles (used if /static/ui.build.css is missing) */
+    .btn{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:#3b82f6;color:#fff;padding:8px 12px;font-weight:600;cursor:pointer}
+    .btn.secondary{background:#334155;color:#e5e7eb}
+    .card{background:#0e1a31;border:1px solid #1c2a4a;border-radius:12px}
+    .input,.select,.textarea{background:#0b172d;border:1px solid #1c2a4a;color:#e6f0ff;border-radius:8px;padding:8px}
+    .status-pill{font-size:12px;padding:2px 8px;border-radius:12px;display:inline-block}
+    .ok{background:rgba(16,185,129,0.15);color:#34d399}
+    .warn{background:rgba(245,158,11,0.15);color:#fbbf24}
+  </style>
+  <script defer src="/static/manga_editor_dashboard.js"></script>
+  <script>
+    // Optional: allow visiting /editor/dashboard?old=1 to go back
+  </script>
+  <script>
+    // Small hydration to set base URL if needed later
+    window.__APP__ = { };
+  </script>
+</head>
+<body>
+  <div class="container mx-auto p-5">
+    <div class="card p-4 mb-4 flex items-center justify-between">
+      <h1 class="text-xl font-semibold">Manga Editor Dashboard</h1>
+      <div class="flex gap-2 items-center">
+        <button class="btn" id="btnAddProject">+ New Project</button>
+        <a class="btn secondary" href="/">Old Dashboard</a>
+      </div>
+    </div>
+
+    <div class="card overflow-hidden">
+      <table class="w-full border-collapse">
+        <thead>
+          <tr class="bg-slate-800 text-slate-300">
+            <th class="text-left p-3">Title</th>
+            <th class="text-left p-3">Panels</th>
+            <th class="text-left p-3">Created</th>
+            <th class="text-left p-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="editorDashBody">
+          <tr><td colspan="4" class="text-slate-400 p-3">Loading projects…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Create Project Modal -->
+    <div id="createBox" class="hidden fixed inset-0 bg-black/60 items-center justify-center z-50">
+      <div class="card p-4 w-[520px] max-w-[95%]">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-semibold">Create Project</div>
+          <button class="btn secondary" id="closeCreate">Close</button>
+        </div>
+        <div class="flex flex-col gap-3">
+          <label class="label">Title
+            <input id="cpTitle" class="input mt-1" placeholder="Enter title" />
+          </label>
+          <div>
+            <div id="editorFileArea" class="border-2 border-dashed rounded-md p-4 text-center text-muted-foreground bg-background cursor-pointer">
+              <input id="editorFileInput" type="file" accept="image/*" multiple class="hidden" />
+              <div class="font-medium text-foreground mb-1">Upload Page Images</div>
+              <div class="text-xs opacity-90">Click to select images or drag and drop here</div>
+            </div>
+            <div id="editorFileList" class="mt-2 text-sm text-muted-foreground"></div>
+          </div>
+          <div class="flex gap-2 justify-end">
+            <button class="btn secondary" id="cancelCreate">Cancel</button>
+            <button class="btn" id="saveCreate">Create</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

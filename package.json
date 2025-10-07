@@ -3,10 +3,17 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "postinstall": "node scripts/copy-ffmpeg-core.js"
+    "postinstall": "node scripts/copy-ffmpeg-core.js",
+    "build:css": "tailwindcss -i ./static/ui.css -o ./static/ui.build.css --minify",
+    "dev:css": "tailwindcss -i ./static/ui.css -o ./static/ui.build.css --watch"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "0.12.15",
     "@ffmpeg/core": "0.12.10"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13"
   }
 }
