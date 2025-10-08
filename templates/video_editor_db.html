@@ -102,7 +102,8 @@
   <script>
     try { const el = document.getElementById('__project_data__'); window.projectData = JSON.parse(el.textContent || '{}'); } catch(e){ window.projectData = {}; }
   </script>
-  <script src="/static/video_editor.js"></script>
+  <!-- Load the DB-specific editor (standalone, no legacy dependency) -->
+  <script src="/static/video_editor_db_core.js"></script>
   <script>
     // Simple optional progress UI; video_editor.js will set window.__renderJobId
     (function(){

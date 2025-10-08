@@ -41,6 +41,7 @@
             </div>
             <div class="row">
               <a id="backToEditor" class="btn secondary">Back</a>
+              <a id="openVideoEditor" class="btn">Open Video Editor</a>
             </div>
           </div>
         </div>
@@ -207,6 +208,9 @@
     });
     document.getElementById('backToEditor').addEventListener('click', ()=>{
       window.location.href = `/editor/manga-editor/${encodeURIComponent(project.id)}`;
+    });
+    document.getElementById('openVideoEditor').addEventListener('click', ()=>{
+      window.location.href = `/editor/video-editor/${encodeURIComponent(project.id)}`;
     });
     document.getElementById('saveAll').addEventListener('click', async ()=>{
       const pg = pages[currentIndex];

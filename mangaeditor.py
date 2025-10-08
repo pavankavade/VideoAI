@@ -184,6 +184,31 @@ class EditorDB:
             pass
         cls._conn.commit()
 
+    @classmethod
+    def save_project_layers(cls, project_id: str, layers_data: List[Dict[str, Any]]) -> None:
+        now = datetime.utcnow().isoformat()
+        conn = cls.conn()
+        
+        # Get current metadata or initialize it
+        row = conn.execute("SELECT metadata_json FROM project_details WHERE id=?", (project_id,)).fetchone()
+        if row:
+            try:
+                metadata = json.loads(row[0] or '{}')
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+        else:
+            # This case should ideally not happen if project exists, but handle defensively
+            metadata = {}
+            
+        metadata['layers'] = layers_data
+        metadata['layers_updated_at'] = now
+        
+        conn.execute(
+            "UPDATE project_details SET metadata_json=? WHERE id=?",
+            (json.dumps(metadata), project_id)
+        )
+        conn.commit()
+
     # -------- Projects CRUD --------
     @classmethod
     def create_project(cls, title: str, files: List[str]) -> Dict[str, Any]:
@@ -236,10 +261,47 @@ class EditorDB:
 
     @classmethod
     def get_project(cls, project_id: str) -> Optional[Dict[str, Any]]:
-        r = cls.conn().execute("SELECT id, title, created_at FROM project_details WHERE id=?", (project_id,)).fetchone()
-        if not r:
+        row = cls.conn().execute("SELECT id, title, created_at, pages_json, metadata_json FROM project_details WHERE id=?", (project_id,)).fetchone()
+        if not row:
             return None
-        return {"id": r[0], "title": r[1], "createdAt": r[2]}
+
+        try:
+            pages_data = json.loads(row["pages_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            pages_data = []
+
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+
+        # To provide the full details the video editor needs, we must also fetch the panels for each page.
+        full_pages = []
+        for page_info in pages_data:
+            page_number = page_info.get("page_number")
+            if page_number is not None:
+                panels = cls.get_panels_for_page(project_id, page_number)
+                # The frontend JS expects `image_path` and `audio_path` for panels
+                enriched_panels = []
+                for p in panels:
+                    enriched_panels.append({
+                        "index": p.get("index"),
+                        "image_path": p.get("image"),
+                        "text": p.get("text"),
+                        "audio_path": p.get("audio"),
+                        "effect": p.get("effect"),
+                        "transition": p.get("transition"),
+                    })
+                page_info["panels"] = enriched_panels
+            full_pages.append(page_info)
+
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "createdAt": row["created_at"],
+            "pages": full_pages,
+            "metadata": metadata, # Pass the layers and other metadata
+        }
 
     @classmethod
     def get_pages(cls, project_id: str) -> List[Dict[str, Any]]:
