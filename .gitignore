@@ -63,11 +63,8 @@ yarn.lock
 coverage/
 *.tsbuildinfo
 
-# Generated vendor assets
-static/vendor/ffmpeg.js
-static/vendor/814.ffmpeg.js
-static/vendor/ffmpeg-core.js
-static/vendor/ffmpeg-core.wasm
+# Generated vendor assets (copied via postinstall)
+static/vendor/ffmpeg/
 
 # Logs
 *.log
