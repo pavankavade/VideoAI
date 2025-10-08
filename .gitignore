@@ -84,3 +84,5 @@ logs/
 *.tmp
 *.temp
 manga_projects/
+*.db
+data/mangaeditor.db
