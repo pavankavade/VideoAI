@@ -110,6 +110,13 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 app.include_router(editor_router)
 app.include_router(video_router)
 
+@app.middleware("http")
+async def add_coop_coep_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    return response
+
 # CORS: allow LAN/dev usage from other devices on the same network
 # For production, restrict allow_origins via environment variable ALLOW_ORIGINS (comma-separated)
 allow_origins_env = os.environ.get("ALLOW_ORIGINS", "*").strip()

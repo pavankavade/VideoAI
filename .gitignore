@@ -65,6 +65,11 @@ coverage/
 
 # Generated vendor assets (copied via postinstall)
 static/vendor/ffmpeg/
+static/vendor/*.ffmpeg.js
+static/vendor/ffmpeg-core.js
+static/vendor/ffmpeg-core.wasm
+static/vendor/ffmpeg.js
+static/vendor/ffmpeg.min.js
 
 # Logs
 *.log
@@ -83,3 +88,5 @@ logs/
 manga_projects/
 *.db
 data/mangaeditor.db
+\NUL
+NUL

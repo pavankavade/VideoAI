@@ -116,15 +116,16 @@ async function loadEffectConfig() {
     const response = await fetch('/editor/api/video/effect-config');
     if (response.ok) {
       const config = await response.json();
-      EFFECT_ANIMATION_SPEED = config.animation_speed || 1.0;
-      EFFECT_SCREEN_MARGIN = config.screen_margin || 0.1;
-      EFFECT_ZOOM_AMOUNT = config.zoom_amount || 0.25;
-      EFFECT_MAX_DURATION = config.max_duration || 5.0;
-      PANEL_BASE_SIZE = config.panel_base_size || 0.5;
-      EFFECT_SMOOTHING = config.smoothing || 2.0;
-      TRANSITION_DURATION = config.transition_duration || 0.8;
-      TRANSITION_OVERLAP = config.transition_overlap || 0.4;
-      TRANSITION_SMOOTHING = config.transition_smoothing || 2.0;
+      // Accept both camelCase and snake_case from server
+      EFFECT_ANIMATION_SPEED = (config.animationSpeed ?? config.animation_speed ?? 1.0);
+      EFFECT_SCREEN_MARGIN = (config.screenMargin ?? config.screen_margin ?? 0.1);
+      EFFECT_ZOOM_AMOUNT = (config.zoomAmount ?? config.zoom_amount ?? 0.25);
+      EFFECT_MAX_DURATION = (config.maxDuration ?? config.max_duration ?? 5.0);
+      PANEL_BASE_SIZE = (config.panelBaseSize ?? config.panel_base_size ?? 0.5);
+      EFFECT_SMOOTHING = (config.smoothing ?? config.smoothing ?? 2.0);
+      TRANSITION_DURATION = (config.transitionDuration ?? config.transition_duration ?? 0.8);
+      TRANSITION_OVERLAP = (config.transitionOverlap ?? config.transition_overlap ?? 0.4);
+      TRANSITION_SMOOTHING = (config.transitionSmoothing ?? config.transition_smoothing ?? 2.0);
       console.log('Effect and transition config loaded:', config);
     }
   } catch (err) {
@@ -376,6 +377,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (exportTop) exportTop.addEventListener('click', onExport);
   const exportHeader = document.getElementById('exportBtnHeader');
   if (exportHeader) exportHeader.addEventListener('click', onExport);
+  const clientRenderBtn = document.getElementById('clientRenderBtn');
+  if (clientRenderBtn) clientRenderBtn.addEventListener('click', renderOnClient);
   const previewTop = document.getElementById('previewTimelineBtnTop');
   if (previewTop) previewTop.addEventListener('click', onPreviewTimeline);
 
@@ -1994,6 +1997,140 @@ async function saveProject(force = false) {
   }
 }
 
+async function renderOnClient() {
+  // Support UMD export shapes. In current builds, global is window.FFmpegWASM with property FFmpeg.
+  const ns = (typeof window !== 'undefined') ? (window.FFmpegWASM || window.FFmpeg || {}) : {};
+  const FFmpegCtor = ns.FFmpeg || ns;
+  if (typeof FFmpegCtor !== 'function') {
+    alert('FFmpeg library not loaded. Ensure /static/vendor/ffmpeg/ffmpeg.min.js is accessible and refresh the page (Ctrl+F5).');
+    return;
+  }
+  const ffmpeg = new FFmpegCtor();
+
+  showLoadingModal('Starting Client-Side Render...');
+  
+  ffmpeg.on('log', ({ message }) => {
+    console.log('FFMPEG Log:', message);
+    updateLoadingProgress(loadingState.loadedAssets, loadingState.totalAssets, message);
+  });
+
+  ffmpeg.on('progress', ({ progress, time }) => {
+    console.log('FFMPEG Progress:', progress, 'time:', time);
+    const p = Math.round(progress * 100);
+    updateLoadingProgress(p, 100, `Encoding... ${p}%`);
+  });
+
+  try {
+  updateLoadingProgress(0, 100, 'Loading FFmpeg core...');
+  await ffmpeg.load({
+    coreURL: '/static/vendor/ffmpeg/ffmpeg-core.js',
+    wasmURL: '/static/vendor/ffmpeg/ffmpeg-core.wasm',
+  });
+
+  updateLoadingProgress(0, 100, 'Preparing timeline frames...');
+    const totalDuration = getCanvasTotalDuration();
+  const frameRate = 24; // use 24 fps to reduce FS/memory usage while keeping cinematic feel
+    const numFrames = Math.floor(totalDuration * frameRate);
+
+    for (let i = 0; i < numFrames; i++) {
+        const time = i / frameRate;
+        drawFrame(time);
+    const frameData = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.86));
+    if (!frameData) {
+      throw new Error('Could not capture frame from canvas');
+    }
+    const frameName = `frame-${String(i).padStart(5, '0')}.webp`;
+    const buf = new Uint8Array(await frameData.arrayBuffer());
+    await ffmpeg.writeFile(frameName, buf);
+        updateLoadingProgress(i, numFrames, `Generating frame ${i + 1}/${numFrames}`);
+    }
+
+    updateLoadingProgress(0, 100, 'Preparing audio tracks...');
+    const allClips = flattenLayersToTimeline();
+    const audioClips = allClips.filter(c => c.type === 'audio' && c.src);
+  const audioInputs = [];
+    for (let i = 0; i < audioClips.length; i++) {
+        const clip = audioClips[i];
+        const audioName = `audio_${i}.mp3`;
+        const audioData = await fetch(clip.src).then(res => res.arrayBuffer());
+        await ffmpeg.writeFile(audioName, new Uint8Array(audioData));
+        audioInputs.push('-i', audioName);
+    }
+
+    const resolutionSelect = document.getElementById('resolutionSelect');
+    const resolution = resolutionSelect ? resolutionSelect.value : '1080';
+    const videoHeight = parseInt(resolution, 10);
+    const videoWidth = Math.round(videoHeight * 16 / 9);
+
+  // Ensure no leftover output blocks overwriting
+  try { await ffmpeg.deleteFile('output.mp4'); } catch(_) {}
+
+  const ffmpegArgs = [
+    '-y',
+    '-framerate', String(frameRate),
+  '-start_number', '0',
+  '-i', 'frame-%05d.webp',
+    ...audioInputs,
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-s', `${videoWidth}x${videoHeight}`,
+    '-preset', 'ultrafast',
+    '-crf', '23',
+    '-r', String(frameRate),
+  ];
+
+  if (audioClips.length > 0) {
+    let filterComplex = '';
+    let audioMap = '';
+    audioClips.forEach((clip, i) => {
+      const delayMs = Math.max(0, (clip.startTime || 0) * 1000);
+      // duplicate delay per channel using | syntax; most browsers export stereo
+      filterComplex += `[${i + 1}:a]adelay=${delayMs}|${delayMs}[a${i}];`;
+      audioMap += `[a${i}]`;
+    });
+    filterComplex += `${audioMap}amix=inputs=${audioClips.length}:normalize=0[a]`;
+    ffmpegArgs.push('-filter_complex', filterComplex, '-map', '0:v', '-map', '[a]', '-shortest');
+  }
+    
+  ffmpegArgs.push('output.mp4');
+
+    updateLoadingProgress(0, 100, 'Encoding video... This may take a while.');
+  await ffmpeg.exec(ffmpegArgs);
+
+    updateLoadingProgress(100, 100, 'Finalizing video...');
+    let data;
+    try {
+      data = await ffmpeg.readFile('output.mp4');
+    } catch (e) {
+      console.error('Failed to read output.mp4 from FFmpeg FS', e);
+      throw e;
+    }
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `video_render_${Date.now()}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    hideLoadingModal();
+
+  } catch (error) {
+    console.error('Client-side rendering failed:', error);
+    alert('An error occurred during client-side rendering. Check the console for details.');
+    hideLoadingModal();
+  } finally {
+    try {
+        await ffmpeg.terminate();
+    } catch (e) {
+        console.warn("Could not terminate ffmpeg", e);
+    }
+  }
+}
+
 async function onExport(){
   isExporting = true;
   showLoadingModal('Exporting video...');
@@ -2040,19 +2177,30 @@ async function onExport(){
 
     const progressUrl = `/editor/api/video/progress/stream/${jobId}`;
     const evtSource = new EventSource(progressUrl);
-    
+
     evtSource.onmessage = (event) => {
-      const progressData = JSON.parse(event.data);
-      updateLoadingProgress(progressData.progress, 100, progressData.status);
-      if (progressData.status === 'completed') {
+      const d = JSON.parse(event.data || '{}');
+      const stage = d.stage || 'rendering';
+      const pct = typeof d.progress === 'number' ? d.progress : undefined;
+      const detail = d.detail || stage;
+      if (typeof pct === 'number') {
+        updateLoadingProgress(pct, 100, `${stage} – ${detail}`);
+      } else {
+        updateLoadingProgress(loadingState.loadedAssets, loadingState.totalAssets || 100, `${stage} – ${detail}`);
+      }
+      if (stage === 'complete') {
         evtSource.close();
         hideLoadingModal();
-        alert('Export complete! Video is ready.');
-        window.open(`/manga_projects/${projectId}/video.mp4`, '_blank');
-      } else if (progressData.status === 'error') {
+        const url = d.output_url;
+        if (url) {
+          window.open(url, '_blank');
+        } else {
+          alert('Export complete!');
+        }
+      } else if (stage === 'error') {
         evtSource.close();
         hideLoadingModal();
-        alert(`Export error: ${progressData.error}`);
+        alert(`Export error: ${detail || 'Unknown error'}`);
       }
     };
 

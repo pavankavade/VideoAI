@@ -6,6 +6,7 @@
   <title>Video Editor - Manga AI</title>
   <link rel="icon" href="/static/blur_glitch_background.png" />
   <link rel="stylesheet" href="/static/video_editor.css" />
+  <script src="/static/vendor/ffmpeg/ffmpeg.min.js"></script>
 </head>
 <body>
   <div style="padding:12px 20px; display:flex; justify-content:space-between; align-items:center; background:linear-gradient(90deg,#071226,#08162a);">
@@ -20,6 +21,7 @@
         </select>
       </label>
       <button class="btn" id="exportBtnHeader">Render & Export</button>
+      <button class="btn" id="clientRenderBtn">Render on Client</button>
     </div>
   </div>
   <div class="editor-root">
