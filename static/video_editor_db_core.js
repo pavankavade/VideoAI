@@ -373,10 +373,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const generateTimelineBtn = document.getElementById('generatePanelTimeline');
   if (generateTimelineBtn) generateTimelineBtn.addEventListener('click', generatePanelTimeline);
   
-  const exportTop = document.getElementById('exportBtnTop');
-  if (exportTop) exportTop.addEventListener('click', onExport);
-  const exportHeader = document.getElementById('exportBtnHeader');
-  if (exportHeader) exportHeader.addEventListener('click', onExport);
+  const canvasRenderBtn = document.getElementById('canvasRenderBtn');
+  if (canvasRenderBtn) canvasRenderBtn.addEventListener('click', renderWithCanvas);
   const clientRenderBtn = document.getElementById('clientRenderBtn');
   if (clientRenderBtn) clientRenderBtn.addEventListener('click', renderOnClient);
   const previewTop = document.getElementById('previewTimelineBtnTop');
@@ -436,6 +434,9 @@ function initCanvasPreview(){
   const panelSizeSlider = document.getElementById('panelSizeSlider');
   const panelSizeValue = document.getElementById('panelSizeValue');
   const resetPanelSizeBtn = document.getElementById('resetPanelSize');
+  const animSpeedSlider = document.getElementById('animSpeedSlider');
+  const animSpeedValue = document.getElementById('animSpeedValue');
+  const resetAnimSpeedBtn = document.getElementById('resetAnimSpeed');
   const toolbar = overlayEl ? overlayEl.querySelector('.preview-toolbar') : null;
   if (!canvas) return;
   canvas.width = 1920; canvas.height = 1080; // 16:9 backing resolution
@@ -497,6 +498,57 @@ function initCanvasPreview(){
       });
       
       DBG(`Panel size reset to ${Math.round(defaultSize * 100)}%`);
+    });
+  }
+  
+  // Animation speed slider control
+  if (animSpeedSlider && animSpeedValue) {
+    // Initialize slider value from current EFFECT_ANIMATION_SPEED
+    animSpeedSlider.value = EFFECT_ANIMATION_SPEED;
+    animSpeedValue.textContent = EFFECT_ANIMATION_SPEED.toFixed(1) + 'x';
+    
+    let updateTimeout = null;
+    animSpeedSlider.addEventListener('input', (e) => {
+      const newSpeed = parseFloat(e.target.value);
+      EFFECT_ANIMATION_SPEED = newSpeed;
+      animSpeedValue.textContent = newSpeed.toFixed(1) + 'x';
+      
+      // Redraw the current frame to apply new speed
+      if (!isPlaying) {
+        drawFrame(playhead);
+      }
+      
+      DBG(`Animation speed changed to ${newSpeed.toFixed(1)}x`);
+      
+      // Debounce saving to server (wait 500ms after last change)
+      if (updateTimeout) clearTimeout(updateTimeout);
+      updateTimeout = setTimeout(() => {
+        updateEffectConfig({ animationSpeed: newSpeed }).catch(err => {
+          DBG('Failed to save animation speed to server:', err);
+        });
+      }, 500);
+    });
+  }
+  
+  // Reset animation speed button
+  if (resetAnimSpeedBtn) {
+    resetAnimSpeedBtn.addEventListener('click', () => {
+      const defaultSpeed = 1.0;
+      EFFECT_ANIMATION_SPEED = defaultSpeed;
+      if (animSpeedSlider) animSpeedSlider.value = defaultSpeed;
+      if (animSpeedValue) animSpeedValue.textContent = defaultSpeed.toFixed(1) + 'x';
+      
+      // Redraw the current frame
+      if (!isPlaying) {
+        drawFrame(playhead);
+      }
+      
+      // Save to server
+      updateEffectConfig({ animationSpeed: defaultSpeed }).catch(err => {
+        DBG('Failed to save animation speed to server:', err);
+      });
+      
+      DBG(`Animation speed reset to ${defaultSpeed.toFixed(1)}x`);
     });
   }
   
@@ -737,7 +789,12 @@ function renderClipToCanvas(clip, t){
   const eff = (clip.effect || '').toLowerCase();
   const animMax = 5.0;
   const animDur = Math.min(animMax, dur);
-  const rawProgress = Math.max(0, Math.min(1, (t - st) / (animDur > 0 ? animDur : 1)));
+  
+  // Apply animation speed multiplier: lower speed = slower animation
+  // Speed 1.0 = normal, 0.5 = half speed (slower), 2.0 = double speed (faster)
+  const effectiveAnimDur = animDur / (EFFECT_ANIMATION_SPEED || 1.0);
+  const effectiveProgress = (t - st) / (effectiveAnimDur > 0 ? effectiveAnimDur : 1);
+  const rawProgress = Math.max(0, Math.min(1, effectiveProgress));
   
   const configSmoothEasing = (t) => {
     if (EFFECT_SMOOTHING <= 0) {
@@ -777,24 +834,32 @@ function renderClipToCanvas(clip, t){
       const s1 = (eff==='zoom_in')? 1.0 : (1.0 - zoomAmount);
       const s = s0 + (s1 - s0) * rel; 
       
-      curW = Math.max(10, Math.round(endW * s)); 
-      curH = Math.max(10, Math.round(endH * s));
+      // Use floating point for smooth sub-pixel rendering (no rounding)
+      curW = Math.max(10, endW * s); 
+      curH = Math.max(10, endH * s);
       
+      // Keep center position stable
       curCx = endCx; 
       curCy = endCy;
     }
   }
 
-  const dx = Math.round(curCx - curW/2);
-  const dy = Math.round(curCy - curH/2);
-  const dw = Math.max(1, Math.round(curW));
-  const dh = Math.max(1, Math.round(curH));
+  // Use sub-pixel rendering for smoother animations - don't round until final drawImage
+  const dx = curCx - curW/2;
+  const dy = curCy - curH/2;
+  const dw = Math.max(1, curW);
+  const dh = Math.max(1, curH);
   const sx = Math.max(0, Math.min(clip.crop.x, img.naturalWidth-1));
   const sy = Math.max(0, Math.min(clip.crop.y, img.naturalHeight-1));
   const sw = Math.max(1, Math.min(clip.crop.w, img.naturalWidth - sx));
   const sh = Math.max(1, Math.min(clip.crop.h, img.naturalHeight - sy));
   try{
     ctx.save();
+    
+    // Enable high-quality image smoothing for smooth zoom animations
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    
     if (clip.transform.rotation){
       ctx.translate(curCx, curCy);
       ctx.rotate((clip.transform.rotation || 0) * Math.PI/180);
@@ -2264,92 +2329,332 @@ async function renderOnClient() {
   }
 }
 
-async function onExport(){
+async function renderWithCanvas(){
+  if (!canvas || !ctx) {
+    alert('Canvas not initialized');
+    return;
+  }
+  
   isExporting = true;
-  showLoadingModal('Exporting video...');
+  showLoadingModal('Rendering video with Canvas...');
+  
   try {
-    await saveProject(true);
-    
-    const projectId = (window.projectData && window.projectData.id) || new URLSearchParams(window.location.search).get('project_id');
-    if (!projectId) throw new Error('Project ID not found for export');
-
-    const payload = {
-      project_id: projectId,
-      layers: layers.map(l => ({
-        ...l,
-        clips: l.clips.map(c => {
-          const clip = {...c};
-          if (clip.type === 'audio' && clip.meta && clip.meta.originalSrc) {
-            clip.src = clip.meta.originalSrc;
-          }
-          delete clip._img;
-          delete clip._imgLoading;
-          delete clip._imgLoaded;
-          delete clip._imgError;
-          return clip;
-        })
-      })),
-      total_duration: computeTotalDuration(),
-      resolution: [1920, 1080]
-    };
-
-    const resp = await fetch('/editor/api/video/render', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Export failed: ${resp.status} ${errText}`);
+    const totalDuration = computeTotalDuration();
+    if (totalDuration <= 0) {
+      throw new Error('Timeline is empty or has no duration');
     }
-
-    const data = await resp.json();
-    const jobId = data.job_id;
-    if (!jobId) throw new Error('No job ID received from server');
-
-    const progressUrl = `/editor/api/video/progress/stream/${jobId}`;
-    const evtSource = new EventSource(progressUrl);
-
-    evtSource.onmessage = (event) => {
-      const d = JSON.parse(event.data || '{}');
-      const stage = d.stage || 'rendering';
-      const pct = typeof d.progress === 'number' ? d.progress : undefined;
-      const detail = d.detail || stage;
-      if (typeof pct === 'number') {
-        updateLoadingProgress(pct, 100, `${stage} – ${detail}`);
-      } else {
-        updateLoadingProgress(loadingState.loadedAssets, loadingState.totalAssets || 100, `${stage} – ${detail}`);
+    
+    // Fixed 1080p resolution
+    const renderWidth = 1920;
+    const renderHeight = 1080;
+    const fps = 30;
+    const totalFrames = Math.ceil(totalDuration * fps);
+    
+    updateLoadingProgress(0, 100, `Preparing to capture ${totalFrames} frames at 1080p@${fps}fps...`);
+    
+    // Create offscreen canvas for rendering
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = renderWidth;
+    offscreenCanvas.height = renderHeight;
+    const offscreenCtx = offscreenCanvas.getContext('2d');
+    
+    // Prepare MediaRecorder with canvas stream + audio
+    const canvasStream = offscreenCanvas.captureStream(fps);
+    
+    // Collect all audio tracks from timeline
+    const all = flattenLayersToTimeline();
+    const audioClips = all.filter(c => c.type === 'audio');
+    
+    // Create AudioContext to mix audio tracks
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioCtx.createMediaStreamDestination();
+    
+    // Load and schedule all audio clips
+    for (const clip of audioClips) {
+      try {
+        const audioEl = document.createElement('audio');
+        audioEl.crossOrigin = 'anonymous';
+        audioEl.src = clip.src;
+        await new Promise((resolve, reject) => {
+          audioEl.onloadedmetadata = resolve;
+          audioEl.onerror = reject;
+          audioEl.load();
+        });
+        
+        const source = audioCtx.createMediaElementSource(audioEl);
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = clip.volume != null ? clip.volume : 1.0;
+        source.connect(gainNode);
+        gainNode.connect(dest);
+        
+        // Store for playback during render
+        clip._audioEl = audioEl;
+        clip._audioSource = source;
+      } catch (err) {
+        console.warn(`Failed to load audio: ${clip.src}`, err);
       }
-      if (stage === 'complete') {
-        evtSource.close();
-        hideLoadingModal();
-        const url = d.output_url;
-        if (url) {
-          window.open(url, '_blank');
-        } else {
-          alert('Export complete!');
+    }
+    
+    // Combine video and audio streams
+    const combinedStream = new MediaStream();
+    canvasStream.getVideoTracks().forEach(track => combinedStream.addTrack(track));
+    if (dest.stream.getAudioTracks().length > 0) {
+      dest.stream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
+    }
+    
+    const mediaRecorder = new MediaRecorder(combinedStream, {
+      mimeType: 'video/webm;codecs=vp9,opus',
+      videoBitsPerSecond: 8000000 // 8 Mbps for high quality
+    });
+    
+    const chunks = [];
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        chunks.push(e.data);
+      }
+    };
+    
+    mediaRecorder.onstop = () => {
+      // Stop all audio elements
+      audioClips.forEach(clip => {
+        if (clip._audioEl) {
+          clip._audioEl.pause();
+          clip._audioEl.currentTime = 0;
         }
-      } else if (stage === 'error') {
-        evtSource.close();
-        hideLoadingModal();
-        alert(`Export error: ${detail || 'Unknown error'}`);
+      });
+      
+      // Close audio context
+      if (audioCtx && audioCtx.state !== 'closed') {
+        audioCtx.close();
       }
-    };
-
-    evtSource.onerror = (err) => {
-      console.error("EventSource failed:", err);
-      evtSource.close();
+      
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      
+      // Create download link
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `manga_video_${Date.now()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
       hideLoadingModal();
-      alert('Error receiving export progress.');
+      alert('Video rendering complete! File downloaded.');
+      isExporting = false;
     };
-
+    
+    mediaRecorder.onerror = (e) => {
+      console.error('MediaRecorder error:', e);
+      hideLoadingModal();
+      alert('Recording error: ' + e.error);
+      isExporting = false;
+      
+      // Cleanup audio
+      audioClips.forEach(clip => {
+        if (clip._audioEl) clip._audioEl.pause();
+      });
+      if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
+    };
+    
+    // Start recording and audio playback
+    mediaRecorder.start();
+    
+    // Play audio clips at their scheduled times
+    const startTime = audioCtx.currentTime;
+    audioClips.forEach(clip => {
+      if (clip._audioEl) {
+        const clipStart = clip.startTime || 0;
+        const scheduleTime = startTime + clipStart;
+        
+        // Schedule playback
+        setTimeout(() => {
+          if (clip._audioEl && !clip._audioEl.paused) {
+            clip._audioEl.currentTime = 0;
+          }
+          clip._audioEl.play().catch(err => console.warn('Audio play error:', err));
+        }, clipStart * 1000);
+      }
+    });
+    
+    updateLoadingProgress(5, 100, 'Recording started with audio...');
+    
+    // Save original canvas dimensions
+    const origWidth = canvas.width;
+    const origHeight = canvas.height;
+    
+    // Temporarily set canvas to render resolution
+    canvas.width = renderWidth;
+    canvas.height = renderHeight;
+    
+    // Render frames
+    const frameInterval = 1000 / fps; // ms per frame
+    let currentFrame = 0;
+    
+    const renderNextFrame = () => {
+      if (currentFrame >= totalFrames) {
+        // Restore original canvas size
+        canvas.width = origWidth;
+        canvas.height = origHeight;
+        drawFrame(playhead); // Redraw at original size
+        
+        // Stop recording
+        mediaRecorder.stop();
+        return;
+      }
+      
+      const timeSec = currentFrame / fps;
+      
+      // Clear offscreen canvas
+      offscreenCtx.fillStyle = '#000';
+      offscreenCtx.fillRect(0, 0, renderWidth, renderHeight);
+      
+      // Render all layers at this time
+      const all = flattenLayersToTimeline();
+      const bg = all.find(c => c.type === 'image' && c._isBackground);
+      if (bg) {
+        renderClipToOffscreen(bg, timeSec, offscreenCtx, offscreenCanvas);
+      }
+      
+      const imgs = all.filter(c => c.type === 'image' && !c._isBackground)
+        .sort((a, b) => (a._layerIndex || 0) - (b._layerIndex || 0));
+      
+      for (const clip of imgs) {
+        renderClipToOffscreen(clip, timeSec, offscreenCtx, offscreenCanvas);
+      }
+      
+      // Update progress
+      const progress = Math.round((currentFrame / totalFrames) * 100);
+      updateLoadingProgress(progress, 100, `Rendering frame ${currentFrame + 1}/${totalFrames} (${Math.round(timeSec * 10) / 10}s)`);
+      
+      currentFrame++;
+      
+      // Schedule next frame
+      setTimeout(renderNextFrame, frameInterval);
+    };
+    
+    // Start rendering frames
+    renderNextFrame();
+    
   } catch (err) {
-    console.error('Export error', err);
+    console.error('Canvas render error', err);
     hideLoadingModal();
-    alert(`Export failed: ${err.message}`);
-  } finally {
+    alert(`Canvas rendering failed: ${err.message}`);
     isExporting = false;
+  }
+}
+
+// Helper function to render a clip to an offscreen canvas
+function renderClipToOffscreen(clip, t, targetCtx, targetCanvas) {
+  const st = clip.startTime || 0;
+  const dur = (clip.duration != null) ? Number(clip.duration) : (clip.type === 'image' ? 2 : 0);
+  if (t < st || t > st + dur + 1e-4) return;
+  
+  const img = clip._img;
+  if (!img || !img.complete || !img.naturalWidth) return;
+  
+  // Use the same transform logic as the main canvas
+  if (!clip.transform) {
+    const isPanelImage = clip.src && !clip._isBackground && (
+      clip.src.includes('/panels/') || 
+      clip.src.includes('/manga_projects/') ||
+      clip.src.includes('/bordered_') || 
+      clip.src.includes('/cropped_')
+    );
+    
+    if (isPanelImage) {
+      const panelFit = computePanelFit(img.naturalWidth, img.naturalHeight, targetCanvas.width, targetCanvas.height);
+      clip.transform = {
+        x: panelFit.dx + panelFit.dw / 2,
+        y: panelFit.dy + panelFit.dh / 2,
+        w: panelFit.dw,
+        h: panelFit.dh,
+        rotation: 0
+      };
+    } else {
+      clip.transform = {
+        x: targetCanvas.width / 2,
+        y: targetCanvas.height / 2,
+        w: targetCanvas.width,
+        h: targetCanvas.height,
+        rotation: 0
+      };
+    }
+  }
+  
+  clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+  const endCx = clip.transform.x, endCy = clip.transform.y;
+  const endW = clip.transform.w, endH = clip.transform.h;
+  
+  const eff = (clip.effect || '').toLowerCase();
+  const animMax = 5.0;
+  const animDur = Math.min(animMax, dur);
+  const effectiveAnimDur = animDur / (EFFECT_ANIMATION_SPEED || 1.0);
+  const effectiveProgress = (t - st) / (effectiveAnimDur > 0 ? effectiveAnimDur : 1);
+  const rawProgress = Math.max(0, Math.min(1, effectiveProgress));
+  
+  const configSmoothEasing = (t) => {
+    if (EFFECT_SMOOTHING <= 0) return t;
+    else if (EFFECT_SMOOTHING >= 2.0) return t * t * (3.0 - 2.0 * t);
+    else if (EFFECT_SMOOTHING >= 1.0) {
+      if (t < 0.5) return 2 * t * t;
+      return 1 - Math.pow(-2 * t + 2, 2) / 2;
+    } else {
+      const smooth_t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      return t + EFFECT_SMOOTHING * (smooth_t - t);
+    }
+  };
+  const rel = configSmoothEasing(rawProgress);
+  
+  let curCx = endCx, curCy = endCy, curW = endW, curH = endH;
+  if (eff && animDur > 0) {
+    if (eff === 'slide_lr') {
+      const startCx = -endW / 2;
+      curCx = startCx + (endCx - startCx) * rel;
+    } else if (eff === 'slide_rl') {
+      const startCx = targetCanvas.width + endW / 2;
+      curCx = startCx + (endCx - startCx) * rel;
+    } else if (eff === 'slide_tb') {
+      const startCy = -endH / 2;
+      curCy = startCy + (endCy - startCy) * rel;
+    } else if (eff === 'slide_bt') {
+      const startCy = targetCanvas.height + endH / 2;
+      curCy = startCy + (endCy - startCy) * rel;
+    } else if (eff === 'zoom_in' || eff === 'zoom_out') {
+      const zoomAmount = 0.25;
+      const s0 = (eff === 'zoom_in') ? (1.0 - zoomAmount) : 1.0;
+      const s1 = (eff === 'zoom_in') ? 1.0 : (1.0 - zoomAmount);
+      const s = s0 + (s1 - s0) * rel;
+      curW = Math.max(10, endW * s);
+      curH = Math.max(10, endH * s);
+      curCx = endCx;
+      curCy = endCy;
+    }
+  }
+  
+  const dx = curCx - curW / 2;
+  const dy = curCy - curH / 2;
+  const dw = Math.max(1, curW);
+  const dh = Math.max(1, curH);
+  const sx = Math.max(0, Math.min(clip.crop.x, img.naturalWidth - 1));
+  const sy = Math.max(0, Math.min(clip.crop.y, img.naturalHeight - 1));
+  const sw = Math.max(1, Math.min(clip.crop.w, img.naturalWidth - sx));
+  const sh = Math.max(1, Math.min(clip.crop.h, img.naturalHeight - sy));
+  
+  try {
+    targetCtx.save();
+    targetCtx.imageSmoothingEnabled = true;
+    targetCtx.imageSmoothingQuality = 'high';
+    
+    if (clip.transform.rotation) {
+      targetCtx.translate(curCx, curCy);
+      targetCtx.rotate((clip.transform.rotation || 0) * Math.PI / 180);
+      targetCtx.translate(-curCx, -curCy);
+    }
+    targetCtx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+    targetCtx.restore();
+  } catch (e) {
+    // Ignore draw errors
   }
 }
 
