@@ -517,11 +517,18 @@ function startRaf(){
   lastTs = performance.now();
   if (rafId) cancelAnimationFrame(rafId);
   const total = getCanvasTotalDuration();
+  DBG(`[startRaf] Total duration: ${total.toFixed(2)}s, playbackTotalOverride: ${playbackTotalOverride ? playbackTotalOverride.toFixed(2) : 'null'}`);
   const step = (ts) => {
     const dt = (ts - lastTs) / 1000; lastTs = ts;
     playhead = Math.min(total, playhead + dt);
     drawFrame(playhead);
-    if (playhead >= total){ isPlaying = false; const btn = document.getElementById('togglePlay'); if (btn) btn.textContent = 'Play'; return; }
+    if (playhead >= total){ 
+      DBG(`[RAF] Playback ended at ${playhead.toFixed(2)}s (total: ${total.toFixed(2)}s)`);
+      isPlaying = false; 
+      const btn = document.getElementById('togglePlay'); 
+      if (btn) btn.textContent = 'Play'; 
+      return; 
+    }
     rafId = requestAnimationFrame(step);
   };
   rafId = requestAnimationFrame(step);
@@ -596,9 +603,12 @@ function renderClipToCanvas(clip, t){
     return;
   }
   
-  const isPanelImage = clip.src && (clip.src.includes('/panels/') || clip.src.includes('/bordered_'));
+  // Check if this is a panel image for 50% sizing
+  const isPanelImage = clip.src && (clip.src.includes('/panels/') || clip.src.includes('/bordered_') || clip.src.includes('/cropped_'));
   
+  // Set defaults based on image type
   if (isPanelImage && !clip.transform) {
+    // For panels: 50% size and centered
     const panelFit = computePanelFit(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height);
     clip.transform = {
       x: panelFit.dx + panelFit.dw/2,
@@ -607,8 +617,11 @@ function renderClipToCanvas(clip, t){
       h: panelFit.dh,
       rotation: 0
     };
+    DBG(`[render-clip] Panel transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
   } else if (!clip.transform) {
+    // For other images: full canvas (existing behavior)
     clip.transform = { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
+    DBG(`[render-clip] Standard transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
   }
   
   clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
@@ -935,11 +948,20 @@ function scheduleAudioForPlayback(){
   const all = flattenLayersToTimeline();
   const auds = all.filter(c=> c.type==='audio' && c.src).sort((a,b)=> (a.startTime||0) - (b.startTime||0));
   DBG('Scheduling audio - found audio clips:', auds.length);
+  // Compute total override from actual durations so RAF won't stop early
   try{
     let total = 0;
-    for (const c of auds){ total += getClipDurationEstimate(c); }
+    for (const c of auds){ 
+      const dur = getClipDurationEstimate(c);
+      DBG(`  Audio clip: start=${(c.startTime||0).toFixed(2)}s, duration=${dur.toFixed(2)}s, end=${((c.startTime||0) + dur).toFixed(2)}s`);
+      total += dur;
+    }
     playbackTotalOverride = (total && isFinite(total) && total>0) ? total : null;
-  }catch(e){ playbackTotalOverride = null; }
+    DBG(`Set playbackTotalOverride to ${playbackTotalOverride ? playbackTotalOverride.toFixed(2) : 'null'}s`);
+  }catch(e){ 
+    DBG('Error computing playbackTotalOverride:', e);
+    playbackTotalOverride = null; 
+  }
   
   if (auds.length === 0) return;
   const clip = findCurrentOrNextAudioClip(auds, playhead);
@@ -1849,10 +1871,15 @@ function computeTotalDuration(){
   let total = 0;
   layers.forEach(l => {
     (l.clips || []).forEach(c => {
-      const end = (c.startTime || 0) + ((c.duration != null) ? Number(c.duration) : (c.type === 'image' ? 2 : 0));
+      const dur = (c.duration != null) ? Number(c.duration) : (c.type === 'image' ? 2 : 0);
+      const end = (c.startTime || 0) + dur;
+      if (end > total) {
+        DBG(`[computeTotalDuration] New max from ${l.name || l.id}: clip type=${c.type}, start=${(c.startTime||0).toFixed(2)}s, dur=${dur.toFixed(2)}s, end=${end.toFixed(2)}s`);
+      }
       total = Math.max(total, end);
     });
   });
+  DBG(`[computeTotalDuration] Final total: ${total.toFixed(2)}s`);
   return total;
 }
 
@@ -2228,6 +2255,8 @@ async function onPreviewTimeline(){
 
 async function generatePanelTimeline() {
     showLoadingModal('Generating timeline from panels...');
+    updateLoadingProgress(0, 100, 'Loading project data...');
+    
     try {
         // Ensure we have the latest project data
         await refreshProjectData();
@@ -2243,15 +2272,75 @@ async function generatePanelTimeline() {
         layers = [videoLayer, audioLayer];
         
         let currentTime = 0;
+        let totalPanels = 0;
+        let processedPanels = 0;
+        
+        // Count total panels
+        for (const page of project.pages) {
+            totalPanels += (page.panels || []).length;
+        }
+
+        updateLoadingProgress(10, 100, `Processing ${totalPanels} panels...`);
 
         for (const page of project.pages) {
-            for (const panel of page.panels) {
+            for (const panel of (page.panels || [])) {
+                processedPanels++;
+                updateLoadingProgress(10 + (processedPanels / totalPanels) * 60, 100, `Processing panel ${processedPanels}/${totalPanels}...`);
+                
+                // Determine audio source (check multiple possible fields)
+                const audioSrc = panel.audio_url || panel.audio_path || panel.audio_b64 || null;
+                
+                // Try to extract real audio duration if audio exists
+                let realDuration = panel.duration || 3.0; // Default fallback
+                
+                if (audioSrc) {
+                    try {
+                        // Create a temporary audio element to get the real duration
+                        const tempAudio = new Audio();
+                        tempAudio.src = normalizeSrc(audioSrc);
+                        
+                        // Wait for metadata to load
+                        await new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => {
+                                DBG(`Timeout loading audio metadata for panel ${page.page_number}-${panel.index}`);
+                                resolve(null);
+                            }, 3000);
+                            
+                            tempAudio.addEventListener('loadedmetadata', () => {
+                                clearTimeout(timeout);
+                                if (isFinite(tempAudio.duration) && tempAudio.duration > 0) {
+                                    realDuration = tempAudio.duration;
+                                    DBG(`Got real duration ${realDuration}s for panel ${page.page_number}-${panel.index}`);
+                                }
+                                resolve(tempAudio.duration);
+                            }, { once: true });
+                            
+                            tempAudio.addEventListener('error', (e) => {
+                                clearTimeout(timeout);
+                                DBG(`Error loading audio for panel ${page.page_number}-${panel.index}:`, e);
+                                reject(e);
+                            }, { once: true });
+                            
+                            try {
+                                tempAudio.load();
+                            } catch (e) {
+                                clearTimeout(timeout);
+                                reject(e);
+                            }
+                        }).catch(() => {
+                            DBG(`Failed to get duration for panel ${page.page_number}-${panel.index}, using default`);
+                        });
+                    } catch (e) {
+                        DBG(`Exception getting audio duration for panel ${page.page_number}-${panel.index}:`, e);
+                    }
+                }
+                
                 // Add video clip
                 const videoClip = {
                     type: 'image',
-                    src: panel.image_path,
+                    src: panel.image_path || panel.image_url || panel.image,
                     id: `panel-page${page.page_number}-${panel.index}`,
-                    duration: panel.duration || 3.0, // Default duration
+                    duration: realDuration,
                     startTime: currentTime,
                     effect: panel.effect || 'slide_lr',
                     transition: panel.transition || 'slide_book'
@@ -2259,21 +2348,23 @@ async function generatePanelTimeline() {
                 videoLayer.clips.push(videoClip);
 
                 // Add audio clip if it exists
-                if (panel.audio_path) {
+                if (audioSrc) {
                     const audioClip = {
                         type: 'audio',
-                        src: panel.audio_path,
+                        src: audioSrc,
                         id: `audio-page${page.page_number}-${panel.index}`,
-                        duration: panel.duration || 3.0,
+                        duration: realDuration,
                         startTime: currentTime,
                         meta: { text: panel.text || '' }
                     };
                     audioLayer.clips.push(audioClip);
                 }
                 
-                currentTime += videoClip.duration;
+                currentTime += realDuration;
             }
         }
+        
+        updateLoadingProgress(70, 100, 'Setting up background layer...');
         
         // Ensure background layer exists and spans the full duration
         ensureBackgroundLayer(false);
@@ -2289,14 +2380,23 @@ async function generatePanelTimeline() {
              layers.unshift(newBgLayer);
         }
 
+        updateLoadingProgress(80, 100, 'Preloading assets...');
+        
+        // Preload all assets before rendering
+        await preloadImageAssets();
+        await preloadAudioAssets();
+
+        updateLoadingProgress(95, 100, 'Rendering timeline...');
 
         activeLayerId = 'layer-video';
         timeline = flattenLayersToTimeline();
         renderTimeline();
         renderLayerControls();
         scheduleAutosave();
+        
+        updateLoadingProgress(100, 100, 'Complete!');
         hideLoadingModal();
-        alert('Timeline generated successfully!');
+        alert(`Timeline generated successfully with ${totalPanels} panels!`);
 
     } catch (err) {
         hideLoadingModal();
@@ -2323,13 +2423,49 @@ function computeCoverFit(srcW, srcH, dstW, dstH) {
 }
 
 function computePanelFit(srcW, srcH, dstW, dstH) {
-    const fit = computeCoverFit(srcW, srcH, dstW, dstH);
-    const s = PANEL_BASE_SIZE;
-    const w = fit.dw * s;
-    const h = fit.dh * s;
-    const dx = (dstW - w) / 2;
-    const dy = (dstH - h) / 2;
-    return { dx, dy, dw: w, dh: h };
+  // For panels: render at configurable size and center in canvas
+  const scaleFactor = PANEL_BASE_SIZE;
+  const scaledDstW = dstW * scaleFactor;
+  const scaledDstH = dstH * scaleFactor;
+  
+  DBG(`[panel-fit] Source: ${srcW}x${srcH}, Canvas: ${dstW}x${dstH}, Scale: ${scaleFactor}`);
+  DBG(`[panel-fit] Scaled target: ${scaledDstW}x${scaledDstH}`);
+  
+  const srcAR = srcW / srcH;
+  const scaledAR = scaledDstW / scaledDstH;
+  
+  DBG(`[panel-fit] Source AR: ${srcAR}, Scaled AR: ${scaledAR}`);
+  
+  let sw, sh, sx, sy, dw, dh, dx, dy;
+  
+  if (srcAR > scaledAR) {
+    // Source is wider: fit to width
+    dw = scaledDstW;
+    dh = scaledDstW / srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to width: dw=${dw}, dh=${dh}`);
+  } else {
+    // Source is taller: fit to height
+    dh = scaledDstH;
+    dw = scaledDstH * srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to height: dw=${dw}, dh=${dh}`);
+  }
+  
+  // Center the scaled image in the canvas
+  dx = (dstW - dw) / 2;
+  dy = (dstH - dh) / 2;
+  
+  DBG(`[panel-fit] Centering: dx=${dx}, dy=${dy}`);
+  DBG(`[panel-fit] Final result: src(${sx},${sy},${sw},${sh}) -> dest(${dx},${dy},${dw},${dh})`);
+  
+  return { sx, sy, sw, sh, dx, dy, dw, dh };
 }
 
 async function syncTimelineToActualAudio() {
