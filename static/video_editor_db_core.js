@@ -433,12 +433,73 @@ function initCanvasPreview(){
   const playBtn = document.getElementById('togglePlay');
   const cropBtn = document.getElementById('toggleCrop');
   const seekSlider = document.getElementById('seekSlider');
+  const panelSizeSlider = document.getElementById('panelSizeSlider');
+  const panelSizeValue = document.getElementById('panelSizeValue');
+  const resetPanelSizeBtn = document.getElementById('resetPanelSize');
   const toolbar = overlayEl ? overlayEl.querySelector('.preview-toolbar') : null;
   if (!canvas) return;
   canvas.width = 1920; canvas.height = 1080; // 16:9 backing resolution
   ctx = canvas.getContext('2d');
   if (playBtn) playBtn.addEventListener('click', togglePlayback);
   if (cropBtn) cropBtn.addEventListener('click', ()=>{ if (isPlaying) return; cropMode = !cropMode; cropBtn.textContent = 'Crop: ' + (cropMode? 'On' : 'Off'); renderOverlays(); });
+  
+  // Panel size slider control
+  if (panelSizeSlider && panelSizeValue) {
+    // Initialize slider value from current PANEL_BASE_SIZE
+    panelSizeSlider.value = PANEL_BASE_SIZE;
+    panelSizeValue.textContent = Math.round(PANEL_BASE_SIZE * 100) + '%';
+    
+    let updateTimeout = null;
+    panelSizeSlider.addEventListener('input', (e) => {
+      const newSize = parseFloat(e.target.value);
+      PANEL_BASE_SIZE = newSize;
+      panelSizeValue.textContent = Math.round(newSize * 100) + '%';
+      
+      // Reset all panel transforms so they recalculate with new size
+      resetAllPanelTransforms();
+      
+      // Redraw the current frame
+      if (!isPlaying) {
+        drawFrame(playhead);
+      }
+      
+      DBG(`Panel size changed to ${Math.round(newSize * 100)}%`);
+      
+      // Debounce saving to server (wait 500ms after last change)
+      if (updateTimeout) clearTimeout(updateTimeout);
+      updateTimeout = setTimeout(() => {
+        updateEffectConfig({ panelBaseSize: newSize }).catch(err => {
+          DBG('Failed to save panel size to server:', err);
+        });
+      }, 500);
+    });
+  }
+  
+  // Reset panel size button
+  if (resetPanelSizeBtn) {
+    resetPanelSizeBtn.addEventListener('click', () => {
+      const defaultSize = 0.5;
+      PANEL_BASE_SIZE = defaultSize;
+      if (panelSizeSlider) panelSizeSlider.value = defaultSize;
+      if (panelSizeValue) panelSizeValue.textContent = Math.round(defaultSize * 100) + '%';
+      
+      // Reset all panel transforms
+      resetAllPanelTransforms();
+      
+      // Redraw the current frame
+      if (!isPlaying) {
+        drawFrame(playhead);
+      }
+      
+      // Save to server
+      updateEffectConfig({ panelBaseSize: defaultSize }).catch(err => {
+        DBG('Failed to save panel size to server:', err);
+      });
+      
+      DBG(`Panel size reset to ${Math.round(defaultSize * 100)}%`);
+    });
+  }
+  
   if (seekSlider){
     let scrubbing = false;
     const applySeek = () => {
@@ -484,6 +545,35 @@ function initCanvasPreview(){
   window.addEventListener('pointermove', onCanvasPointerMove);
   window.addEventListener('pointerup', onCanvasPointerUp);
   drawFrame(0);
+}
+
+function resetAllPanelTransforms() {
+  // Clear transforms from all panel clips so they recalculate with new PANEL_BASE_SIZE
+  try {
+    layers.forEach(layer => {
+      (layer.clips || []).forEach(clip => {
+        if (clip.type === 'image' && !clip._isBackground) {
+          // Clear the transform so it recalculates
+          delete clip.transform;
+          delete clip._transformDebugLogged;
+        }
+      });
+    });
+    
+    // Also clear from flattened timeline if it exists
+    if (timeline && timeline.length > 0) {
+      timeline.forEach(clip => {
+        if (clip.type === 'image' && !clip._isBackground) {
+          delete clip.transform;
+          delete clip._transformDebugLogged;
+        }
+      });
+    }
+    
+    DBG('Reset all panel transforms for recalculation');
+  } catch (e) {
+    DBG('Error resetting panel transforms:', e);
+  }
 }
 
 function togglePlayback(){
@@ -604,9 +694,21 @@ function renderClipToCanvas(clip, t){
   }
   
   // Check if this is a panel image for 50% sizing
-  const isPanelImage = clip.src && (clip.src.includes('/panels/') || clip.src.includes('/bordered_') || clip.src.includes('/cropped_'));
+  // Panel images can be in: /panels/, /manga_projects/, /bordered_, /cropped_, but NOT background images
+  const isPanelImage = clip.src && !clip._isBackground && (
+    clip.src.includes('/panels/') || 
+    clip.src.includes('/manga_projects/') ||
+    clip.src.includes('/bordered_') || 
+    clip.src.includes('/cropped_')
+  );
   
-  // Set defaults based on image type
+  // Debug: Log every clip rendering to see what's happening
+  if (!clip._transformDebugLogged) {
+    DBG(`[render-clip-check] src="${clip.src}", isPanelImage=${isPanelImage}, hasTransform=${!!clip.transform}, _isBackground=${!!clip._isBackground}`);
+    clip._transformDebugLogged = true;
+  }
+  
+  // Set defaults based on image type - only set once per clip
   if (isPanelImage && !clip.transform) {
     // For panels: 50% size and centered
     const panelFit = computePanelFit(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height);
@@ -617,11 +719,15 @@ function renderClipToCanvas(clip, t){
       h: panelFit.dh,
       rotation: 0
     };
-    DBG(`[render-clip] Panel transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
-  } else if (!clip.transform) {
+    DBG(`[render-clip] ★ PANEL transform initialized: src=${clip.src}`);
+    DBG(`  Canvas: ${canvas.width}x${canvas.height}, Panel: ${img.naturalWidth}x${img.naturalHeight}`);
+    DBG(`  PANEL_BASE_SIZE: ${PANEL_BASE_SIZE}`);
+    DBG(`  panelFit result: dx=${panelFit.dx}, dy=${panelFit.dy}, dw=${panelFit.dw}, dh=${panelFit.dh}`);
+    DBG(`  Transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
+  } else if (!isPanelImage && !clip.transform) {
     // For other images: full canvas (existing behavior)
     clip.transform = { x: canvas.width/2, y: canvas.height/2, w: canvas.width, h: canvas.height, rotation: 0 };
-    DBG(`[render-clip] Standard transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
+    DBG(`[render-clip] Standard (non-panel) transform: x=${clip.transform.x}, y=${clip.transform.y}, w=${clip.transform.w}, h=${clip.transform.h}`);
   }
   
   clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
@@ -2336,9 +2442,12 @@ async function generatePanelTimeline() {
                 }
                 
                 // Add video clip
+                const panelImageSrc = panel.image_path || panel.image_url || panel.image;
+                DBG(`[generateTimeline] Panel ${page.page_number}-${panel.index}: src="${panelImageSrc}"`);
+                
                 const videoClip = {
                     type: 'image',
-                    src: panel.image_path || panel.image_url || panel.image,
+                    src: panelImageSrc,
                     id: `panel-page${page.page_number}-${panel.index}`,
                     duration: realDuration,
                     startTime: currentTime,
