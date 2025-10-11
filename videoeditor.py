@@ -3,15 +3,25 @@ import json
 import time
 import uuid
 import threading
+import asyncio
 from typing import Any, Dict, Deque, Optional
 from collections import deque
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 # Reuse DB helpers from the editor module
 from mangaeditor import EditorDB  # type: ignore
+
+# Windows asyncio fix
+from async_utils import run_async_in_thread
+
+# Headless browser recording (optional)
+try:
+    from headless_recorder import record_project_headless, PLAYWRIGHT_AVAILABLE
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
 
 
 # ---- Paths and templates ----
@@ -25,11 +35,11 @@ router = APIRouter(prefix="/editor", tags=["video-editor"])
 
 # ==================== Effect/Transition Config (server defaults) ====================
 # These mirror the defaults used by the old video editor, but live independently here.
-EFFECT_ANIMATION_SPEED: float = 1.0
+EFFECT_ANIMATION_SPEED: float = 0.2  # Default 0.2x speed (slower, more cinematic)
 EFFECT_SCREEN_MARGIN: float = 0.1
 EFFECT_ZOOM_AMOUNT: float = 0.25
 EFFECT_MAX_DURATION: float = 5.0
-PANEL_BASE_SIZE: float = 0.5
+PANEL_BASE_SIZE: float = 1.2  # Default 120% size (larger panels)
 EFFECT_SMOOTHING: float = 1.0
 
 TRANSITION_DURATION: float = 0.8
@@ -120,6 +130,8 @@ def _publish(job_id: str, event: ProgressEvent) -> None:
             q = deque(maxlen=500)
             _channels[job_id] = q
         q.append(event)
+        print(f"[SSE] Published to {job_id}: {event.get('stage')} - {event.get('detail', '')[:50]}")
+
 
 
 def _consume(job_id: str) -> Optional[ProgressEvent]:
@@ -130,99 +142,6 @@ def _consume(job_id: str) -> Optional[ProgressEvent]:
         if q:
             return q.popleft()
         return None
-
-
-def _render_video_job(job_id: str, project_id: str, payload: Dict[str, Any]) -> None:
-    """The actual video rendering job, run in a background thread."""
-    try:
-        _publish(job_id, {"stage": "queued", "detail": "Preparing render..."})
-        time.sleep(0.1) # Give client a moment to connect
-
-        # 1. Fetch all required data from the database
-        _publish(job_id, {"stage": "analyzing", "detail": "Fetching project data from DB..."})
-        project = EditorDB.get_project(project_id)
-        if not project:
-            _publish(job_id, {"stage": "error", "detail": f"Project '{project_id}' not found."})
-            return
-
-        layers_data = project.get("metadata", {}).get("layers", [])
-        if not layers_data:
-            _publish(job_id, {"stage": "error", "detail": "Project has no layers to render."})
-            return
-        
-        pages = project.get("pages", [])
-        image_paths = [os.path.join(BASE_DIR, p["image_path"].lstrip('/')) for p in pages]
-        
-        _publish(job_id, {"stage": "analyzing", "detail": f"Found {len(layers_data)} layers and {len(image_paths)} images."})
-        time.sleep(0.5)
-
-        # 2. Simulate the rendering process (replace with actual moviepy/ffmpeg calls)
-        # This section would involve complex logic using a library like MoviePy.
-        # For now, we'll just simulate the steps.
-        total_steps = len(layers_data) + len(image_paths) + 5 # Arbitrary number of extra steps
-        current_step = 0
-
-        _publish(job_id, {"stage": "rendering", "progress": 0, "detail": "Initializing render engine..."})
-        
-        # Simulate processing images
-        for i, img_path in enumerate(image_paths):
-            current_step += 1
-            progress = int((current_step / total_steps) * 100)
-            if not os.path.exists(img_path):
-                 _publish(job_id, {"stage": "warning", "detail": f"Image not found: {os.path.basename(img_path)}"})
-            else:
-                _publish(job_id, {"stage": "rendering", "progress": progress, "detail": f"Processing image {i+1}/{len(image_paths)}..."})
-            time.sleep(0.1)
-
-        # Simulate processing layers
-        for i, layer in enumerate(layers_data):
-            current_step += 1
-            progress = int((current_step / total_steps) * 100)
-            layer_type = layer.get('type', 'unknown')
-            _publish(job_id, {"stage": "rendering", "progress": progress, "detail": f"Applying layer {i+1}/{len(layers_data)} ({layer_type})..."})
-            time.sleep(0.2)
-
-        # Simulate final composition
-        _publish(job_id, {"stage": "composing", "progress": 95, "detail": "Composing final video..."})
-        time.sleep(1)
-
-        # 3. Finalize and report completion
-        # In a real scenario, you'd save the file and provide its actual URL
-        output_filename = f"render_{project_id}_{int(time.time())}.mp4"
-        project_render_dir = os.path.join(BASE_DIR, "manga_projects", project_id, "renders")
-        os.makedirs(project_render_dir, exist_ok=True)
-        final_output_path = os.path.join(project_render_dir, output_filename)
-        
-        # Simulate file creation
-        with open(final_output_path, "w") as f:
-            f.write("This is a simulated video file.")
-
-        output_url = f"/manga_projects/{project_id}/renders/{output_filename}"
-        _publish(job_id, {"stage": "complete", "detail": "Render complete!", "output_url": output_url})
-
-    except Exception as e:
-        import traceback
-        print(f"Render job {job_id} failed: {e}")
-        traceback.print_exc()
-        _publish(job_id, {"stage": "error", "detail": f"An unexpected error occurred: {e}"})
-    finally:
-        # Leave a small tail so the client can read the final message
-        time.sleep(0.5)
-
-
-@router.post("/api/video/render")
-async def render_video(payload: Dict[str, Any]):
-    project_id = str(payload.get("project_id") or "").strip()
-    if not project_id:
-        raise HTTPException(status_code=400, detail="project_id is required")
-    if not EditorDB.get_project(project_id):
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    job_id = uuid.uuid4().hex
-    # Use the new detailed render job
-    t = threading.Thread(target=_render_video_job, args=(job_id, project_id, payload), daemon=True)
-    t.start()
-    return {"job_id": job_id}
 
 
 @router.get("/api/video/progress/stream/{job_id}")
@@ -240,7 +159,11 @@ async def stream_progress(job_id: str):
                 continue
             # Serialize event
             yield f"data: {json.dumps(ev)}\n\n"
-            if ev.get("stage") in {"complete", "error"}:
+            # Close stream on error OR on complete with download_url (final complete)
+            if ev.get("stage") == "error":
+                break
+            if ev.get("stage") == "complete" and ev.get("download_url"):
+                # This is the final complete event with download info
                 break
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
@@ -249,3 +172,158 @@ async def _async_sleep(s: float) -> None:
     # Trivial asyncio-friendly sleep without importing asyncio explicitly in signature
     import asyncio
     await asyncio.sleep(s)
+
+
+# ==================== Headless Browser Recording ====================
+def _headless_render_job(job_id: str, project_id: str) -> None:
+    """Background job for headless browser recording."""
+    try:
+        _publish(job_id, {"stage": "starting", "detail": "Launching headless browser...", "elapsed": 0, "remaining": None})
+        
+        # Progress callback to publish updates to the client
+        def progress_callback(progress_data: Dict[str, Any]):
+            # Add job_id and format time values
+            event = {"job_id": job_id, **progress_data}
+            
+            # Format elapsed and remaining times in minutes
+            if "elapsed" in event and event["elapsed"] is not None:
+                elapsed_mins = event["elapsed"] / 60
+                event["elapsed_formatted"] = f"{int(elapsed_mins)}:{int((elapsed_mins % 1) * 60):02d}"
+            
+            if "remaining" in event and event["remaining"] is not None:
+                remaining_mins = event["remaining"] / 60
+                event["remaining_formatted"] = f"{int(remaining_mins)}:{int((remaining_mins % 1) * 60):02d}"
+            
+            _publish(job_id, event)
+        
+        # Use the Windows-safe async runner with progress callback
+        result = run_async_in_thread(record_project_headless(project_id, progress_callback=progress_callback))
+        
+        if result["status"] == "success":
+            # Register the file for download
+            _register_render_file(job_id, result.get("output_path"))
+            
+            _publish(job_id, {
+                "stage": "complete",
+                "detail": "Recording complete! Starting download...",
+                "output_url": result["output_url"],
+                "download_url": f"/editor/api/video/download/{job_id}",
+                "file_size": result.get("file_size", 0),
+                "duration": result.get("duration", 0),
+                "output_path": result.get("output_path"),  # Store for cleanup
+                "progress": 100
+            })
+        else:
+            _publish(job_id, {
+                "stage": "error",
+                "detail": f"Recording failed: {result.get('error', 'Unknown error')}"
+            })
+            
+    except Exception as e:
+        import traceback
+        print(f"Headless render job {job_id} failed: {e}")
+        traceback.print_exc()
+        _publish(job_id, {"stage": "error", "detail": f"Headless recording failed: {e}"})
+    finally:
+        time.sleep(0.5)
+
+
+# Store completed render files for download
+_render_files: Dict[str, str] = {}  # job_id -> file_path
+_render_files_lock = threading.Lock()
+
+
+def _register_render_file(job_id: str, file_path: str):
+    """Register a completed render file for download."""
+    with _render_files_lock:
+        _render_files[job_id] = file_path
+
+
+def _get_render_file(job_id: str) -> Optional[str]:
+    """Get the file path for a completed render."""
+    with _render_files_lock:
+        return _render_files.get(job_id)
+
+
+def _cleanup_render_file(job_id: str):
+    """Remove render file from disk and registry."""
+    with _render_files_lock:
+        file_path = _render_files.pop(job_id, None)
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"[Cleanup] Deleted render file: {file_path}")
+            except Exception as e:
+                print(f"[Cleanup] Failed to delete {file_path}: {e}")
+
+
+@router.post("/api/video/render/headless")
+async def render_video_headless(payload: Dict[str, Any]):
+    """
+    Render video using headless browser (captures audio+video properly).
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Headless recording not available. Install with: pip install playwright && playwright install chromium"
+        )
+    
+    project_id = str(payload.get("project_id") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    
+    project = EditorDB.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    job_id = uuid.uuid4().hex
+    t = threading.Thread(target=_headless_render_job, args=(job_id, project_id), daemon=True)
+    t.start()
+    
+    return {"job_id": job_id}
+
+
+@router.get("/api/video/headless/available")
+async def check_headless_available():
+    """Check if headless recording is available."""
+    return {
+        "available": PLAYWRIGHT_AVAILABLE,
+        "message": "Ready" if PLAYWRIGHT_AVAILABLE else "Install with: pip install playwright && playwright install chromium"
+    }
+
+
+@router.get("/api/video/download/{job_id}")
+async def download_render(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Download a completed render and schedule it for cleanup.
+    File is automatically deleted after download.
+    """
+    file_path = _get_render_file(job_id)
+    
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Render file not found or already downloaded")
+    
+    if not os.path.exists(file_path):
+        _cleanup_render_file(job_id)  # Clean up the registry entry
+        raise HTTPException(status_code=404, detail="Render file not found on disk")
+    
+    # Get filename for download
+    filename = os.path.basename(file_path)
+    
+    # Schedule cleanup after response is sent
+    background_tasks.add_task(_cleanup_render_file, job_id)
+    
+    return FileResponse(
+        path=file_path,
+        media_type='video/webm',
+        filename=filename,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
+@router.get("/headless-test", response_class=HTMLResponse)
+async def headless_test_page(request: Request):
+    """Diagnostic page for testing headless rendering."""
+    return templates.TemplateResponse("headless_test.html", {"request": request})

@@ -8,11 +8,11 @@ const DEFAULT_BG_SRC = '/static/blur_glitch_background.png';
 const BACKGROUND_LAYER_ID = 'background';
 
 // Effect configuration variables (match server-side)
-let EFFECT_ANIMATION_SPEED = 1.0;
+let EFFECT_ANIMATION_SPEED = 0.2;  // Default 0.2x speed (slower, more cinematic)
 let EFFECT_SCREEN_MARGIN = 0.1;  
 let EFFECT_ZOOM_AMOUNT = 0.25;
 let EFFECT_MAX_DURATION = 5.0;
-let PANEL_BASE_SIZE = 0.5;  // Base size multiplier for panels
+let PANEL_BASE_SIZE = 1.2;  // Default 120% size (larger panels)
 let EFFECT_SMOOTHING = 1.0;  // Smoothing intensity
 
 // Transition configuration variables
@@ -34,6 +34,18 @@ let viewPxPerSec = pxPerSec;
 let previewControllers = []; // store audio/video controllers to stop preview
 let audioCtx = null;
 let audioBufferCache = {}; // keyed by src -> AudioBuffer
+
+// Ensure audio context is initialized (required for audio playback)
+async function ensureAudioContext(){
+  if (audioCtx) return audioCtx;
+  try{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }catch(e){ 
+    console.warn('Failed to create AudioContext:', e);
+    audioCtx = null; 
+  }
+  return audioCtx;
+}
 
 // Loading modal functions
 let loadingState = {
@@ -373,10 +385,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const generateTimelineBtn = document.getElementById('generatePanelTimeline');
   if (generateTimelineBtn) generateTimelineBtn.addEventListener('click', generatePanelTimeline);
   
-  const canvasRenderBtn = document.getElementById('canvasRenderBtn');
-  if (canvasRenderBtn) canvasRenderBtn.addEventListener('click', renderWithCanvas);
-  const clientRenderBtn = document.getElementById('clientRenderBtn');
-  if (clientRenderBtn) clientRenderBtn.addEventListener('click', renderOnClient);
+  const renderBtn = document.getElementById('renderBtn');
+  if (renderBtn) renderBtn.addEventListener('click', renderVideo);
+  
   const previewTop = document.getElementById('previewTimelineBtnTop');
   if (previewTop) previewTop.addEventListener('click', onPreviewTimeline);
 
@@ -479,7 +490,7 @@ function initCanvasPreview(){
   // Reset panel size button
   if (resetPanelSizeBtn) {
     resetPanelSizeBtn.addEventListener('click', () => {
-      const defaultSize = 0.5;
+      const defaultSize = 1.2;  // Default 120%
       PANEL_BASE_SIZE = defaultSize;
       if (panelSizeSlider) panelSizeSlider.value = defaultSize;
       if (panelSizeValue) panelSizeValue.textContent = Math.round(defaultSize * 100) + '%';
@@ -533,7 +544,7 @@ function initCanvasPreview(){
   // Reset animation speed button
   if (resetAnimSpeedBtn) {
     resetAnimSpeedBtn.addEventListener('click', () => {
-      const defaultSpeed = 1.0;
+      const defaultSpeed = 0.2;  // Default 0.2x speed
       EFFECT_ANIMATION_SPEED = defaultSpeed;
       if (animSpeedSlider) animSpeedSlider.value = defaultSpeed;
       if (animSpeedValue) animSpeedValue.textContent = defaultSpeed.toFixed(1) + 'x';
@@ -668,7 +679,7 @@ function startRaf(){
       DBG(`[RAF] Playback ended at ${playhead.toFixed(2)}s (total: ${total.toFixed(2)}s)`);
       isPlaying = false; 
       const btn = document.getElementById('togglePlay'); 
-      if (btn) btn.textContent = 'Play'; 
+      if (btn) btn.textContent = 'Play';
       return; 
     }
     rafId = requestAnimationFrame(step);
@@ -715,6 +726,53 @@ function drawFrame(timeSec){
     const isScrubbing = typeof seek._scrubbing === 'function' ? seek._scrubbing() : false;
     if (!isScrubbing){ seek.value = String(Math.max(0, Math.min(1, frac))); }
   }
+}
+
+// Compute panel fit dimensions (for panel-based rendering)
+function computePanelFit(srcW, srcH, dstW, dstH) {
+  // For panels: render at configurable size and center in canvas
+  const scaleFactor = PANEL_BASE_SIZE;
+  const scaledDstW = dstW * scaleFactor;
+  const scaledDstH = dstH * scaleFactor;
+  
+  DBG(`[panel-fit] Source: ${srcW}x${srcH}, Canvas: ${dstW}x${dstH}, Scale: ${scaleFactor}`);
+  DBG(`[panel-fit] Scaled target: ${scaledDstW}x${scaledDstH}`);
+  
+  const srcAR = srcW / srcH;
+  const scaledAR = scaledDstW / scaledDstH;
+  
+  DBG(`[panel-fit] Source AR: ${srcAR}, Scaled AR: ${scaledAR}`);
+  
+  let sw, sh, sx, sy, dw, dh, dx, dy;
+  
+  if (srcAR > scaledAR) {
+    // Source is wider: fit to width
+    dw = scaledDstW;
+    dh = scaledDstW / srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to width: dw=${dw}, dh=${dh}`);
+  } else {
+    // Source is taller: fit to height
+    dh = scaledDstH;
+    dw = scaledDstH * srcAR;
+    sw = srcW;
+    sh = srcH;
+    sx = 0;
+    sy = 0;
+    DBG(`[panel-fit] Fit to height: dw=${dw}, dh=${dh}`);
+  }
+  
+  // Center the scaled image in the canvas
+  dx = (dstW - dw) / 2;
+  dy = (dstH - dh) / 2;
+  
+  DBG(`[panel-fit] Centering: dx=${dx}, dy=${dy}`);
+  DBG(`[panel-fit] Final result: src(${sx},${sy},${sw},${sh}) -> dest(${dx},${dy},${dw},${dh})`);
+  
+  return { sx, sy, sw, sh, dx, dy, dw, dh };
 }
 
 function renderClipToCanvas(clip, t){
@@ -2195,759 +2253,123 @@ async function saveProject(force = false) {
   }
 }
 
-async function renderOnClient() {
-  // Support UMD export shapes. In current builds, global is window.FFmpegWASM with property FFmpeg.
-  const ns = (typeof window !== 'undefined') ? (window.FFmpegWASM || window.FFmpeg || {}) : {};
-  const FFmpegCtor = ns.FFmpeg || ns;
-  if (typeof FFmpegCtor !== 'function') {
-    alert('FFmpeg library not loaded. Ensure /static/vendor/ffmpeg/ffmpeg.min.js is accessible and refresh the page (Ctrl+F5).');
-    return;
-  }
-  const ffmpeg = new FFmpegCtor();
-
-  showLoadingModal('Starting Client-Side Render...');
+// ==================== Headless Browser Rendering ====================
+async function renderVideo() {
+  // Get the render button
+  const renderBtn = document.getElementById('renderBtn');
   
-  ffmpeg.on('log', ({ message }) => {
-    console.log('FFMPEG Log:', message);
-    updateLoadingProgress(loadingState.loadedAssets, loadingState.totalAssets, message);
-  });
-
-  ffmpeg.on('progress', ({ progress, time }) => {
-    console.log('FFMPEG Progress:', progress, 'time:', time);
-    const p = Math.round(progress * 100);
-    updateLoadingProgress(p, 100, `Encoding... ${p}%`);
-  });
-
+  // Try multiple ways to get the project ID
+  let projectId = null;
+  
+  // Method 1: From URL query parameters (?project_id=...)
+  const urlParams = new URLSearchParams(window.location.search);
+  projectId = urlParams.get('project_id');
+  
+  // Method 2: From URL path (/editor/video-editor/{project_id})
+  if (!projectId) {
+    const pathMatch = window.location.pathname.match(/\/video-editor\/([^\/]+)/);
+    if (pathMatch) {
+      projectId = pathMatch[1];
+    }
+  }
+  
+  // Method 3: From window.projectData
+  if (!projectId && window.projectData && window.projectData.id) {
+    projectId = window.projectData.id;
+  }
+  
+  // Final check
+  if (!projectId) {
+    const manualId = prompt('Could not auto-detect project ID. Please enter it manually:');
+    if (!manualId) {
+      alert('Project ID is required for rendering');
+      return;
+    }
+    projectId = manualId.trim();
+  }
+  
+  console.log('[Render] Using project ID:', projectId);
+  
+  // Debug info
+  console.log('[Render] Current URL:', window.location.href);
+  console.log('[Render] Project data:', window.projectData);
+  
+  // Check if headless rendering is available
   try {
-  updateLoadingProgress(0, 100, 'Loading FFmpeg core...');
-  await ffmpeg.load({
-    coreURL: '/static/vendor/ffmpeg/ffmpeg-core.js',
-    wasmURL: '/static/vendor/ffmpeg/ffmpeg-core.wasm',
-  });
-
-  updateLoadingProgress(0, 100, 'Preparing timeline frames...');
-    const totalDuration = getCanvasTotalDuration();
-  const frameRate = 24; // use 24 fps to reduce FS/memory usage while keeping cinematic feel
-    const numFrames = Math.floor(totalDuration * frameRate);
-
-    for (let i = 0; i < numFrames; i++) {
-        const time = i / frameRate;
-        drawFrame(time);
-    const frameData = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.86));
-    if (!frameData) {
-      throw new Error('Could not capture frame from canvas');
-    }
-    const frameName = `frame-${String(i).padStart(5, '0')}.webp`;
-    const buf = new Uint8Array(await frameData.arrayBuffer());
-    await ffmpeg.writeFile(frameName, buf);
-        updateLoadingProgress(i, numFrames, `Generating frame ${i + 1}/${numFrames}`);
-    }
-
-    updateLoadingProgress(0, 100, 'Preparing audio tracks...');
-    const allClips = flattenLayersToTimeline();
-    const audioClips = allClips.filter(c => c.type === 'audio' && c.src);
-  const audioInputs = [];
-    for (let i = 0; i < audioClips.length; i++) {
-        const clip = audioClips[i];
-        const audioName = `audio_${i}.mp3`;
-        const audioData = await fetch(clip.src).then(res => res.arrayBuffer());
-        await ffmpeg.writeFile(audioName, new Uint8Array(audioData));
-        audioInputs.push('-i', audioName);
-    }
-
-    const resolutionSelect = document.getElementById('resolutionSelect');
-    const resolution = resolutionSelect ? resolutionSelect.value : '1080';
-    const videoHeight = parseInt(resolution, 10);
-    const videoWidth = Math.round(videoHeight * 16 / 9);
-
-  // Ensure no leftover output blocks overwriting
-  try { await ffmpeg.deleteFile('output.mp4'); } catch(_) {}
-
-  const ffmpegArgs = [
-    '-y',
-    '-framerate', String(frameRate),
-  '-start_number', '0',
-  '-i', 'frame-%05d.webp',
-    ...audioInputs,
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-s', `${videoWidth}x${videoHeight}`,
-    '-preset', 'ultrafast',
-    '-crf', '23',
-    '-r', String(frameRate),
-  ];
-
-  if (audioClips.length > 0) {
-    let filterComplex = '';
-    let audioMap = '';
-    audioClips.forEach((clip, i) => {
-      const delayMs = Math.max(0, (clip.startTime || 0) * 1000);
-      // duplicate delay per channel using | syntax; most browsers export stereo
-      filterComplex += `[${i + 1}:a]adelay=${delayMs}|${delayMs}[a${i}];`;
-      audioMap += `[a${i}]`;
-    });
-    filterComplex += `${audioMap}amix=inputs=${audioClips.length}:normalize=0[a]`;
-    ffmpegArgs.push('-filter_complex', filterComplex, '-map', '0:v', '-map', '[a]', '-shortest');
-  }
+    const checkResp = await fetch('/editor/api/video/headless/available');
+    const checkData = await checkResp.json();
     
-  ffmpegArgs.push('output.mp4');
-
-    updateLoadingProgress(0, 100, 'Encoding video... This may take a while.');
-  await ffmpeg.exec(ffmpegArgs);
-
-    updateLoadingProgress(100, 100, 'Finalizing video...');
-    let data;
-    try {
-      data = await ffmpeg.readFile('output.mp4');
-    } catch (e) {
-      console.error('Failed to read output.mp4 from FFmpeg FS', e);
-      throw e;
+    if (!checkData.available) {
+      const install = confirm(
+        'Rendering requires Playwright.\n\n' +
+        'Install with:\n' +
+        'pip install playwright\n' +
+        'playwright install chromium\n\n' +
+        'Would you like to see installation instructions?'
+      );
+      
+      if (install) {
+        window.open('https://playwright.dev/python/docs/intro', '_blank');
+      }
+      return;
     }
-    const blob = new Blob([data.buffer], { type: 'video/mp4' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `video_render_${Date.now()}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    hideLoadingModal();
-
-  } catch (error) {
-    console.error('Client-side rendering failed:', error);
-    alert('An error occurred during client-side rendering. Check the console for details.');
-    hideLoadingModal();
-  } finally {
-    try {
-        await ffmpeg.terminate();
-    } catch (e) {
-        console.warn("Could not terminate ffmpeg", e);
-    }
-  }
-}
-
-async function renderWithCanvas(){
-  if (!canvas || !ctx) {
-    alert('Canvas not initialized');
+  } catch (err) {
+    console.error('Failed to check rendering availability:', err);
+    alert('Could not check if rendering is available');
     return;
   }
   
-  isExporting = true;
-  showLoadingModal('Rendering video with Canvas...');
+  const confirm_msg = confirm(
+    '🎬 Render Video\n\n' +
+    'This will:\n' +
+    '✓ Capture video and audio from your timeline\n' +
+    '✓ Create a high-quality WebM file\n' +
+    '✓ Take approximately real-time (e.g., 2min video = 2min render)\n\n' +
+    'Continue?'
+  );
+  
+  if (!confirm_msg) return;
+  
+  console.log('[Render] Starting render for project:', projectId);
+  
+  // Disable the render button
+  if (renderBtn) {
+    renderBtn.disabled = true;
+    renderBtn.style.opacity = '0.5';
+    renderBtn.style.cursor = 'not-allowed';
+    renderBtn.textContent = '🎬 Rendering...';
+  }
   
   try {
-    const totalDuration = computeTotalDuration();
-    if (totalDuration <= 0) {
-      throw new Error('Timeline is empty or has no duration');
-    }
-    
-    // Fixed 1080p resolution
-    const renderWidth = 1920;
-    const renderHeight = 1080;
-    const fps = 30;
-    const totalFrames = Math.ceil(totalDuration * fps);
-    
-    updateLoadingProgress(0, 100, `Preparing to capture ${totalFrames} frames at 1080p@${fps}fps...`);
-    
-    // Create offscreen canvas for rendering
-    const offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = renderWidth;
-    offscreenCanvas.height = renderHeight;
-    const offscreenCtx = offscreenCanvas.getContext('2d');
-    
-    // Prepare MediaRecorder with canvas stream + audio
-    const canvasStream = offscreenCanvas.captureStream(fps);
-    
-    // Collect all audio tracks from timeline
-    const all = flattenLayersToTimeline();
-    const audioClips = all.filter(c => c.type === 'audio');
-    
-    // Create AudioContext to mix audio tracks
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const dest = audioCtx.createMediaStreamDestination();
-    
-    // Load and schedule all audio clips
-    for (const clip of audioClips) {
-      try {
-        const audioEl = document.createElement('audio');
-        audioEl.crossOrigin = 'anonymous';
-        audioEl.src = clip.src;
-        await new Promise((resolve, reject) => {
-          audioEl.onloadedmetadata = resolve;
-          audioEl.onerror = reject;
-          audioEl.load();
-        });
-        
-        const source = audioCtx.createMediaElementSource(audioEl);
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.value = clip.volume != null ? clip.volume : 1.0;
-        source.connect(gainNode);
-        gainNode.connect(dest);
-        
-        // Store for playback during render
-        clip._audioEl = audioEl;
-        clip._audioSource = source;
-      } catch (err) {
-        console.warn(`Failed to load audio: ${clip.src}`, err);
-      }
-    }
-    
-    // Combine video and audio streams
-    const combinedStream = new MediaStream();
-    canvasStream.getVideoTracks().forEach(track => combinedStream.addTrack(track));
-    if (dest.stream.getAudioTracks().length > 0) {
-      dest.stream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
-    }
-    
-    const mediaRecorder = new MediaRecorder(combinedStream, {
-      mimeType: 'video/webm;codecs=vp9,opus',
-      videoBitsPerSecond: 8000000 // 8 Mbps for high quality
+    const response = await fetch('/editor/api/video/render/headless', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId })
     });
     
-    const chunks = [];
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) {
-        chunks.push(e.data);
-      }
-    };
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Render request failed');
+    }
     
-    mediaRecorder.onstop = () => {
-      // Stop all audio elements
-      audioClips.forEach(clip => {
-        if (clip._audioEl) {
-          clip._audioEl.pause();
-          clip._audioEl.currentTime = 0;
-        }
-      });
-      
-      // Close audio context
-      if (audioCtx && audioCtx.state !== 'closed') {
-        audioCtx.close();
-      }
-      
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      
-      // Create download link
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `manga_video_${Date.now()}.webm`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      hideLoadingModal();
-      alert('Video rendering complete! File downloaded.');
-      isExporting = false;
-    };
+    const data = await response.json();
+    const jobId = data.job_id;
     
-    mediaRecorder.onerror = (e) => {
-      console.error('MediaRecorder error:', e);
-      hideLoadingModal();
-      alert('Recording error: ' + e.error);
-      isExporting = false;
-      
-      // Cleanup audio
-      audioClips.forEach(clip => {
-        if (clip._audioEl) clip._audioEl.pause();
-      });
-      if (audioCtx && audioCtx.state !== 'closed') audioCtx.close();
-    };
+    console.log('[Render] Render job started:', jobId);
     
-    // Start recording and audio playback
-    mediaRecorder.start();
-    
-    // Play audio clips at their scheduled times
-    const startTime = audioCtx.currentTime;
-    audioClips.forEach(clip => {
-      if (clip._audioEl) {
-        const clipStart = clip.startTime || 0;
-        const scheduleTime = startTime + clipStart;
-        
-        // Schedule playback
-        setTimeout(() => {
-          if (clip._audioEl && !clip._audioEl.paused) {
-            clip._audioEl.currentTime = 0;
-          }
-          clip._audioEl.play().catch(err => console.warn('Audio play error:', err));
-        }, clipStart * 1000);
-      }
-    });
-    
-    updateLoadingProgress(5, 100, 'Recording started with audio...');
-    
-    // Save original canvas dimensions
-    const origWidth = canvas.width;
-    const origHeight = canvas.height;
-    
-    // Temporarily set canvas to render resolution
-    canvas.width = renderWidth;
-    canvas.height = renderHeight;
-    
-    // Render frames
-    const frameInterval = 1000 / fps; // ms per frame
-    let currentFrame = 0;
-    
-    const renderNextFrame = () => {
-      if (currentFrame >= totalFrames) {
-        // Restore original canvas size
-        canvas.width = origWidth;
-        canvas.height = origHeight;
-        drawFrame(playhead); // Redraw at original size
-        
-        // Stop recording
-        mediaRecorder.stop();
-        return;
-      }
-      
-      const timeSec = currentFrame / fps;
-      
-      // Clear offscreen canvas
-      offscreenCtx.fillStyle = '#000';
-      offscreenCtx.fillRect(0, 0, renderWidth, renderHeight);
-      
-      // Render all layers at this time
-      const all = flattenLayersToTimeline();
-      const bg = all.find(c => c.type === 'image' && c._isBackground);
-      if (bg) {
-        renderClipToOffscreen(bg, timeSec, offscreenCtx, offscreenCanvas);
-      }
-      
-      const imgs = all.filter(c => c.type === 'image' && !c._isBackground)
-        .sort((a, b) => (a._layerIndex || 0) - (b._layerIndex || 0));
-      
-      for (const clip of imgs) {
-        renderClipToOffscreen(clip, timeSec, offscreenCtx, offscreenCanvas);
-      }
-      
-      // Update progress
-      const progress = Math.round((currentFrame / totalFrames) * 100);
-      updateLoadingProgress(progress, 100, `Rendering frame ${currentFrame + 1}/${totalFrames} (${Math.round(timeSec * 10) / 10}s)`);
-      
-      currentFrame++;
-      
-      // Schedule next frame
-      setTimeout(renderNextFrame, frameInterval);
-    };
-    
-    // Start rendering frames
-    renderNextFrame();
+    // Set the job ID for the progress bar - this will trigger the SSE connection
+    window.__renderJobId = jobId;
     
   } catch (err) {
-    console.error('Canvas render error', err);
-    hideLoadingModal();
-    alert(`Canvas rendering failed: ${err.message}`);
-    isExporting = false;
-  }
-}
-
-// Helper function to render a clip to an offscreen canvas
-function renderClipToOffscreen(clip, t, targetCtx, targetCanvas) {
-  const st = clip.startTime || 0;
-  const dur = (clip.duration != null) ? Number(clip.duration) : (clip.type === 'image' ? 2 : 0);
-  if (t < st || t > st + dur + 1e-4) return;
-  
-  const img = clip._img;
-  if (!img || !img.complete || !img.naturalWidth) return;
-  
-  // Use the same transform logic as the main canvas
-  if (!clip.transform) {
-    const isPanelImage = clip.src && !clip._isBackground && (
-      clip.src.includes('/panels/') || 
-      clip.src.includes('/manga_projects/') ||
-      clip.src.includes('/bordered_') || 
-      clip.src.includes('/cropped_')
-    );
+    console.error('[Headless] Render failed:', err);
+    alert(`Headless render failed: ${err.message}`);
     
-    if (isPanelImage) {
-      const panelFit = computePanelFit(img.naturalWidth, img.naturalHeight, targetCanvas.width, targetCanvas.height);
-      clip.transform = {
-        x: panelFit.dx + panelFit.dw / 2,
-        y: panelFit.dy + panelFit.dh / 2,
-        w: panelFit.dw,
-        h: panelFit.dh,
-        rotation: 0
-      };
-    } else {
-      clip.transform = {
-        x: targetCanvas.width / 2,
-        y: targetCanvas.height / 2,
-        w: targetCanvas.width,
-        h: targetCanvas.height,
-        rotation: 0
-      };
+    // Re-enable render button on error
+    if (renderBtn) {
+      renderBtn.disabled = false;
+      renderBtn.style.opacity = '1';
+      renderBtn.style.cursor = 'pointer';
+      renderBtn.textContent = '🎬 Render';
     }
   }
-  
-  clip.crop = clip.crop || { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-  const endCx = clip.transform.x, endCy = clip.transform.y;
-  const endW = clip.transform.w, endH = clip.transform.h;
-  
-  const eff = (clip.effect || '').toLowerCase();
-  const animMax = 5.0;
-  const animDur = Math.min(animMax, dur);
-  const effectiveAnimDur = animDur / (EFFECT_ANIMATION_SPEED || 1.0);
-  const effectiveProgress = (t - st) / (effectiveAnimDur > 0 ? effectiveAnimDur : 1);
-  const rawProgress = Math.max(0, Math.min(1, effectiveProgress));
-  
-  const configSmoothEasing = (t) => {
-    if (EFFECT_SMOOTHING <= 0) return t;
-    else if (EFFECT_SMOOTHING >= 2.0) return t * t * (3.0 - 2.0 * t);
-    else if (EFFECT_SMOOTHING >= 1.0) {
-      if (t < 0.5) return 2 * t * t;
-      return 1 - Math.pow(-2 * t + 2, 2) / 2;
-    } else {
-      const smooth_t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      return t + EFFECT_SMOOTHING * (smooth_t - t);
-    }
-  };
-  const rel = configSmoothEasing(rawProgress);
-  
-  let curCx = endCx, curCy = endCy, curW = endW, curH = endH;
-  if (eff && animDur > 0) {
-    if (eff === 'slide_lr') {
-      const startCx = -endW / 2;
-      curCx = startCx + (endCx - startCx) * rel;
-    } else if (eff === 'slide_rl') {
-      const startCx = targetCanvas.width + endW / 2;
-      curCx = startCx + (endCx - startCx) * rel;
-    } else if (eff === 'slide_tb') {
-      const startCy = -endH / 2;
-      curCy = startCy + (endCy - startCy) * rel;
-    } else if (eff === 'slide_bt') {
-      const startCy = targetCanvas.height + endH / 2;
-      curCy = startCy + (endCy - startCy) * rel;
-    } else if (eff === 'zoom_in' || eff === 'zoom_out') {
-      const zoomAmount = 0.25;
-      const s0 = (eff === 'zoom_in') ? (1.0 - zoomAmount) : 1.0;
-      const s1 = (eff === 'zoom_in') ? 1.0 : (1.0 - zoomAmount);
-      const s = s0 + (s1 - s0) * rel;
-      curW = Math.max(10, endW * s);
-      curH = Math.max(10, endH * s);
-      curCx = endCx;
-      curCy = endCy;
-    }
-  }
-  
-  const dx = curCx - curW / 2;
-  const dy = curCy - curH / 2;
-  const dw = Math.max(1, curW);
-  const dh = Math.max(1, curH);
-  const sx = Math.max(0, Math.min(clip.crop.x, img.naturalWidth - 1));
-  const sy = Math.max(0, Math.min(clip.crop.y, img.naturalHeight - 1));
-  const sw = Math.max(1, Math.min(clip.crop.w, img.naturalWidth - sx));
-  const sh = Math.max(1, Math.min(clip.crop.h, img.naturalHeight - sy));
-  
-  try {
-    targetCtx.save();
-    targetCtx.imageSmoothingEnabled = true;
-    targetCtx.imageSmoothingQuality = 'high';
-    
-    if (clip.transform.rotation) {
-      targetCtx.translate(curCx, curCy);
-      targetCtx.rotate((clip.transform.rotation || 0) * Math.PI / 180);
-      targetCtx.translate(-curCx, -curCy);
-    }
-    targetCtx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-    targetCtx.restore();
-  } catch (e) {
-    // Ignore draw errors
-  }
-}
-
-async function onPreviewTimeline(){
-  // This function can be used for a quick server-side preview if needed.
-  // For now, client-side preview is the default.
-  alert('Client-side preview is active. Use the canvas player controls.');
-}
-
-async function generatePanelTimeline() {
-    showLoadingModal('Generating timeline from panels...');
-    updateLoadingProgress(0, 100, 'Loading project data...');
-    
-    try {
-        // Ensure we have the latest project data
-        await refreshProjectData();
-        const project = window.projectData;
-
-        if (!project || !project.pages || project.pages.length === 0) {
-            throw new Error('No panels found in the project to generate a timeline.');
-        }
-
-        // Create a video layer and an audio layer
-        const videoLayer = { id: 'layer-video', name: 'Video', clips: [] };
-        const audioLayer = { id: 'layer-audio', name: 'Audio', clips: [] };
-        layers = [videoLayer, audioLayer];
-        
-        let currentTime = 0;
-        let totalPanels = 0;
-        let processedPanels = 0;
-        
-        // Count total panels
-        for (const page of project.pages) {
-            totalPanels += (page.panels || []).length;
-        }
-
-        updateLoadingProgress(10, 100, `Processing ${totalPanels} panels...`);
-
-        for (const page of project.pages) {
-            for (const panel of (page.panels || [])) {
-                processedPanels++;
-                updateLoadingProgress(10 + (processedPanels / totalPanels) * 60, 100, `Processing panel ${processedPanels}/${totalPanels}...`);
-                
-                // Determine audio source (check multiple possible fields)
-                const audioSrc = panel.audio_url || panel.audio_path || panel.audio_b64 || null;
-                
-                // Try to extract real audio duration if audio exists
-                let realDuration = panel.duration || 3.0; // Default fallback
-                
-                if (audioSrc) {
-                    try {
-                        // Create a temporary audio element to get the real duration
-                        const tempAudio = new Audio();
-                        tempAudio.src = normalizeSrc(audioSrc);
-                        
-                        // Wait for metadata to load
-                        await new Promise((resolve, reject) => {
-                            const timeout = setTimeout(() => {
-                                DBG(`Timeout loading audio metadata for panel ${page.page_number}-${panel.index}`);
-                                resolve(null);
-                            }, 3000);
-                            
-                            tempAudio.addEventListener('loadedmetadata', () => {
-                                clearTimeout(timeout);
-                                if (isFinite(tempAudio.duration) && tempAudio.duration > 0) {
-                                    realDuration = tempAudio.duration;
-                                    DBG(`Got real duration ${realDuration}s for panel ${page.page_number}-${panel.index}`);
-                                }
-                                resolve(tempAudio.duration);
-                            }, { once: true });
-                            
-                            tempAudio.addEventListener('error', (e) => {
-                                clearTimeout(timeout);
-                                DBG(`Error loading audio for panel ${page.page_number}-${panel.index}:`, e);
-                                reject(e);
-                            }, { once: true });
-                            
-                            try {
-                                tempAudio.load();
-                            } catch (e) {
-                                clearTimeout(timeout);
-                                reject(e);
-                            }
-                        }).catch(() => {
-                            DBG(`Failed to get duration for panel ${page.page_number}-${panel.index}, using default`);
-                        });
-                    } catch (e) {
-                        DBG(`Exception getting audio duration for panel ${page.page_number}-${panel.index}:`, e);
-                    }
-                }
-                
-                // Add video clip
-                const panelImageSrc = panel.image_path || panel.image_url || panel.image;
-                DBG(`[generateTimeline] Panel ${page.page_number}-${panel.index}: src="${panelImageSrc}"`);
-                
-                const videoClip = {
-                    type: 'image',
-                    src: panelImageSrc,
-                    id: `panel-page${page.page_number}-${panel.index}`,
-                    duration: realDuration,
-                    startTime: currentTime,
-                    effect: panel.effect || 'slide_lr',
-                    transition: panel.transition || 'slide_book'
-                };
-                videoLayer.clips.push(videoClip);
-
-                // Add audio clip if it exists
-                if (audioSrc) {
-                    const audioClip = {
-                        type: 'audio',
-                        src: audioSrc,
-                        id: `audio-page${page.page_number}-${panel.index}`,
-                        duration: realDuration,
-                        startTime: currentTime,
-                        meta: { text: panel.text || '' }
-                    };
-                    audioLayer.clips.push(audioClip);
-                }
-                
-                currentTime += realDuration;
-            }
-        }
-        
-        updateLoadingProgress(70, 100, 'Setting up background layer...');
-        
-        // Ensure background layer exists and spans the full duration
-        ensureBackgroundLayer(false);
-        const bgLayer = layers.find(l => l.id === BACKGROUND_LAYER_ID);
-        if (bgLayer) {
-            if (bgLayer.clips.length === 0) {
-                bgLayer.clips.push({ type: 'image', src: DEFAULT_BG_SRC, duration: currentTime, startTime: 0, _isBackground: true });
-            } else {
-                bgLayer.clips[0].duration = currentTime;
-            }
-        } else {
-             const newBgLayer = { id: BACKGROUND_LAYER_ID, name: 'Background', clips: [{ type: 'image', src: DEFAULT_BG_SRC, duration: currentTime, startTime: 0, _isBackground: true }] };
-             layers.unshift(newBgLayer);
-        }
-
-        updateLoadingProgress(80, 100, 'Preloading assets...');
-        
-        // Preload all assets before rendering
-        await preloadImageAssets();
-        await preloadAudioAssets();
-
-        updateLoadingProgress(95, 100, 'Rendering timeline...');
-
-        activeLayerId = 'layer-video';
-        timeline = flattenLayersToTimeline();
-        renderTimeline();
-        renderLayerControls();
-        scheduleAutosave();
-        
-        updateLoadingProgress(100, 100, 'Complete!');
-        hideLoadingModal();
-        alert(`Timeline generated successfully with ${totalPanels} panels!`);
-
-    } catch (err) {
-        hideLoadingModal();
-        alert(`Failed to generate timeline: ${err.message}`);
-        console.error(err);
-    }
-}
-
-
-function computeCoverFit(srcW, srcH, dstW, dstH) {
-    const rSrc = srcW / srcH;
-    const rDst = dstW / dstH;
-    let w, h;
-    if (rSrc > rDst) {
-        h = dstH;
-        w = h * rSrc;
-    } else {
-        w = dstW;
-        h = w / rSrc;
-    }
-    const dx = (dstW - w) / 2;
-    const dy = (dstH - h) / 2;
-    return { dx, dy, dw: w, dh: h };
-}
-
-function computePanelFit(srcW, srcH, dstW, dstH) {
-  // For panels: render at configurable size and center in canvas
-  const scaleFactor = PANEL_BASE_SIZE;
-  const scaledDstW = dstW * scaleFactor;
-  const scaledDstH = dstH * scaleFactor;
-  
-  DBG(`[panel-fit] Source: ${srcW}x${srcH}, Canvas: ${dstW}x${dstH}, Scale: ${scaleFactor}`);
-  DBG(`[panel-fit] Scaled target: ${scaledDstW}x${scaledDstH}`);
-  
-  const srcAR = srcW / srcH;
-  const scaledAR = scaledDstW / scaledDstH;
-  
-  DBG(`[panel-fit] Source AR: ${srcAR}, Scaled AR: ${scaledAR}`);
-  
-  let sw, sh, sx, sy, dw, dh, dx, dy;
-  
-  if (srcAR > scaledAR) {
-    // Source is wider: fit to width
-    dw = scaledDstW;
-    dh = scaledDstW / srcAR;
-    sw = srcW;
-    sh = srcH;
-    sx = 0;
-    sy = 0;
-    DBG(`[panel-fit] Fit to width: dw=${dw}, dh=${dh}`);
-  } else {
-    // Source is taller: fit to height
-    dh = scaledDstH;
-    dw = scaledDstH * srcAR;
-    sw = srcW;
-    sh = srcH;
-    sx = 0;
-    sy = 0;
-    DBG(`[panel-fit] Fit to height: dw=${dw}, dh=${dh}`);
-  }
-  
-  // Center the scaled image in the canvas
-  dx = (dstW - dw) / 2;
-  dy = (dstH - dh) / 2;
-  
-  DBG(`[panel-fit] Centering: dx=${dx}, dy=${dy}`);
-  DBG(`[panel-fit] Final result: src(${sx},${sy},${sw},${sh}) -> dest(${dx},${dy},${dw},${dh})`);
-  
-  return { sx, sy, sw, sh, dx, dy, dw, dh };
-}
-
-async function syncTimelineToActualAudio() {
-    showLoadingModal('Syncing timeline to audio durations...');
-    try {
-        const audioLayer = layers.find(l => l.name === 'Audio');
-        const videoLayer = layers.find(l => l.name === 'Video');
-
-        if (!audioLayer || !videoLayer) {
-            throw new Error('Audio and Video layers must exist to sync.');
-        }
-
-        let currentTime = 0;
-        for (let i = 0; i < audioLayer.clips.length; i++) {
-            const audioClip = audioLayer.clips[i];
-            const videoClip = videoLayer.clips[i]; // Assumes a 1-to-1 mapping
-
-            const duration = await extractAudioDuration(audioClip);
-            if (duration > 0) {
-                audioClip.duration = duration;
-                if (videoClip) {
-                    videoClip.duration = duration;
-                }
-            }
-            
-            audioClip.startTime = currentTime;
-            if(videoClip) {
-                videoClip.startTime = currentTime;
-            }
-
-            currentTime += audioClip.duration;
-        }
-
-        // Update background duration
-        const bgLayer = layers.find(l => l.id === BACKGROUND_LAYER_ID);
-        if (bgLayer && bgLayer.clips.length > 0) {
-            bgLayer.clips[0].duration = currentTime;
-        }
-
-        timeline = flattenLayersToTimeline();
-        renderTimeline();
-        scheduleAutosave();
-        hideLoadingModal();
-        alert('Timeline synced to actual audio durations.');
-
-    } catch (err) {
-        hideLoadingModal();
-        alert(`Failed to sync timeline: ${err.message}`);
-        console.error(err);
-    }
-}
-
-function ensureAudioContext() {
-    return new Promise(resolve => {
-        if (audioCtx) {
-            resolve(audioCtx);
-            return;
-        }
-        try {
-            const Ctx = window.AudioContext || window.webkitAudioContext;
-            if (Ctx) {
-                audioCtx = new Ctx();
-                resolve(audioCtx);
-            } else {
-                resolve(null);
-            }
-        } catch (e) {
-            resolve(null);
-        }
-    });
 }

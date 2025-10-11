@@ -49,11 +49,11 @@ os.makedirs(MANGA_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "cv_model"), exist_ok=True)
 
 # Global Effect Configuration Variables
-EFFECT_ANIMATION_SPEED = 0.5  # Speed multiplier (1.0 = normal, 2.0 = 2x faster, 0.5 = half speed)
+EFFECT_ANIMATION_SPEED = 0.2  # Speed multiplier (default 0.2 = slower, more cinematic)
 EFFECT_SCREEN_MARGIN = 0.3  # Margin as fraction of screen (0.1 = 10% margin on all sides)
 EFFECT_ZOOM_AMOUNT = 0.25  # Zoom range (0.25 = 25% zoom in/out)
 EFFECT_MAX_DURATION = 5.0  # Maximum animation duration in seconds
-PANEL_BASE_SIZE = 0.9  # Base size multiplier for panels (0.5 = 50%, 0.8 = 80%, 1.0 = 100% of screen)
+PANEL_BASE_SIZE = 1.2  # Base size multiplier for panels (default 120% of screen)
 EFFECT_SMOOTHING = 2.0  # Smoothing intensity (0.0 = linear, 1.0 = smooth, 2.0 = very smooth)
 
 # Global Transition Configuration Variables

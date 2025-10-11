@@ -6,14 +6,12 @@
   <title>Video Editor - Manga AI</title>
   <link rel="icon" href="/static/blur_glitch_background.png" />
   <link rel="stylesheet" href="/static/video_editor.css" />
-  <script src="/static/vendor/ffmpeg/ffmpeg.min.js"></script>
 </head>
 <body>
   <div style="padding:12px 20px; display:flex; justify-content:space-between; align-items:center; background:linear-gradient(90deg,#071226,#08162a);">
     <div style="color:#dff3ff; font-weight:700; font-size:18px;">Video Editor - {{ project.title or 'Untitled' }}</div>
     <div style="display:flex; gap:8px;">
-      <button class="btn" id="canvasRenderBtn">🎬 Render with Canvas</button>
-      <button class="btn" id="clientRenderBtn">⚡ Render with FFmpeg</button>
+      <button class="btn" id="renderBtn" style="background: linear-gradient(135deg, #10b981, #059669); font-weight: 600;" title="Render video with audio">🎬 Render</button>
     </div>
   </div>
   <div class="editor-root">
@@ -114,53 +112,222 @@
   <!-- Load the DB-specific editor (standalone, no legacy dependency) -->
   <script src="/static/video_editor_db_core.js"></script>
   <script>
-    // Simple optional progress UI; video_editor.js will set window.__renderJobId
+    // Enhanced progress UI with time tracking
     (function(){
       const bar = document.createElement('div');
       bar.id = 'renderProgressBar';
-      bar.style.position='fixed'; bar.style.left='20px'; bar.style.bottom='20px'; bar.style.minWidth='320px';
-      bar.style.padding='10px 12px'; bar.style.borderRadius='8px'; bar.style.background='rgba(7,18,38,0.9)'; bar.style.color='#dff3ff'; bar.style.fontSize='12px';
-      bar.style.boxShadow='0 6px 22px rgba(0,0,0,0.35)'; bar.style.backdropFilter='blur(6px)'; bar.style.display='none';
-      bar.innerHTML = '<div style="font-weight:700;margin-bottom:6px">Render Progress</div><div id="rpStage">—</div><div id="rpDetail" style="opacity:0.8"></div>';
+      bar.style.cssText = `
+        position: fixed; left: 20px; bottom: 20px; min-width: 380px; max-width: 450px;
+        padding: 16px 18px; border-radius: 12px; background: rgba(7,18,38,0.95); color: #dff3ff; 
+        font-size: 13px; box-shadow: 0 8px 30px rgba(0,0,0,0.4); backdrop-filter: blur(10px); 
+        display: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+      `;
+      bar.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div style="font-weight: 700; font-size: 14px; color: #60a5fa;">🎬 Render Progress</div>
+          <button id="rpClose" style="display: none; background: rgba(255,255,255,0.1); border: none; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;" onclick="this.parentElement.parentElement.style.display='none'">Close</button>
+        </div>
+        <div id="rpStage" style="font-weight: 600; margin-bottom: 4px;">—</div>
+        <div id="rpDetail" style="opacity: 0.85; margin-bottom: 8px; font-size: 12px;"></div>
+        <div id="rpTime" style="opacity: 0.75; font-size: 11px; margin-bottom: 8px;"></div>
+        <div style="background: rgba(255,255,255,0.1); border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 6px;">
+          <div id="rpProgress" style="background: linear-gradient(90deg, #3b82f6, #60a5fa); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+        </div>
+        <div id="rpPercent" style="text-align: right; font-size: 11px; opacity: 0.7;">0%</div>
+      `;
       document.body.appendChild(bar);
+      
+      function formatTime(seconds) {
+        if (seconds == null || seconds < 0) return '—';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+      
       function connect(jobId){
-        if (!jobId) return;
+        if (!jobId) {
+          console.warn('[Progress Bar] No job ID provided');
+          return;
+        }
+        
+        console.log('[Progress Bar] Connecting to SSE stream for job:', jobId);
         bar.style.display='block';
-  const base = (window.__RENDER_API__ && window.__RENDER_API__.progressBase) || '/api/progress/stream/';
-  const es = new EventSource(base + encodeURIComponent(jobId));
+        
+        const url = '/editor/api/video/progress/stream/' + encodeURIComponent(jobId);
+        console.log('[Progress Bar] SSE URL:', url);
+        const es = new EventSource(url);
         const stEl = bar.querySelector('#rpStage');
         const dtEl = bar.querySelector('#rpDetail');
+        const tmEl = bar.querySelector('#rpTime');
+        const pgEl = bar.querySelector('#rpProgress');
+        const pcEl = bar.querySelector('#rpPercent');
         
-        // Auto-close connection after 30 seconds to prevent infinite loading
-        const autoCloseTimeout = setTimeout(() => {
-          try { es.close(); } catch(_) {}
-          bar.style.display = 'none';
-        }, 30000);
+        let downloadStarted = false;
         
-        es.addEventListener('progress', (ev)=>{
-          try{
-            const d = JSON.parse(ev.data||'{}');
-            if (stEl) stEl.textContent = (d.stage||'') + ' – ' + (d.status||'');
-            if (dtEl) dtEl.textContent = (d.url ? ('URL: ' + d.url) : '') + (d.detail? (' ' + d.detail) : '');
-            if (d.stage === 'finalize' && (d.status==='complete' || d.status==='link_error')){
-              clearTimeout(autoCloseTimeout);
-              setTimeout(()=>{ bar.style.display='none'; try{ es.close(); }catch(_){} }, 1200);
+        es.onopen = () => {
+          console.log('[Progress Bar] SSE connection opened successfully');
+        };
+        
+        es.onmessage = (ev) => {
+          try {
+            const d = JSON.parse(ev.data || '{}');
+            console.log('[Progress]', d);
+            
+            // Update stage
+            if (d.stage && stEl) {
+              const stageNames = {
+                'initializing': '🚀 Initializing',
+                'browser_ready': '🌐 Browser Ready',
+                'loading_page': '📄 Loading Editor',
+                'assets_loading': '🎨 Loading Assets',
+                'duration_detected': '⏱️ Duration Detected',
+                'setup_recording': '🎥 Setting Up Recorder',
+                'recording_ready': '▶️ Ready to Record',
+                'recording': '🔴 Recording',
+                'processing': '⚙️ Processing',
+                'downloading': '💾 Saving',
+                'fixing_metadata': '🔧 Fixing Metadata',
+                'complete': '✅ Complete',
+                'error': '❌ Error'
+              };
+              stEl.textContent = stageNames[d.stage] || d.stage;
             }
-          }catch(e){}
-        });
-        
-        es.addEventListener('open', () => {
-          console.log('Progress stream connected');
-        });
+            
+            // Update detail
+            if (dtEl) dtEl.textContent = d.detail || '';
+            
+            // Update time tracking
+            if (tmEl && (d.elapsed != null || d.remaining != null)) {
+              const elapsed = d.elapsed_formatted || formatTime(d.elapsed);
+              const remaining = d.remaining_formatted || formatTime(d.remaining);
+              tmEl.innerHTML = `⏱️ Elapsed: <strong>${elapsed}</strong> | Remaining: <strong>${remaining}</strong>`;
+            }
+            
+            // Update progress bar
+            if (d.progress != null && pgEl && pcEl) {
+              const pct = Math.min(100, Math.max(0, d.progress));
+              pgEl.style.width = pct + '%';
+              pcEl.textContent = pct + '%';
+            }
+            
+            // Handle completion - auto download and cleanup
+            // Note: We may receive multiple 'complete' events - only process the one with download_url
+            if (d.stage === 'complete' && d.download_url && !downloadStarted) {
+              downloadStarted = true;
+              
+              console.log('[Progress] Complete event with download_url received:', d);
+              
+              // Re-enable render button
+              const renderBtn = document.getElementById('renderBtn');
+              if (renderBtn) {
+                renderBtn.disabled = false;
+                renderBtn.style.opacity = '1';
+                renderBtn.style.cursor = 'pointer';
+                renderBtn.textContent = '🎬 Render';
+              }
+              
+              if (d.download_url) {
+                // Show downloading status
+                if (dtEl) dtEl.textContent = '⬇️ Starting download...';
+                
+                // Auto-download the file
+                console.log('[Render] Auto-downloading from:', d.download_url);
+                console.log('[Render] Full download URL:', window.location.origin + d.download_url);
+                
+                // Create download link
+                const a = document.createElement('a');
+                a.href = d.download_url;
+                a.download = `render-${jobId}.webm`;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                
+                // Monitor download completion
+                let downloadComplete = false;
+                
+                // Trigger download
+                console.log('[Render] Triggering download click...');
+                a.click();
+                console.log('[Render] Download click triggered');
+                
+                // Update UI after a short delay (download started)
+                setTimeout(() => {
+                  if (dtEl) dtEl.textContent = '✅ Download started! Check your downloads folder.';
+                  if (pgEl) pgEl.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+                  
+                  // Show close button
+                  const closeBtn = bar.querySelector('#rpClose');
+                  if (closeBtn) {
+                    closeBtn.style.display = 'block';
+                    closeBtn.onclick = () => {
+                      bar.style.transition = 'opacity 0.3s';
+                      bar.style.opacity = '0';
+                      setTimeout(() => {
+                        bar.style.display = 'none';
+                        bar.style.opacity = '1';
+                        try { es.close(); } catch(_) {}
+                      }, 300);
+                    };
+                  }
+                  
+                  document.body.removeChild(a);
+                }, 1000);
+              } else {
+                console.warn('[Render] No download_url in complete event!');
+                // No download URL, just show close button
+                const closeBtn = bar.querySelector('#rpClose');
+                if (closeBtn) closeBtn.style.display = 'block';
+              }
+            } else if (d.stage === 'complete' && !d.download_url) {
+              // Received complete without download_url (from headless_recorder)
+              // Just update UI, wait for the real complete event with download_url
+              console.log('[Progress] Intermediate complete event (waiting for download_url)...');
+              if (dtEl) dtEl.textContent = d.detail || 'Processing complete, preparing download...';
+              if (pgEl && pcEl) {
+                pgEl.style.width = '100%';
+                pcEl.textContent = '100%';
+              }
+            }
+            
+            // Handle errors
+            if (d.stage === 'error') {
+              if (pgEl) pgEl.style.background = 'linear-gradient(90deg, #ef4444, #dc2626)';
+              
+              // Re-enable render button on error
+              const renderBtn = document.getElementById('renderBtn');
+              if (renderBtn) {
+                renderBtn.disabled = false;
+                renderBtn.style.opacity = '1';
+                renderBtn.style.cursor = 'pointer';
+                renderBtn.textContent = '🎬 Render';
+              }
+              
+              // Show close button on error
+              const closeBtn = bar.querySelector('#rpClose');
+              if (closeBtn) closeBtn.style.display = 'block';
+            }
+          } catch(e) {
+            console.error('[Progress] Parse error:', e);
+          }
+        };
         
         es.onerror = (e) => {
-          console.warn('Progress stream error:', e);
-          clearTimeout(autoCloseTimeout);
-          try { es.close(); } catch(_e) {}
-          setTimeout(() => { bar.style.display = 'none'; }, 1000);
+          console.warn('[Progress] Stream error:', e);
+          try { es.close(); } catch(_) {}
+          setTimeout(() => { bar.style.display = 'none'; }, 2000);
         };
       }
-      Object.defineProperty(window, '__renderJobId', { set: (v)=>{ try{ connect(v); }catch(_){}; } });
+      
+      Object.defineProperty(window, '__renderJobId', { 
+        set: (v) => {
+          console.log('[Progress Bar] Job ID set to:', v);
+          try { 
+            connect(v); 
+          } catch(e) {
+            console.error('[Progress Bar] Error connecting:', e);
+          } 
+        } 
+      });
     })();
   </script>
   
