@@ -87,6 +87,17 @@ class EditorDB:
             );
             """
         )
+        # Manga series table - groups chapters together
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manga_series (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
         # New consolidated project details
         c.execute(
             """
@@ -96,7 +107,11 @@ class EditorDB:
                 created_at TEXT NOT NULL,
                 pages_json TEXT NOT NULL,
                 character_markdown TEXT NOT NULL DEFAULT '',
-                metadata_json TEXT NOT NULL DEFAULT '{}'
+                story_summary TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                manga_series_id TEXT,
+                chapter_number INTEGER,
+                FOREIGN KEY (manga_series_id) REFERENCES manga_series(id) ON DELETE SET NULL
             );
             """
         )
@@ -180,6 +195,21 @@ class EditorDB:
             if "transition" not in cols:
                 c.execute("ALTER TABLE panels ADD COLUMN transition TEXT NOT NULL DEFAULT 'slide_book'")
             # If legacy audio_b64 existed before, a separate migration will have copied to audio_url
+        except Exception:
+            pass
+        # Add story_summary column to project_details if missing
+        try:
+            cols = {row[1] for row in c.execute("PRAGMA table_info(project_details)").fetchall()}
+            if "story_summary" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN story_summary TEXT NOT NULL DEFAULT ''")
+            if "story_summary_current" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN story_summary_current TEXT NOT NULL DEFAULT ''")
+            if "story_summary_previous" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN story_summary_previous TEXT NOT NULL DEFAULT ''")
+            if "manga_series_id" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN manga_series_id TEXT")
+            if "chapter_number" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN chapter_number INTEGER")
         except Exception:
             pass
         cls._conn.commit()
@@ -422,6 +452,367 @@ class EditorDB:
         return row[0] if row else ""
 
     @classmethod
+    def set_story_summary(cls, project_id: str, summary: str) -> None:
+        conn = cls.conn()
+        conn.execute("UPDATE project_details SET story_summary=? WHERE id=?", (summary, project_id))
+        conn.commit()
+
+    @classmethod
+    def get_story_summary(cls, project_id: str) -> str:
+        row = cls.conn().execute(
+            "SELECT story_summary FROM project_details WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        return row[0] if row else ""
+
+    @classmethod
+    def set_story_summary_current(cls, project_id: str, summary: str) -> None:
+        """Set the current chapter's summary."""
+        conn = cls.conn()
+        conn.execute("UPDATE project_details SET story_summary_current=? WHERE id=?", (summary, project_id))
+        conn.commit()
+
+    @classmethod
+    def get_story_summary_current(cls, project_id: str) -> str:
+        """Get the current chapter's summary."""
+        row = cls.conn().execute(
+            "SELECT story_summary_current FROM project_details WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        return row[0] if row else ""
+
+    @classmethod
+    def set_story_summary_previous(cls, project_id: str, summary: str) -> None:
+        """Set the accumulated summary from previous chapters."""
+        conn = cls.conn()
+        conn.execute("UPDATE project_details SET story_summary_previous=? WHERE id=?", (summary, project_id))
+        conn.commit()
+
+    @classmethod
+    def get_story_summary_previous(cls, project_id: str) -> str:
+        """Get the accumulated summary from previous chapters."""
+        row = cls.conn().execute(
+            "SELECT story_summary_previous FROM project_details WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        return row[0] if row else ""
+
+    @classmethod
+    def fetch_and_save_previous_summaries(cls, project_id: str) -> Dict[str, Any]:
+        """Fetch all previous chapters' current summaries and save as previous summary for this chapter."""
+        conn = cls.conn()
+        
+        # Check if this project belongs to a series
+        row = conn.execute(
+            "SELECT manga_series_id, chapter_number FROM project_details WHERE id=?",
+            (project_id,)
+        ).fetchone()
+        
+        if not row or not row[0]:
+            return {"ok": False, "message": "Project is not part of a manga series"}
+        
+        series_id = row[0]
+        current_chapter = row[1]
+        
+        if not current_chapter or current_chapter <= 1:
+            return {"ok": False, "message": "This is the first chapter, no previous chapters to fetch"}
+        
+        # Get all previous chapters' current summaries
+        chapters = cls.get_chapters_for_series(series_id)
+        previous_summaries = []
+        
+        for ch in chapters:
+            if ch["chapter_number"] < current_chapter:
+                ch_id = ch["id"]
+                current_summary = cls.get_story_summary_current(ch_id)
+                if current_summary:
+                    previous_summaries.append(f"=== Chapter {ch['chapter_number']}: {ch['title']} ===\n{current_summary}")
+        
+        if not previous_summaries:
+            return {"ok": False, "message": "No previous chapter summaries found"}
+        
+        # Combine all previous summaries
+        combined = "\n\n".join(previous_summaries)
+        
+        # Save to this chapter's previous summary field
+        cls.set_story_summary_previous(project_id, combined)
+        
+        return {
+            "ok": True,
+            "message": f"Fetched summaries from {len(previous_summaries)} previous chapter(s)",
+            "chapters_count": len(previous_summaries),
+            "summary": combined
+        }
+
+    # -------- Manga Series Management --------
+    @classmethod
+    def create_manga_series(cls, name: str) -> Dict[str, Any]:
+        """Create a new manga series."""
+        series_id = str(int(datetime.utcnow().timestamp() * 1000))
+        now = datetime.utcnow().isoformat()
+        conn = cls.conn()
+        conn.execute(
+            "INSERT INTO manga_series(id, name, created_at, updated_at) VALUES(?,?,?,?)",
+            (series_id, name, now, now),
+        )
+        conn.commit()
+        return {"id": series_id, "name": name, "created_at": now, "updated_at": now}
+
+    @classmethod
+    def get_manga_series(cls, series_id: str) -> Optional[Dict[str, Any]]:
+        """Get manga series details with all its chapters."""
+        row = cls.conn().execute(
+            "SELECT id, name, created_at, updated_at FROM manga_series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        if not row:
+            return None
+        
+        # Get all chapters for this series
+        chapters = cls.conn().execute(
+            "SELECT id, title, chapter_number, created_at FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
+            (series_id,),
+        ).fetchall()
+        
+        chapters_list = []
+        for ch in chapters:
+            chapters_list.append({
+                "id": ch[0],
+                "title": ch[1],
+                "chapter_number": ch[2],
+                "created_at": ch[3],
+            })
+        
+        return {
+            "id": row[0],
+            "name": row[1],
+            "created_at": row[2],
+            "updated_at": row[3],
+            "chapters": chapters_list,
+        }
+
+    @classmethod
+    def list_manga_series(cls) -> List[Dict[str, Any]]:
+        """List all manga series with their chapter counts."""
+        rows = cls.conn().execute(
+            "SELECT id, name, created_at, updated_at FROM manga_series ORDER BY updated_at DESC"
+        ).fetchall()
+        
+        result = []
+        for r in rows:
+            series_id = r[0]
+            # Count chapters
+            count_row = cls.conn().execute(
+                "SELECT COUNT(*) FROM project_details WHERE manga_series_id=?",
+                (series_id,),
+            ).fetchone()
+            chapter_count = count_row[0] if count_row else 0
+            
+            result.append({
+                "id": series_id,
+                "name": r[1],
+                "created_at": r[2],
+                "updated_at": r[3],
+                "chapter_count": chapter_count,
+            })
+        
+        return result
+
+    @classmethod
+    def get_chapters_for_series(cls, series_id: str) -> List[Dict[str, Any]]:
+        """Get all chapters for a manga series, ordered by chapter number."""
+        rows = cls.conn().execute(
+            "SELECT id, title, chapter_number, created_at, pages_json FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
+            (series_id,),
+        ).fetchall()
+        
+        chapters = []
+        for r in rows:
+            try:
+                pages = json.loads(r[4] or "[]")
+                page_count = len(pages)
+            except Exception:
+                page_count = 0
+            
+            chapters.append({
+                "id": r[0],
+                "title": r[1],
+                "chapter_number": r[2],
+                "created_at": r[3],
+                "page_count": page_count,
+            })
+        
+        return chapters
+
+    @classmethod
+    def add_chapter_to_series(cls, series_id: str, chapter_number: int, title: str, files: List[str]) -> Dict[str, Any]:
+        """Add a new chapter to a manga series."""
+        # Verify series exists
+        series = cls.get_manga_series(series_id)
+        if not series:
+            raise ValueError(f"Series {series_id} not found")
+        
+        # Create the chapter (project)
+        chapter_id = str(int(datetime.utcnow().timestamp() * 1000))
+        now = datetime.utcnow().isoformat()
+        conn = cls.conn()
+        
+        def _norm(p: str) -> str:
+            if not isinstance(p, str):
+                return ""
+            p = p.strip()
+            if not p:
+                return p
+            if p.startswith("http://") or p.startswith("https://"):
+                return p
+            if p.startswith("/uploads/") or p.startswith("uploads/"):
+                return p if p.startswith("/") else ("/" + p)
+            if p.startswith("/manga_projects/") or p.startswith("manga_projects/"):
+                return p if p.startswith("/") else ("/" + p)
+            base = os.path.basename(p)
+            return f"/uploads/{base}"
+        
+        pages = [{"page_number": i, "image_path": _norm(path)} for i, path in enumerate(files, start=1)]
+        
+        # Get accumulated context from previous chapters
+        previous_chapters = cls.get_chapters_for_series(series_id)
+        prev_chars = ""
+        prev_summary = ""
+        
+        if previous_chapters:
+            # Get the most recent chapter's character list and summary
+            for ch in reversed(previous_chapters):
+                if ch["chapter_number"] < chapter_number:
+                    prev_ch_id = ch["id"]
+                    prev_chars = cls.get_character_list(prev_ch_id)
+                    prev_summary = cls.get_story_summary(prev_ch_id)
+                    break
+        
+        # Backfill legacy 'projects' table
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO projects(id, title, created_at) VALUES(?,?,?)",
+                (chapter_id, title, now),
+            )
+        except Exception:
+            pass
+        
+        conn.execute(
+            "INSERT INTO project_details(id, title, created_at, pages_json, character_markdown, story_summary, metadata_json, manga_series_id, chapter_number) VALUES(?,?,?,?,?,?,?,?,?)",
+            (chapter_id, title, now, json.dumps(pages), prev_chars, prev_summary, json.dumps({}), series_id, chapter_number),
+        )
+        
+        # Update series updated_at
+        conn.execute(
+            "UPDATE manga_series SET updated_at=? WHERE id=?",
+            (now, series_id),
+        )
+        
+        conn.commit()
+        
+        return {
+            "id": chapter_id,
+            "title": title,
+            "chapter_number": chapter_number,
+            "created_at": now,
+            "manga_series_id": series_id,
+            "inherited_characters": bool(prev_chars),
+            "inherited_summary": bool(prev_summary),
+        }
+
+    @classmethod
+    def update_chapter_series_info(cls, project_id: str, series_id: Optional[str], chapter_number: Optional[int]) -> None:
+        """Update an existing project to belong to a series."""
+        conn = cls.conn()
+        now = datetime.utcnow().isoformat()
+        
+        conn.execute(
+            "UPDATE project_details SET manga_series_id=?, chapter_number=? WHERE id=?",
+            (series_id, chapter_number, project_id),
+        )
+        
+        if series_id:
+            conn.execute(
+                "UPDATE manga_series SET updated_at=? WHERE id=?",
+                (now, series_id),
+            )
+        
+        conn.commit()
+
+    @classmethod
+    def get_previous_chapters_context(cls, series_id: str, current_chapter: int) -> Tuple[str, str]:
+        """Get accumulated character list and story summary from all previous chapters."""
+        chapters = cls.get_chapters_for_series(series_id)
+        
+        all_chars = []
+        all_summaries = []
+        
+        for ch in chapters:
+            if ch["chapter_number"] < current_chapter:
+                ch_id = ch["id"]
+                chars = cls.get_character_list(ch_id)
+                summary = cls.get_story_summary(ch_id)
+                
+                if chars:
+                    all_chars.append(f"# Chapter {ch['chapter_number']}: {ch['title']}\n{chars}")
+                if summary:
+                    all_summaries.append(f"Chapter {ch['chapter_number']}: {summary}")
+        
+        combined_chars = "\n\n".join(all_chars) if all_chars else ""
+        combined_summary = "\n\n".join(all_summaries) if all_summaries else ""
+        
+        return combined_chars, combined_summary
+
+    @classmethod
+    def delete_manga_series(cls, series_id: str, delete_chapters: bool = False) -> Dict[str, Any]:
+        """Delete a manga series and optionally delete all its chapters.
+        
+        Args:
+            series_id: The ID of the series to delete
+            delete_chapters: If True, delete all chapters. If False, unlink them (make standalone)
+            
+        Returns:
+            Dict with deletion results
+        """
+        conn = cls.conn()
+        
+        # Get chapters before deletion
+        chapters = cls.get_chapters_for_series(series_id)
+        
+        if delete_chapters:
+            # Delete all chapters completely
+            for ch in chapters:
+                try:
+                    # Delete from panels table
+                    conn.execute("DELETE FROM panels WHERE project_id=?", (ch["id"],))
+                    # Delete from pages table
+                    conn.execute("DELETE FROM pages WHERE project_id=?", (ch["id"],))
+                    # Delete from project_details
+                    conn.execute("DELETE FROM project_details WHERE id=?", (ch["id"],))
+                    # Delete from projects (legacy)
+                    conn.execute("DELETE FROM projects WHERE id=?", (ch["id"],))
+                except Exception as e:
+                    print(f"Error deleting chapter {ch['id']}: {e}")
+        else:
+            # Just unlink chapters from the series (make them standalone)
+            for ch in chapters:
+                conn.execute(
+                    "UPDATE project_details SET manga_series_id=NULL, chapter_number=NULL WHERE id=?",
+                    (ch["id"],)
+                )
+        
+        # Delete the series itself
+        conn.execute("DELETE FROM manga_series WHERE id=?", (series_id,))
+        conn.commit()
+        
+        return {
+            "ok": True,
+            "deleted_series_id": series_id,
+            "chapters_deleted": delete_chapters,
+            "chapters_count": len(chapters),
+        }
+
+    @classmethod
     def set_panel_audio(cls, project_id: str, page_number: int, panel_index: int, audio_url: Optional[str]) -> None:
         now = datetime.utcnow().isoformat()
         c = cls.conn()
@@ -633,12 +1024,14 @@ async def api_get_project_summary(project_id: str):
             "panels": panels,
         })
     char_md = EditorDB.get_character_list(project_id)
+    story_summary = EditorDB.get_story_summary(project_id)
     narrs = EditorDB.get_panel_narrations(project_id)
     return {
         "project": {"id": project_id, "title": project.get("title", "Untitled")},
         "pages": pages,
         "allPanelsReady": bool(all_have_panels),
         "characterList": char_md,
+        "storySummary": story_summary,
     }
 
 
@@ -990,8 +1383,29 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
     end_page = int(payload.get("endPage") or pages[-1].get("page_number") or start_page)
     char_md = str(payload.get("characterList") or EditorDB.get_character_list(project_id) or "")
 
+    # Check if this project belongs to a manga series
+    # Get previous chapters' context if available
+    conn = EditorDB.conn()
+    row = conn.execute(
+        "SELECT manga_series_id, chapter_number FROM project_details WHERE id=?",
+        (project_id,)
+    ).fetchone()
+    
+    previous_context = ""
+    if row and row[0]:  # Has a manga_series_id
+        series_id = row[0]
+        current_chapter = row[1]
+        if current_chapter and current_chapter > 1:
+            # Get accumulated context from all previous chapters
+            prev_chars, prev_summary = EditorDB.get_previous_chapters_context(series_id, current_chapter)
+            if prev_summary:
+                previous_context = f"\n\n=== STORY SO FAR (From Previous Chapters) ===\n{prev_summary}\n\n=== CURRENT CHAPTER BEGINS ===\n"
+            if prev_chars and not char_md:
+                # Use accumulated character list from previous chapters if current one is empty
+                char_md = prev_chars
+
     # Accumulated narrative context (plain text)
-    accumulated_text = ""
+    accumulated_text = previous_context
     results: List[Dict[str, Any]] = []
 
     for pg in pages:
@@ -1092,6 +1506,39 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                 pass
             accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
             results.append({"page_number": pn, "panels": page_out})
+
+    # Auto-generate story summary after all narrations are complete
+    try:
+        narr = EditorDB.get_panel_narrations(project_id)
+        if narr:
+            # Create a compact context, sorted by page/panel
+            items = []
+            for (pg, idx), text in sorted(narr.items(), key=lambda x: (x[0][0], x[0][1])):
+                items.append(f"Page {pg} Panel {idx}: {text}")
+            corpus = "\n".join(items)
+
+            model = _gemini_client()
+            if model is not None:
+                prompt = (
+                    "Based on the following manga panel narrations, generate a cohesive story summary. "
+                    "The summary should capture the main plot points, character developments, and key events in a flowing narrative. "
+                    "Write it as a concise 'Story So Far' that someone could read to understand what has happened in THIS chapter. "
+                    "Keep it engaging and in past tense. Limit to 3-5 paragraphs.\n\n"
+                    "Panel Narrations:\n" + corpus
+                )
+                try:
+                    resp = model.generate_content(prompt)
+                    summary = resp.text or ""
+                    # Save to CURRENT summary field
+                    EditorDB.set_story_summary_current(project_id, summary)
+                    # Also update legacy field
+                    EditorDB.set_story_summary(project_id, summary)
+                except Exception:
+                    # Don't fail the whole narration if story summary generation fails
+                    pass
+    except Exception:
+        # Best effort; don't fail the narration if summary generation fails
+        pass
 
     return {"ok": True, "results": results}
 
@@ -1238,6 +1685,225 @@ async def api_update_characters_from_narrations(project_id: str):
 
     EditorDB.set_character_list(project_id, md)
     return {"ok": True, "markdown": md}
+
+
+# ---------------------------- Story Summary APIs ----------------------------
+@router.get("/api/project/{project_id}/story")
+async def api_get_story(project_id: str):
+    """Get both current chapter summary and previous chapters summary."""
+    current = EditorDB.get_story_summary_current(project_id)
+    previous = EditorDB.get_story_summary_previous(project_id)
+    # Legacy support: if no current/previous split, return from old field
+    legacy = EditorDB.get_story_summary(project_id) if not current and not previous else ""
+    
+    return {
+        "project_id": project_id,
+        "summary": legacy,  # For backward compatibility
+        "summary_current": current,
+        "summary_previous": previous
+    }
+
+
+@router.put("/api/project/{project_id}/story")
+async def api_set_story(project_id: str, payload: Dict[str, Any]):
+    """Set the current chapter's summary."""
+    summary = str(payload.get("summary") or "")
+    # Save to current summary field
+    EditorDB.set_story_summary_current(project_id, summary)
+    # Also update legacy field for backward compatibility
+    EditorDB.set_story_summary(project_id, summary)
+    return {"ok": True}
+
+
+@router.post("/api/project/{project_id}/story/generate")
+async def api_generate_story_summary(project_id: str):
+    """Generate a story summary for the CURRENT chapter from all panel narrations using Gemini AI."""
+    if genai is None or not _GEMINI_KEYS:
+        raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+
+    # Aggregate narrations
+    narr = EditorDB.get_panel_narrations(project_id)
+    if not narr:
+        raise HTTPException(status_code=400, detail="No narrations found to generate story summary")
+    
+    # Create a compact context, sorted by page/panel
+    items = []
+    for (pg, idx), text in sorted(narr.items(), key=lambda x: (x[0][0], x[0][1])):
+        items.append(f"Page {pg} Panel {idx}: {text}")
+    corpus = "\n".join(items)
+
+    model = _gemini_client()
+    if model is None:
+        raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
+
+    prompt = (
+        "Based on the following manga panel narrations, generate a cohesive story summary. "
+        "The summary should capture the main plot points, character developments, and key events in a flowing narrative. "
+        "Write it as a concise 'Story So Far' that someone could read to understand what has happened in THIS chapter. "
+        "Keep it engaging and in past tense. Limit to 3-5 paragraphs.\n\n"
+        "Panel Narrations:\n" + corpus
+    )
+    try:
+        resp = model.generate_content(prompt)
+        summary = resp.text or ""
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+
+    # Save to CURRENT summary field
+    EditorDB.set_story_summary_current(project_id, summary)
+    # Also update legacy field for backward compatibility
+    EditorDB.set_story_summary(project_id, summary)
+    return {"ok": True, "summary": summary}
+
+
+@router.post("/api/project/{project_id}/story/fetch-previous")
+async def api_fetch_previous_summaries(project_id: str):
+    """Fetch and concatenate all previous chapters' summaries into this chapter's 'Story So Far' section."""
+    result = EditorDB.fetch_and_save_previous_summaries(project_id)
+    
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to fetch previous summaries"))
+    
+    return result
+
+
+# ---------------------------- Manga Series APIs ----------------------------
+@router.post("/api/manga/series")
+async def api_create_manga_series(payload: Dict[str, Any]):
+    """Create a new manga series."""
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Manga name is required")
+    
+    series = EditorDB.create_manga_series(name)
+    return series
+
+
+@router.get("/api/manga/series")
+async def api_list_manga_series():
+    """List all manga series with chapter counts."""
+    series_list = EditorDB.list_manga_series()
+    return {"series": series_list}
+
+
+@router.get("/api/manga/series/{series_id}")
+async def api_get_manga_series(series_id: str):
+    """Get a manga series with all its chapters."""
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    return series
+
+
+@router.post("/api/manga/series/{series_id}/chapters")
+async def api_add_chapter_to_series(series_id: str, payload: Dict[str, Any]):
+    """Add a new chapter to a manga series."""
+    chapter_number = payload.get("chapter_number")
+    if chapter_number is None:
+        raise HTTPException(status_code=400, detail="chapter_number is required")
+    
+    title = str(payload.get("title") or f"Chapter {chapter_number}").strip()
+    files = payload.get("files") or []
+    
+    if not isinstance(files, list) or not files:
+        raise HTTPException(status_code=400, detail="files must be a non-empty array of image paths")
+    
+    try:
+        chapter = EditorDB.add_chapter_to_series(series_id, int(chapter_number), title, files)
+        return chapter
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create chapter: {e}")
+
+
+@router.put("/api/manga/series/migrate/{project_id}")
+async def api_migrate_project_to_series(project_id: str, payload: Dict[str, Any]):
+    """Migrate an existing project to belong to a manga series."""
+    series_id = str(payload.get("series_id") or "").strip()
+    chapter_number = payload.get("chapter_number")
+    
+    if not series_id:
+        raise HTTPException(status_code=400, detail="series_id is required")
+    if chapter_number is None:
+        raise HTTPException(status_code=400, detail="chapter_number is required")
+    
+    # Verify series exists
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    # Verify project exists
+    project = EditorDB.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    EditorDB.update_chapter_series_info(project_id, series_id, int(chapter_number))
+    
+    return {"ok": True, "project_id": project_id, "series_id": series_id, "chapter_number": chapter_number}
+
+
+@router.delete("/api/manga/series/{series_id}")
+async def api_delete_manga_series(series_id: str, delete_chapters: bool = False):
+    """Delete a manga series.
+    
+    Query params:
+        delete_chapters: If true, delete all chapters. If false (default), unlink them.
+    """
+    # Verify series exists
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    try:
+        result = EditorDB.delete_manga_series(series_id, delete_chapters)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete series: {e}")
+
+
+@router.post("/api/manga/migrate-samurai")
+async def api_migrate_samurai_projects():
+    """Migrate existing Samurai projects into a proper manga series structure."""
+    try:
+        # Create "Samurai" series
+        series = EditorDB.create_manga_series("Samurai")
+        series_id = series["id"]
+        
+        # Find "Samurai" and "Samurai Chapter 2" projects
+        conn = EditorDB.conn()
+        projects = conn.execute(
+            "SELECT id, title FROM project_details WHERE title LIKE '%Samurai%' ORDER BY created_at ASC"
+        ).fetchall()
+        
+        migrated = []
+        for idx, proj in enumerate(projects):
+            proj_id = proj[0]
+            title = proj[1]
+            
+            # Determine chapter number based on title
+            chapter_num = idx + 1
+            if "Chapter 2" in title or "chapter 2" in title:
+                chapter_num = 2
+            elif "Chapter" not in title and "chapter" not in title:
+                chapter_num = 1
+            
+            # Migrate project
+            EditorDB.update_chapter_series_info(proj_id, series_id, chapter_num)
+            migrated.append({
+                "project_id": proj_id,
+                "title": title,
+                "chapter_number": chapter_num
+            })
+        
+        return {
+            "ok": True,
+            "series_id": series_id,
+            "series_name": "Samurai",
+            "migrated_projects": migrated
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Migration failed: {e}")
 
 
 # ---------------------------- Project APIs (new DB) ----------------------------

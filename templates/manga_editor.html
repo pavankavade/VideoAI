@@ -107,6 +107,35 @@
           </div>
         </div>
 
+        <!-- Story So Far from Previous Chapters -->
+        <div class="card">
+          <div class="card-pad">
+          <div style="font-weight:700;margin-bottom:8px">Story So Far (Previous Chapters)</div>
+          <textarea id="storySummaryPrevious" class="textarea" placeholder="Summaries from previous chapters will appear here. Click 'Fetch Previous Chapters' to load..." readonly style="background:rgba(11,23,45,0.3);cursor:not-allowed"></textarea>
+          <div class="nav">
+            <div class="status">Read-only: Fetched from previous chapters' summaries.</div>
+            <div class="row">
+              <button id="btnFetchPrevious" class="btn">Fetch Previous Chapters</button>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <!-- Current Chapter Summary -->
+        <div class="card">
+          <div class="card-pad">
+          <div style="font-weight:700;margin-bottom:8px">Current Chapter Summary</div>
+          <textarea id="storySummaryCurrent" class="textarea" placeholder="A summary of THIS chapter will appear here after narration is complete, or you can write your own..."></textarea>
+          <div class="nav">
+            <div class="status">Auto-generated after full narration, or manually create/edit.</div>
+            <div class="row">
+              <button id="btnSaveStory" class="btn secondary">Save</button>
+              <button id="btnGenerateStory" class="btn">Generate Summary</button>
+            </div>
+          </div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-pad">
           <div style="font-weight:700;margin-bottom:8px">Shortcuts</div>
@@ -136,8 +165,24 @@
       pages = d.pages || [];
       allPanelsReady = !!d.allPanelsReady;
       document.getElementById('characterMd').value = d.characterList || '';
+      
+      // Load story summaries
+      await loadStorySummaries();
+      
       renderGating();
       renderPages();
+    }
+
+    async function loadStorySummaries(){
+      try{
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story`);
+        if(!r.ok) return;
+        const d = await r.json();
+        document.getElementById('storySummaryCurrent').value = d.summary_current || d.summary || '';
+        document.getElementById('storySummaryPrevious').value = d.summary_previous || '';
+      }catch(e){
+        console.error('Failed to load story summaries:', e);
+      }
     }
 
     function renderGating(){
@@ -330,6 +375,53 @@
       const d = await r.json();
       document.getElementById('characterMd').value = d.markdown || '';
       alert('Character list updated');
+    });
+
+    document.getElementById('btnSaveStory').addEventListener('click', async ()=>{
+      const summary = document.getElementById('storySummaryCurrent').value || '';
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story`, { method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ summary }) });
+      if(!r.ok){ alert('Save failed'); return; }
+      alert('Current chapter summary saved');
+    });
+
+    document.getElementById('btnGenerateStory').addEventListener('click', async ()=>{
+      if(!confirm('Generate a story summary for THIS CHAPTER from all panel narrations? This may take a moment.')) return;
+      const btn = document.getElementById('btnGenerateStory');
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+      try {
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+        if(!r.ok){ alert('Story generation failed'); return; }
+        const d = await r.json();
+        document.getElementById('storySummaryCurrent').value = d.summary || '';
+        alert('Current chapter summary generated');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    });
+
+    document.getElementById('btnFetchPrevious').addEventListener('click', async ()=>{
+      if(!confirm('Fetch and combine all previous chapters\' summaries into the "Story So Far" section?')) return;
+      const btn = document.getElementById('btnFetchPrevious');
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Fetching...';
+      try {
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/fetch-previous`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+        if(!r.ok){
+          const errData = await r.json().catch(() => ({}));
+          alert(errData.detail || 'Failed to fetch previous summaries');
+          return;
+        }
+        const d = await r.json();
+        document.getElementById('storySummaryPrevious').value = d.summary || '';
+        alert(d.message || 'Previous chapters\' summaries fetched successfully');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
     });
 
     fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
