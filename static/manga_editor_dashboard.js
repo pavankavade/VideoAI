@@ -1,4 +1,4 @@
-// Manga Editor Dashboard logic
+// Manga Editor Dashboard
 document.addEventListener('DOMContentLoaded', () => {
   bindCreate();
   loadProjects();
@@ -15,7 +15,6 @@ async function loadProjects(){
       body.innerHTML = `<tr><td colspan="4" style="color:#9ca3af">No projects yet</td></tr>`;
       return;
     }
-    // For each project, fetch summary from new editor API to know panel status
     const rows = [];
     for(const p of projects){
       let panelsReady = false;
@@ -35,9 +34,8 @@ async function loadProjects(){
           <td>${new Date(p.createdAt).toLocaleDateString()}</td>
           <td>
             <div class="actions">
-              <a class="btn" href="/editor/manga-editor/${p.id}">Open Editor</a>
-                <a class="btn secondary" href="/editor/viewer/${p.id}">View Panels</a>
-              <a class="btn secondary" href="/video-editor?project_id=${p.id}">Video Editor</a>
+              <a class="btn" href="/editor/panel-editor/${p.id}">View Panels</a>
+              <a class="btn secondary" href="/editor/video-editor/${p.id}">Video Editor</a>
               <button class="btn secondary" onclick="deleteProject('${p.id}')">Delete</button>
             </div>
           </td>
@@ -86,14 +84,12 @@ function bindCreate(){
   save?.addEventListener('click', async ()=>{
     const title = document.getElementById('cpTitle').value.trim();
     if(!title || pickedFiles.length===0){ alert('Please enter title and select at least one image.'); return; }
-    // Upload files first using existing /upload (as manga_view does)
     const fd = new FormData();
     pickedFiles.forEach(f=> fd.append('files', f));
     const up = await fetch('/upload', { method:'POST', body: fd });
     if(!up.ok){ alert('Upload failed'); return; }
     const upData = await up.json();
     const filenames = upData.filenames || [];
-    // Create DB project
     const r = await fetch('/editor/api/projects', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, files: filenames}) });
     if(!r.ok){ alert('Create failed'); return; }
     box.style.display='none';

@@ -1264,55 +1264,6 @@ async def api_delete_project(project_id: str):
     return {"ok": True}
 
 
-@router.get("/viewer/{project_id}", response_class=HTMLResponse)
-async def editor_viewer(request: Request, project_id: str):
-    """Render the existing manga_view UI but backed by DB data."""
-    proj = EditorDB.get_project(project_id)
-    if not proj:
-        raise HTTPException(status_code=404, detail="Project not found")
-    pages = EditorDB.get_pages(project_id)
-    # Build legacy-like projectData consumed by manga_view.js
-    files: List[str] = []
-    for pg in pages:
-        img = pg.get("image_path") or ""
-        base = os.path.basename(img) if img else ""
-        # If it is a /uploads path, strip to filename for legacy carousel
-        files.append(base or os.path.basename(img))
-    # Panels into workflow.panels.data shape
-    panel_pages: List[Dict[str, Any]] = []
-    for pg in pages:
-        pn = int(pg.get("page_number") or 0)
-        panel_rows = EditorDB.get_panels_for_page(project_id, pn)
-        panels_list: List[Dict[str, Any]] = []
-        for p in panel_rows:
-            url = p.get("image") or ""
-            panels_list.append({
-                "url": url,
-                "filename": os.path.basename(url.lstrip("/")) if url else "",
-                # carry over optional metadata placeholders used in UI
-                "effect": "none",
-                "transition": "slide_book",
-                "matched_text": p.get("text") or "",
-            })
-        panel_pages.append({"page_number": pn, "panels": panels_list})
-    project_payload = {
-        "id": project_id,
-        "title": proj.get("title") or "Untitled",
-        "files": files,
-        "workflow": {
-            "panels": {"status": "complete" if any(len(pg["panels"]) for pg in panel_pages) else "pending", "data": panel_pages},
-            "narrative": {"status": "pending", "data": None},
-            "text_matching": {"status": "pending", "data": None},
-            "tts": {"status": "todo", "data": None},
-            "panel_tts": {"status": "todo", "data": None},
-            "video_editing": {"status": "todo", "data": None},
-        },
-        "createdAt": proj.get("createdAt") or datetime.utcnow().isoformat(),
-        "status": "uploaded",
-    }
-    return templates.TemplateResponse("manga_view.html", {"request": request, "project": project_payload})
-
-
 # ---------------------------- New Full-Page Panel Editor ----------------------------
 @router.get("/panel-editor/{project_id}", response_class=HTMLResponse)
 async def panel_editor_full(request: Request, project_id: str):

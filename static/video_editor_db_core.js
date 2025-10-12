@@ -155,14 +155,17 @@ async function updateEffectConfig(config) {
     });
     if (response.ok) {
       const result = await response.json();
-      // Update local variables
-      EFFECT_ANIMATION_SPEED = result.config.animation_speed;
-      EFFECT_SCREEN_MARGIN = result.config.screen_margin;
-      EFFECT_ZOOM_AMOUNT = result.config.zoom_amount;
-      EFFECT_MAX_DURATION = result.config.max_duration;
-      PANEL_BASE_SIZE = result.config.panel_base_size;
-      EFFECT_SMOOTHING = result.config.smoothing;
-      console.log('Effect config updated:', result.config);
+      // Update local variables - API returns camelCase keys
+      EFFECT_ANIMATION_SPEED = result.animationSpeed || EFFECT_ANIMATION_SPEED;
+      EFFECT_SCREEN_MARGIN = result.screenMargin || EFFECT_SCREEN_MARGIN;
+      EFFECT_ZOOM_AMOUNT = result.zoomAmount || EFFECT_ZOOM_AMOUNT;
+      EFFECT_MAX_DURATION = result.maxDuration || EFFECT_MAX_DURATION;
+      PANEL_BASE_SIZE = result.panelBaseSize || PANEL_BASE_SIZE;
+      EFFECT_SMOOTHING = result.smoothing || EFFECT_SMOOTHING;
+      TRANSITION_DURATION = result.transitionDuration || TRANSITION_DURATION;
+      TRANSITION_OVERLAP = result.transitionOverlap || TRANSITION_OVERLAP;
+      TRANSITION_SMOOTHING = result.transitionSmoothing || TRANSITION_SMOOTHING;
+      console.log('Effect config updated:', result);
       return result;
     }
   } catch (err) {
@@ -172,13 +175,47 @@ async function updateEffectConfig(config) {
 
 // Helper to refresh DB project summary and update window.projectData
 async function refreshProjectData(){
+  // Try to get project ID from multiple sources
+  let projectId = null;
+  
+  // Method 1: From URL query parameters (?project_id=...)
   const urlParams = new URLSearchParams(window.location.search);
-  const projectId = urlParams.get('project_id');
-  if (!projectId){ console.error('No project ID found in URL parameters'); return null; }
+  projectId = urlParams.get('project_id');
+  
+  // Method 2: From URL path (/editor/video-editor/{project_id})
+  if (!projectId) {
+    const pathMatch = window.location.pathname.match(/\/video-editor\/([^\/]+)/);
+    if (pathMatch) {
+      projectId = pathMatch[1];
+      DBG('Extracted project ID from path:', projectId);
+    }
+  }
+  
+  // Method 3: From global window.projectData (already loaded in template)
+  if (!projectId && window.projectData?.id) {
+    projectId = window.projectData.id;
+    DBG('Using project ID from global projectData:', projectId);
+  }
+  
+  if (!projectId){ 
+    console.error('No project ID found in URL parameters, path, or global data'); 
+    return null; 
+  }
+  
   try{
     const response = await fetch(`/editor/api/project/${projectId}`);
-    if (response.ok){ const proj = await response.json(); window.projectData = proj; DBG('Project data refreshed (DB):', proj.id); return proj; }
-  }catch(e){ console.error('Error fetching project (DB):', e); }
+    if (response.ok){ 
+      const proj = await response.json(); 
+      window.projectData = proj; 
+      DBG('Project data refreshed (DB):', proj.id); 
+      return proj; 
+    } else {
+      console.error('Failed to fetch project data:', response.status);
+      return null;
+    }
+  }catch(e){ 
+    console.error('Error fetching project (DB):', e); 
+  }
   return null;
 }
 
@@ -2197,8 +2234,27 @@ async function saveProject(force = false) {
   if (autosaveEl) autosaveEl.textContent = 'Saving...';
 
   try {
+    // Try to get project ID from multiple sources (same as refreshProjectData)
+    let projectId = null;
+    
+    // Method 1: From URL query parameters (?project_id=...)
     const urlParams = new URLSearchParams(window.location.search);
-    const projectId = urlParams.get('project_id') || (window.projectData && window.projectData.id);
+    projectId = urlParams.get('project_id');
+    
+    // Method 2: From URL path (/editor/video-editor/{project_id})
+    if (!projectId) {
+      const pathMatch = window.location.pathname.match(/\/video-editor\/([^\/]+)/);
+      if (pathMatch) {
+        projectId = pathMatch[1];
+        DBG('[saveProject] Extracted project ID from path:', projectId);
+      }
+    }
+    
+    // Method 3: From global window.projectData
+    if (!projectId && window.projectData?.id) {
+      projectId = window.projectData.id;
+      DBG('[saveProject] Using project ID from global projectData:', projectId);
+    }
 
     if (!projectId) {
       throw new Error('Project ID is missing. Cannot save.');
@@ -2250,6 +2306,249 @@ async function saveProject(force = false) {
   } catch (e) {
     console.error('Autosave failed', e);
     if (autosaveEl) autosaveEl.textContent = `Save error: ${e.message}`;
+  }
+}
+
+// ==================== Generate Panel Timeline ====================
+async function generatePanelTimeline() {
+  DBG('generatePanelTimeline called');
+  
+  // Refresh project data from server to get latest effects and transitions
+  const latestProject = await refreshProjectData();
+  if (!latestProject) {
+    console.error('Failed to refresh project data');
+    return;
+  }
+  
+  const panelsData = latestProject.workflow?.panels?.data || [];
+  
+  // Update effects and transitions in panels array from latest project data
+  panels.forEach(panel => {
+    const pageData = panelsData.find(p => p.page_number === panel.pageNumber);
+    if (pageData && pageData.panels && pageData.panels[panel.panelIndex]) {
+      const projectPanel = pageData.panels[panel.panelIndex];
+      panel.effect = projectPanel.effect || 'none';
+      panel.transition = projectPanel.transition || (panel.panelIndex === 0 ? 'none' : 'slide_book');
+      DBG(`Updated panel ${panel.pageNumber}-${panel.panelIndex}: effect=${panel.effect}, transition=${panel.transition}`);
+    }
+  });
+  
+  if (panels.length === 0) {
+    console.error('No panels available. Please load a project with panels first.');
+    return;
+  }
+
+  const panelsWithAudio = audios.filter(audio => audio.id && audio.duration > 0);
+  if (panelsWithAudio.length === 0) {
+    console.error('No panels with audio found. Please synthesize panel audio first.');
+    return;
+  }
+
+  DBG('Generating timeline for', panelsWithAudio.length, 'panels with audio');
+
+  // Clear existing layers and create new ones
+  layers = [
+    { id: 'video-layer', name: 'Video (Panels)', clips: [] },
+    { id: 'audio-layer', name: 'Audio (Speech)', clips: [] }
+  ];
+  
+  // Ensure background layer exists with default background
+  ensureBackgroundLayer(true);
+  
+  activeLayerId = 'video-layer';
+  
+  let currentTime = 0;
+  const transitionDuration = 0.2; // 200ms transition between panels
+  
+  // Debug: Log panel data before sorting
+  DBG('Panel data before sorting:');
+  panelsWithAudio.forEach((audio, i) => {
+    DBG(`  ${i}: pageNumber=${audio.pageNumber}, panelIndex=${audio.panelIndex}, id=${audio.id}`);
+  });
+  
+  // Sort panels by page and panel index
+  const sortedPanels = panelsWithAudio.sort((a, b) => {
+    // Ensure we're comparing numbers, not strings
+    const pageA = parseInt(a.pageNumber) || 0;
+    const pageB = parseInt(b.pageNumber) || 0;
+    const panelA = parseInt(a.panelIndex) || 0;
+    const panelB = parseInt(b.panelIndex) || 0;
+    
+    if (pageA !== pageB) {
+      return pageA - pageB;
+    }
+    return panelA - panelB;
+  });
+  
+  // Debug: Log panel data after sorting
+  DBG('Panel data after sorting:');
+  sortedPanels.forEach((audio, i) => {
+    DBG(`  ${i}: pageNumber=${audio.pageNumber}, panelIndex=${audio.panelIndex}, id=${audio.id}`);
+  });
+  
+  sortedPanels.forEach((audioData, index) => {
+    // Find the corresponding panel image
+    const panelData = panels.find(p => 
+      p.pageNumber === audioData.pageNumber && 
+      p.panelIndex === audioData.panelIndex
+    );
+    
+    if (!panelData) {
+      DBG('Warning: No panel image found for audio', audioData.id);
+      return;
+    }
+    
+    const duration = audioData.duration || 2.0;
+    
+    // Add panel image to video layer
+    const videoClip = {
+      id: `video-${panelData.id}-${Date.now()}`,
+      startTime: currentTime,
+      duration: duration,
+      src: panelData.src,
+      type: 'image',
+      layer: 'video-layer',
+      filename: panelData.filename,
+      displayName: panelData.displayName,
+      effect: panelData.effect || 'none',
+      transition: panelData.transition || (index === 0 ? 'none' : 'slide_book')
+    };
+    
+    // Add audio to audio layer
+    const audioClip = {
+      id: `audio-${audioData.id}-${Date.now()}`,
+      startTime: currentTime,
+      duration: duration,
+      src: audioData.src,
+      type: 'audio',
+      layer: 'audio-layer',
+      filename: audioData.filename,
+      displayName: audioData.displayName,
+      text: audioData.text || '',
+      meta: {
+        originalUrl: audioData.src,
+        filename: audioData.filename
+      }
+    };
+    
+    // Find video and audio layers (background layer is at index 0)
+    const videoLayer = layers.find(l => l.id === 'video-layer');
+    const audioLayer = layers.find(l => l.id === 'audio-layer');
+    
+    if (videoLayer) videoLayer.clips.push(videoClip);
+    if (audioLayer) audioLayer.clips.push(audioClip);
+    
+    currentTime += duration + transitionDuration;
+    
+    DBG(`Added panel ${panelData.displayName} at ${videoClip.startTime}s for ${duration}s`);
+  });
+  
+  // Update background layer duration to cover entire timeline
+  const backgroundLayer = layers.find(l => l.id === BACKGROUND_LAYER_ID);
+  if (backgroundLayer && backgroundLayer.clips.length > 0) {
+    backgroundLayer.clips[0].duration = Math.max(currentTime, backgroundLayer.clips[0].duration || 10);
+    DBG(`Updated background duration to ${backgroundLayer.clips[0].duration}s`);
+  }
+  
+  // Fix any overlaps in all layers after batch adding
+  layers.forEach(layer => {
+    if (layer.clips && layer.clips.length > 0) {
+      fixLayerOverlaps(layer);
+    }
+  });
+  
+  // Refresh timeline display
+  renderTimeline();
+  renderLayerControls();
+  
+  // Sync canvas to actual audio durations and chain sequentially to match server render
+  try {
+    await syncTimelineToActualAudio();
+  } catch (e) {
+    DBG('syncTimelineToActualAudio failed', e);
+  }
+
+  // Force redraw of timeline to ensure proper positioning
+  setTimeout(() => {
+    renderTimeline();
+
+    // Force layout reflow to ensure positioning is applied
+    const track = document.getElementById('timelineTrack');
+    if (track) {
+      track.offsetHeight; // Force layout reflow
+
+      // Double-check clip positions and fix any that are overlapped
+      const clips = track.querySelectorAll('.clip');
+      clips.forEach((clipEl, index) => {
+        const layerId = clipEl.dataset.layerId;
+        const clipIndex = parseInt(clipEl.dataset.idx);
+        const layer = layers.find(l => l.id === layerId);
+
+        if (layer && layer.clips[clipIndex]) {
+          const clip = layer.clips[clipIndex];
+          const expectedLeft = (clip.startTime || 0) * viewPxPerSec;
+          const currentLeft = parseFloat(clipEl.style.left) || 0;
+
+          // If position is significantly off, force correct it
+          if (Math.abs(expectedLeft - currentLeft) > 5) {
+            clipEl.style.left = expectedLeft + 'px';
+            DBG(`Fixed clip position: ${clip.id || 'clip'} from ${currentLeft}px to ${expectedLeft}px`);
+          }
+        }
+      });
+    }
+  }, 100);
+  
+  DBG('Panel timeline generation complete!');
+}
+
+async function syncTimelineToActualAudio(){
+  try {
+    const audioLayer = layers.find(l => l.id === 'audio-layer');
+    const videoLayer = layers.find(l => l.id === 'video-layer');
+    if (!audioLayer || !videoLayer) return;
+
+    DBG('Syncing timeline to actual audio durations...');
+
+    // Measure real durations for all audio clips
+    const auds = audioLayer.clips.slice();
+    const realDurs = await Promise.all(auds.map(async (c) => {
+      try {
+        const d = await extractAudioDuration(c);
+        return (d && isFinite(d) && d > 0) ? d : (c.duration || 0);
+      } catch(_e){ return c.duration || 0; }
+    }));
+
+    DBG('Real audio durations:', realDurs);
+
+    // Apply sequential chaining with real durations; mirror durations to corresponding image clips
+    let t = 0;
+    for (let i = 0; i < auds.length; i++){
+      const d = Number(realDurs[i] || 0);
+      auds[i].startTime = t; 
+      auds[i].duration = d;
+      if (videoLayer.clips[i]){ 
+        videoLayer.clips[i].startTime = t; 
+        videoLayer.clips[i].duration = d; 
+      }
+      DBG(`Clip ${i}: startTime=${t.toFixed(2)}s, duration=${d.toFixed(2)}s`);
+      t += d; // no gap to match render
+    }
+
+    // Ensure background covers the full chained duration
+    const bg = layers.find(l => isBackgroundLayer(l));
+    if (bg && bg.clips && bg.clips[0]){
+      bg.clips[0].startTime = 0;
+      bg.clips[0].duration = Math.max(bg.clips[0].duration || 0, t || 10);
+    }
+
+    // Recompute flattened timeline and refresh UI
+    timeline = flattenLayersToTimeline();
+    renderTimeline();
+    updateTotalDuration();
+    DBG('Synchronized to audio durations. New total (approx):', t.toFixed(2), 'seconds');
+  } catch (e) {
+    DBG('syncTimelineToActualAudio error', e);
   }
 }
 
