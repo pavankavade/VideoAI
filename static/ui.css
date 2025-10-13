@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Simple dark theme defaults (plain CSS so it works without Tailwind processing) */
+body { background-color: #020617; color: #e2e8f0; }
+
+/* Minimal component helpers to keep existing markup working */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 0.375rem; font-size: 0.875rem; font-weight: 500;
+  padding: 0.5rem 0.75rem; background: #2563eb; color: #ffffff;
+  transition: background-color 0.15s ease-in-out; border: none; cursor: pointer;
+}
+.btn:hover { background: #3b82f6; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.secondary { background: #334155; color: #e5e7eb; }
+.btn.secondary:hover { background: #475569; }
+.btn.ghost { background: transparent; }
+.btn.ghost:hover { background: rgba(148,163,184,0.15); }
+
+.card {
+  background: #0b1220; color: #e2e8f0; border-radius: 0.5rem;
+  border: 1px solid #1e293b;
+}
+
+.input, .select {
+  height: 2.25rem; width: 100%; border-radius: 0.375rem;
+  border: 1px solid #334155; background: #0b1220; color: #e2e8f0;
+  padding: 0.25rem 0.75rem; font-size: 0.875rem; outline: none;
+}
+.input::placeholder, .textarea::placeholder { color: #94a3b8; }
+.input:focus, .select:focus, .textarea:focus { outline: 2px solid #3b82f6; outline-offset: 2px; }
+
+.textarea {
+  width: 100%; min-height: 90px; border-radius: 0.375rem;
+  border: 1px solid #334155; background: #0b1220; color: #e2e8f0;
+  padding: 0.5rem 0.75rem; font-size: 0.875rem; outline: none;
+}
+
+.label { font-size: 0.875rem; font-weight: 500; line-height: 1; }
+.muted { color: #94a3b8; font-size: 0.75rem; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; }
+.row { display: flex; align-items: center; gap: 0.5rem; }

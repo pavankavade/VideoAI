@@ -63,11 +63,13 @@ yarn.lock
 coverage/
 *.tsbuildinfo
 
-# Generated vendor assets
-static/vendor/ffmpeg.js
-static/vendor/814.ffmpeg.js
+# Generated vendor assets (copied via postinstall)
+static/vendor/ffmpeg/
+static/vendor/*.ffmpeg.js
 static/vendor/ffmpeg-core.js
 static/vendor/ffmpeg-core.wasm
+static/vendor/ffmpeg.js
+static/vendor/ffmpeg.min.js
 
 # Logs
 *.log
@@ -84,3 +86,8 @@ logs/
 *.tmp
 *.temp
 manga_projects/
+renders/
+*.db
+data/mangaeditor.db
+\NUL
+NUL
