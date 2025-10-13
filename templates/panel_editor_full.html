@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel Editor – {{ project.title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/ui.build.css?v=1" />
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif}
+    /* Fallback layout so page works even if certain Tailwind utilities are missing */
+    .layout{display:grid;grid-template-columns:280px 1fr;gap:16px;min-height:100vh}
+    .sidebar{background:#0b1220;border-right:1px solid #1e293b;padding:12px;overflow:auto}
+    .main{padding:16px;overflow:auto;padding-bottom:96px}
+  .panels-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+    .bottombar{position:fixed;left:280px;right:0;bottom:0;background:#0b1220;border-top:1px solid #1e293b;padding:8px 12px;z-index:50}
+    .card-pad{padding:12px}
+  </style>
+  <script id="project-data" type="application/json">{{ project|tojson|safe }}</script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="card sidebar">
+      <div class="topbar">
+        <div class="font-extrabold">Pages</div>
+        <a class="btn secondary" href="/">Home</a>
+      </div>
+      <div id="pagesList" class="flex flex-col gap-2"></div>
+    </aside>
+    <main class="main">
+      <div class="card">
+        <div class="card-pad">
+          <div class="topbar">
+            <div class="row">
+              <button id="prevPage" class="btn secondary">Prev</button>
+              <div id="pageTitle" class="font-extrabold">Page</div>
+              <button id="nextPage" class="btn secondary">Next</button>
+            </div>
+            <div class="row">
+              <a id="backToEditor" class="btn secondary">Back</a>
+              <a id="openVideoEditor" class="btn">Open Video Editor</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="panelsRoot" class="panels-grid" style="margin-top:12px"></div>
+      <div class="card bottombar">
+        <div class="row" style="flex-wrap:wrap;justify-content:space-between;gap:8px">
+          <div class="row" style="gap:8px">
+            <select id="globalEffect" class="select">
+              <option value="none">Effect: None</option>
+              <option value="kenburns">Effect: Ken Burns</option>
+              <option value="zoom_in">Effect: Zoom In</option>
+              <option value="zoom_out">Effect: Zoom Out</option>
+              <option value="pan_left">Effect: Pan Left</option>
+              <option value="pan_right">Effect: Pan Right</option>
+            </select>
+            <select id="globalTransition" class="select">
+              <option value="slide_book">Transition: Slide (Book)</option>
+              <option value="fade">Transition: Fade</option>
+              <option value="cut">Transition: Cut</option>
+              <option value="slide_left">Transition: Slide Left</option>
+              <option value="slide_right">Transition: Slide Right</option>
+            </select>
+            <button id="applyGlobalConfig" class="btn">Apply</button>
+          </div>
+          <div class="row" style="gap:8px; align-items:center">
+            <button id="synthAll" class="btn secondary">Synthesize All</button>
+            <div id="synthProgress" class="muted" style="min-width:260px"></div>
+            <div id="synthBarWrap" style="flex:1; max-width:420px;display:none">
+              <div style="height:8px;background:#1e293b;border-radius:6px;overflow:hidden">
+                <div id="synthBar" style="height:100%;width:0%;background:#3b82f6;transition:width .2s ease"></div>
+              </div>
+            </div>
+            <button id="saveAll" class="btn">Save All</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+  const project = JSON.parse(document.getElementById('project-data')?.textContent || '{}');
+    let pages = [];
+    let currentIndex = 0;
+
+    async function fetchSummary(){
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}`, { headers:{'ngrok-skip-browser-warning':'true'} });
+      if(!r.ok) throw new Error('Failed to load project');
+      const d = await r.json();
+      pages = d.pages || [];
+      renderPagesList();
+      renderCurrentPage();
+    }
+
+    function renderPagesList(){
+      const root = document.getElementById('pagesList');
+      root.innerHTML = '';
+      pages.forEach((pg,i)=>{
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 p-2 border rounded-md bg-slate-900 cursor-pointer ' + (i===currentIndex?' outline outline-2 outline-blue-500':'');
+        row.innerHTML = `
+          <div class="w-12 h-12 rounded-md bg-black/40 overflow-hidden border"><img class="w-full h-full object-cover" src="${pg.image_url || ''}"></div>
+          <div>
+            <div class="font-medium">Page ${pg.page_number}</div>
+            <div class="muted">${(pg.panels||[]).length} panel(s)</div>
+          </div>
+        `;
+        row.addEventListener('click', ()=>{ currentIndex = i; renderPagesList(); renderCurrentPage(); });
+        root.appendChild(row);
+      });
+    }
+
+    function renderCurrentPage(){
+      const pg = pages[currentIndex] || pages[0];
+      if(!pg) return;
+      document.getElementById('pageTitle').textContent = `Page ${pg.page_number}`;
+      const root = document.getElementById('panelsRoot');
+      root.innerHTML = '';
+      (pg.panels||[]).forEach(p=>{
+        const card = document.createElement('div');
+        card.className = 'card overflow-hidden';
+        card.innerHTML = `
+          ${p.image?`<img class="w-full h-[220px] object-cover" src="${p.image}" alt="panel">`:`<div class='h-[220px] flex items-center justify-center text-slate-400'>No image</div>`}
+          <div class="p-3">
+            <div class="flex items-center justify-between mb-2">
+              <div class="font-bold">Panel #${p.index}</div>
+              <div class="muted">${p.image? p.image.split('/').pop(): ''}</div>
+            </div>
+            <textarea class="textarea" data-idx="${p.index}" placeholder="Narration for this panel…">${p.text||''}</textarea>
+            <div class="row mt-2">
+              <button class="btn secondary" data-save="${p.index}">Save</button>
+              <span class="muted">Audio will be generated by "Synthesize All"</span>
+            </div>
+            <div class="row mt-2">
+              <select data-eff="${p.index}" class="select">
+                <option value="none" ${p.effect==='none'?'selected':''}>Effect: None</option>
+                <option value="kenburns" ${p.effect==='kenburns'?'selected':''}>Effect: Ken Burns</option>
+                <option value="zoom_in" ${p.effect==='zoom_in'?'selected':''}>Effect: Zoom In</option>
+                <option value="zoom_out" ${p.effect==='zoom_out'?'selected':''}>Effect: Zoom Out</option>
+                <option value="pan_left" ${p.effect==='pan_left'?'selected':''}>Effect: Pan Left</option>
+                <option value="pan_right" ${p.effect==='pan_right'?'selected':''}>Effect: Pan Right</option>
+              </select>
+              <select data-trans="${p.index}" class="select">
+                <option value="slide_book" ${p.transition==='slide_book'?'selected':''}>Transition: Slide (Book)</option>
+                <option value="fade" ${p.transition==='fade'?'selected':''}>Transition: Fade</option>
+                <option value="cut" ${p.transition==='cut'?'selected':''}>Transition: Cut</option>
+                <option value="slide_left" ${p.transition==='slide_left'?'selected':''}>Slide Left</option>
+                <option value="slide_right" ${p.transition==='slide_right'?'selected':''}>Slide Right</option>
+              </select>
+              <button class="btn secondary" data-savecfg="${p.index}">Save</button>
+            </div>
+            <div class="audio-slot mt-2" data-audio="${p.index}"></div>
+            </div>
+          </div>
+        `;
+        root.appendChild(card);
+      });
+
+      // Wire save buttons
+      root.querySelectorAll('button[data-save]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const idx = parseInt(btn.getAttribute('data-save'))||1;
+          const ta = root.querySelector(`textarea[data-idx="${idx}"]`);
+          const text = (ta?.value || '').trim();
+          const pn = (pages[currentIndex]||{}).page_number;
+          const ok = await savePanelText(pn, idx, text);
+          if(ok){ btn.textContent = 'Saved'; setTimeout(()=>btn.textContent='Save', 1000); }
+        });
+      });
+
+      // Per-panel synth removed; generation is handled by global button
+
+      // Render any existing audio
+      (pg.panels||[]).forEach(p=>{ if(p.audio){ renderAudioFor(p.index, p.audio); } });
+
+      // Wire per-panel config save
+      root.querySelectorAll('button[data-savecfg]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const idx = parseInt(btn.getAttribute('data-savecfg'))||1;
+          const effSel = root.querySelector(`select[data-eff="${idx}"]`);
+          const transSel = root.querySelector(`select[data-trans="${idx}"]`);
+          const eff = effSel?.value || 'none';
+          const trans = transSel?.value || 'slide_book';
+          const pn = (pages[currentIndex]||{}).page_number;
+          const ok = await savePanelConfig(pn, idx, eff, trans);
+          if(ok){ btn.textContent = 'Saved'; setTimeout(()=>btn.textContent='Save Config', 1000); }
+        });
+      });
+    }
+
+    async function savePanelText(pageNumber, panelIndex, text){
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/panel/${encodeURIComponent(pageNumber)}/${encodeURIComponent(panelIndex)}/text`, {
+        method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+        body: JSON.stringify({ text })
+      });
+      return r.ok;
+    }
+
+    document.getElementById('prevPage').addEventListener('click', ()=>{
+      if(currentIndex>0){ currentIndex--; renderPagesList(); renderCurrentPage(); }
+    });
+    document.getElementById('nextPage').addEventListener('click', ()=>{
+      if(currentIndex<pages.length-1){ currentIndex++; renderPagesList(); renderCurrentPage(); }
+    });
+    document.getElementById('backToEditor').addEventListener('click', ()=>{
+      window.location.href = `/editor/manga-editor/${encodeURIComponent(project.id)}`;
+    });
+    document.getElementById('openVideoEditor').addEventListener('click', ()=>{
+      window.location.href = `/editor/video-editor/${encodeURIComponent(project.id)}`;
+    });
+    document.getElementById('saveAll').addEventListener('click', async ()=>{
+      const pg = pages[currentIndex];
+      if(!pg) return;
+      const root = document.getElementById('panelsRoot');
+      const tas = root.querySelectorAll('textarea[data-idx]');
+      for(const ta of tas){
+        const idx = parseInt(ta.getAttribute('data-idx'))||1;
+        const text = (ta.value||'').trim();
+        await savePanelText(pg.page_number, idx, text);
+      }
+      alert('Saved');
+    });
+
+    // Global: synthesize audio for all pages/panels via backend (DB-powered)
+    document.getElementById('synthAll').addEventListener('click', async (e)=>{
+      const btn = e.currentTarget;
+      btn.disabled = true; const original = btn.textContent; btn.textContent = 'Synthesizing…';
+      const progressEl = document.getElementById('synthProgress');
+      const barWrap = document.getElementById('synthBarWrap');
+      const bar = document.getElementById('synthBar');
+      barWrap.style.display = 'block';
+      progressEl.textContent = 'Starting…'; bar.style.width = '0%';
+
+      try{
+        // Fetch pages once for counts
+        const totalPages = pages.length;
+        let pagesDone = 0;
+
+        for(let i=0;i<pages.length;i++){
+          const pg = pages[i];
+          const pn = pg.page_number;
+          progressEl.textContent = `Synthesizing Page ${pn}…`;
+          // Call backend to synthesize this page using stored texts
+          const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/page/${encodeURIComponent(pn)}`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+          if(!r.ok){
+            console.warn('Page synth failed', pn, r.status);
+          }else{
+            const data = await r.json();
+            // Update local UI for this page
+            const resPanels = (data && data.panels) || [];
+            resPanels.forEach(item=>{
+              if(item && item.audio_url){
+                renderAudioFor(item.panel_index, item.audio_url);
+                // also patch local model
+                const pgLocal = pages[i];
+                if(pgLocal && Array.isArray(pgLocal.panels)){
+                  const pLoc = pgLocal.panels.find(x=>parseInt(x.index)===parseInt(item.panel_index));
+                  if(pLoc){ pLoc.audio = item.audio_url; }
+                }
+              }
+            });
+          }
+
+          pagesDone++;
+          const pct = Math.round((pagesDone/Math.max(1,totalPages))*100);
+          bar.style.width = pct + '%';
+          progressEl.textContent = `Completed ${pagesDone}/${totalPages} pages`;
+
+          // If user is viewing this page, re-render to reflect updates in selects/audio
+          if(i===currentIndex){ renderCurrentPage(); }
+        }
+
+        progressEl.textContent = 'All done';
+      }catch(err){
+        console.error(err);
+        progressEl.textContent = 'Error during synthesis';
+        alert('Failed to synthesize.');
+      }finally{
+        btn.disabled = false; btn.textContent = original;
+        setTimeout(()=>{ barWrap.style.display='none'; progressEl.textContent=''; bar.style.width='0%'; }, 1500);
+      }
+    });
+
+    fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
+
+    // ---------- Helpers: TTS synth, upload, save, render ----------
+    function audioSrcFromValue(val){
+      if(!val) return '';
+      if(typeof val !== 'string') return '';
+      const v = val.trim();
+      if(v.startsWith('http') || v.startsWith('/uploads/') || v.startsWith('/manga_projects/')) return v;
+      if(v.startsWith('data:')) return v;
+      // bare filename or relative uploads
+      if(/\.(wav|mp3|ogg|m4a)$/i.test(v)){
+        return v.startsWith('/uploads/') ? v : ('/uploads/' + v.replace(/^\/+/,''));
+      }
+      // assume base64 without data: prefix
+      if(/^[A-Za-z0-9+/=]+$/.test(v)) return 'data:audio/wav;base64,'+v;
+      return v;
+    }
+
+    function renderAudioFor(panelIndex, audioVal){
+      const slot = document.querySelector(`.audio-slot[data-audio="${panelIndex}"]`);
+      if(!slot) return;
+      const src = audioSrcFromValue(audioVal);
+      if(!src){ slot.innerHTML = ''; return; }
+      slot.innerHTML = `<audio controls preload="metadata" src="${src}"></audio>`;
+    }
+
+    // Old direct TTS-by-text removed in favor of backend page synthesis
+
+    async function uploadAudioBlob(blob, filename){
+      const fd = new FormData();
+      const file = new File([blob], filename, { type: 'audio/wav' });
+      fd.append('files', file);
+      const resp = await fetch('/upload', { method:'POST', body: fd });
+      if(!resp.ok) throw new Error('Upload failed');
+      const data = await resp.json();
+      const name = (data.filenames && data.filenames[0]) ? data.filenames[0] : filename;
+      return `/uploads/${name}`;
+    }
+
+    async function savePanelAudio(pageNumber, panelIndex, audioUrl){
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/panel/${encodeURIComponent(pageNumber)}/${encodeURIComponent(panelIndex)}/audio`, {
+        method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+        body: JSON.stringify({ audioUrl })
+      });
+      return r.ok;
+    }
+
+    async function savePanelConfig(pageNumber, panelIndex, effect, transition){
+      const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/panel/${encodeURIComponent(pageNumber)}/${encodeURIComponent(panelIndex)}/config`, {
+        method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+        body: JSON.stringify({ effect, transition })
+      });
+      return r.ok;
+    }
+
+    // Apply global config to ALL pages
+    document.getElementById('applyGlobalConfig').addEventListener('click', async (e)=>{
+      const btn = e.currentTarget || document.getElementById('applyGlobalConfig');
+      const eff = document.getElementById('globalEffect').value || 'none';
+      const trans = document.getElementById('globalTransition').value || 'slide_book';
+      if(!pages || pages.length === 0) return;
+
+      // UI feedback
+      const original = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Applying…';
+      try{
+        // Apply on server for each page in parallel
+        const results = await Promise.allSettled(
+          pages.map(pg => fetch(`/editor/api/project/${encodeURIComponent(project.id)}/page/${encodeURIComponent(pg.page_number)}/config`, {
+            method:'PUT',
+            headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+            body: JSON.stringify({ effect: eff, transition: trans })
+          }))
+        );
+
+        const allOk = results.every(r => r.status === 'fulfilled' && r.value && r.value.ok);
+
+        // Update local model for all pages regardless; server failures will be alerted
+        pages.forEach(pg => {
+          (pg.panels || []).forEach(p => { p.effect = eff; p.transition = trans; });
+        });
+
+        // Re-render current page to reflect new selects immediately
+        renderCurrentPage();
+
+        if(allOk){
+          alert('Applied to all pages');
+        }else{
+          const failed = results.filter(r => !(r.status === 'fulfilled' && r.value && r.value.ok)).length;
+          alert(`Applied with ${failed} page(s) failing on server. Please retry.`);
+        }
+      }catch(err){
+        console.error(err);
+        alert('Failed to apply config');
+      }finally{
+        btn.disabled = false; btn.textContent = original;
+      }
+    });
+  </script>
+</body>
+</html>
