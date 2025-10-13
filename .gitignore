@@ -48,6 +48,7 @@ Thumbs.db
 
 # Project specific
 uploads/
+data/
 *.pt
 *.pth
 *.ckpt
@@ -63,11 +64,13 @@ yarn.lock
 coverage/
 *.tsbuildinfo
 
-# Generated vendor assets
-static/vendor/ffmpeg.js
-static/vendor/814.ffmpeg.js
-static/vendor/ffmpeg-core.js
-static/vendor/ffmpeg-core.wasm
+# Generated vendor assets (FFmpeg libraries - can be re-downloaded)
+static/vendor/ffmpeg/*.js
+static/vendor/ffmpeg/*.wasm
+static/vendor/ffmpeg/*.map
+static/vendor/*.js
+static/vendor/*.wasm
+static/vendor/*.map
 
 # Logs
 *.log
