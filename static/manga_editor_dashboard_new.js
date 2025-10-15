@@ -59,18 +59,38 @@ async function renderSeriesCard(series){
   
   const chaptersHtml = chapters.length === 0 ? 
     `<div style="padding:24px;text-align:center;color:#64748b;font-size:13px">No chapters yet</div>` :
-    chapters.map(ch => `
+    chapters.map(ch => {
+      const hasImages = ch.has_images === 1 || (ch.page_count && ch.page_count > 0);
+      const isMangadexChapter = ch.mangadex_chapter_id && ch.mangadex_chapter_id.length > 0;
+      
+      return `
       <div class="chapter-row">
         <div style="display:flex;align-items:center;gap:12px;flex:1">
           <div style="width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,rgba(59,130,246,0.2),rgba(37,99,235,0.3));display:flex;align-items:center;justify-content:center;border:1px solid rgba(59,130,246,0.3);font-weight:700;color:#60a5fa;font-size:13px">
             ${ch.chapter_number}
           </div>
           <div style="flex:1">
-            <div style="font-weight:600;color:#e2e8f0;font-size:14px">${ch.title}</div>
-            <div style="font-size:11px;color:#64748b;margin-top:2px">${new Date(ch.created_at).toLocaleDateString()} • ${ch.page_count || 0} pages</div>
+            <div style="font-weight:600;color:#e2e8f0;font-size:14px">
+              ${ch.title}
+              ${!hasImages ? '<span style="margin-left:8px;font-size:10px;padding:3px 8px;background:rgba(251,191,36,0.2);color:#fbbf24;border-radius:4px;font-weight:600;border:1px solid rgba(251,191,36,0.3)">NO IMAGES</span>' : ''}
+              ${isMangadexChapter ? `<a href="${ch.mangadex_chapter_url || 'https://mangadex.org/chapter/' + ch.mangadex_chapter_id}" target="_blank" rel="noopener" style="margin-left:8px;font-size:10px;padding:3px 8px;background:rgba(99,102,241,0.2);color:#818cf8;border-radius:4px;font-weight:600;border:1px solid rgba(99,102,241,0.3);text-decoration:none" title="View on MangaDex">MDex</a>` : ''}
+            </div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px">${new Date(ch.created_at).toLocaleDateString()} • ${ch.page_count || ch.chapter_pages_count || 0} pages</div>
           </div>
         </div>
         <div class="actions">
+          ${!hasImages && isMangadexChapter ? `
+          <button class="btn" onclick="event.stopPropagation();uploadChapterImages('${ch.id}', '${ch.title.replace(/'/g, "\\'")}', this)" style="font-size:12px;padding:8px 12px;background:#10b981;border-color:#10b981" title="Upload images for this chapter">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Add Images
+          </button>
+          ` : ''}
+          ${!hasImages && !isMangadexChapter ? `
+          <button class="btn" onclick="event.stopPropagation();uploadChapterImages('${ch.id}', '${ch.title.replace(/'/g, "\\'")}', this)" style="font-size:12px;padding:8px 12px;background:#10b981;border-color:#10b981" title="Upload images for this chapter">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Add Images
+          </button>
+          ` : ''}
           <a class="btn" href="/editor/panel-editor/${ch.id}" style="font-size:12px;padding:8px 12px" title="Edit panels for this chapter">
             <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
             Panels
@@ -81,7 +101,8 @@ async function renderSeriesCard(series){
           </a>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   
   return `
     <div class="series-card">
@@ -462,4 +483,118 @@ async function deleteSeries(seriesId, seriesName, chapterCount){
     
     await loadData();
   }
+}
+
+// Upload chapter images manually
+async function uploadChapterImages(chapterId, chapterTitle, buttonElement) {
+  // Create file input
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.accept = 'image/*';
+  
+  fileInput.onchange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    
+    const originalHTML = buttonElement.innerHTML;
+    
+    try {
+      // Disable button and show loading
+      buttonElement.disabled = true;
+      buttonElement.innerHTML = `
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" class="animate-spin" style="animation: spin 1s linear infinite">
+          <circle cx="12" cy="12" r="10" stroke-width="4" stroke="currentColor" stroke-dasharray="32" fill="none" opacity="0.25"/>
+          <path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" fill="currentColor"/>
+        </svg>
+        Uploading ${files.length} images...
+      `;
+      
+      // Upload files
+      const formData = new FormData();
+      files.forEach((file, index) => {
+        formData.append('files', file);
+      });
+      formData.append('project_id', chapterId);
+      
+      const response = await fetch('/editor/api/upload-chapter-images', {
+        method: 'POST',
+        body: formData
+      });
+      
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        // Show success
+        buttonElement.innerHTML = `
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M5 13l4 4L19 7"/>
+          </svg>
+          Uploaded ${result.filesUploaded} images
+        `;
+        buttonElement.style.background = '#059669';
+        buttonElement.style.borderColor = '#059669';
+        
+        showNotification(`Successfully uploaded ${result.filesUploaded} images for "${chapterTitle}"`, 'success');
+        
+        // Reload data to update UI
+        setTimeout(async () => {
+          await loadData();
+        }, 2000);
+      } else {
+        throw new Error(result.error || 'Upload failed');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      
+      // Show error state
+      buttonElement.innerHTML = `
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+        Upload Failed
+      `;
+      buttonElement.style.background = '#ef4444';
+      buttonElement.style.borderColor = '#ef4444';
+      
+      showNotification(`Failed to upload images: ${error.message}`, 'error');
+      
+      // Restore button after error
+      setTimeout(() => {
+        buttonElement.disabled = false;
+        buttonElement.innerHTML = originalHTML;
+        buttonElement.style.background = '#10b981';
+        buttonElement.style.borderColor = '#10b981';
+      }, 3000);
+    }
+  };
+  
+  // Trigger file picker
+  fileInput.click();
+}
+
+// Show notification helper
+function showNotification(message, type = 'info') {
+  const notification = document.createElement('div');
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 16px 20px;
+    background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#6366f1'};
+    color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 10000;
+    max-width: 400px;
+    font-size: 14px;
+    font-weight: 500;
+  `;
+  notification.textContent = message;
+  
+  document.body.appendChild(notification);
+  
+  setTimeout(() => {
+    notification.remove();
+  }, 5000);
 }

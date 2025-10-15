@@ -94,7 +94,13 @@ class EditorDB:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                mangadex_id TEXT,
+                description TEXT,
+                author TEXT,
+                status TEXT,
+                cover_url TEXT,
+                mangadex_url TEXT
             );
             """
         )
@@ -110,7 +116,11 @@ class EditorDB:
                 story_summary TEXT NOT NULL DEFAULT '',
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 manga_series_id TEXT,
-                chapter_number INTEGER,
+                chapter_number REAL,
+                mangadex_chapter_id TEXT,
+                mangadex_chapter_url TEXT,
+                chapter_pages_count INTEGER DEFAULT 0,
+                has_images INTEGER DEFAULT 0,
                 FOREIGN KEY (manga_series_id) REFERENCES manga_series(id) ON DELETE SET NULL
             );
             """
@@ -210,8 +220,36 @@ class EditorDB:
                 c.execute("ALTER TABLE project_details ADD COLUMN manga_series_id TEXT")
             if "chapter_number" not in cols:
                 c.execute("ALTER TABLE project_details ADD COLUMN chapter_number INTEGER")
+            # Add MangaDex import columns
+            if "mangadex_chapter_id" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN mangadex_chapter_id TEXT")
+            if "mangadex_chapter_url" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN mangadex_chapter_url TEXT")
+            if "chapter_pages_count" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN chapter_pages_count INTEGER DEFAULT 0")
+            if "has_images" not in cols:
+                c.execute("ALTER TABLE project_details ADD COLUMN has_images INTEGER DEFAULT 0")
         except Exception:
             pass
+        
+        # Add MangaDex columns to manga_series if missing
+        try:
+            cols = {row[1] for row in c.execute("PRAGMA table_info(manga_series)").fetchall()}
+            if "mangadex_id" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN mangadex_id TEXT")
+            if "description" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN description TEXT")
+            if "author" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN author TEXT")
+            if "status" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN status TEXT")
+            if "cover_url" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN cover_url TEXT")
+            if "mangadex_url" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN mangadex_url TEXT")
+        except Exception:
+            pass
+        
         cls._conn.commit()
 
     @classmethod
@@ -241,40 +279,79 @@ class EditorDB:
 
     # -------- Projects CRUD --------
     @classmethod
-    def create_project(cls, title: str, files: List[str]) -> Dict[str, Any]:
-        pid = str(int(datetime.utcnow().timestamp() * 1000))
+    def create_project(
+        cls,
+        title: str = None,
+        files: List[str] = None,
+        project_id: str = None,
+        name: str = None,
+        manga_series_id: Optional[str] = None,
+        chapter_number: Optional[float] = None,  # Changed to float to support sub-chapters
+        mangadex_chapter_id: Optional[str] = None,
+        mangadex_chapter_url: Optional[str] = None,
+        chapter_pages_count: int = 0,
+        has_images: int = 0,
+    ) -> Dict[str, Any]:
+        # Support both old and new signatures
+        if title and not name:
+            name = title
+        if not project_id:
+            project_id = str(int(datetime.utcnow().timestamp() * 1000))
+        
         now = datetime.utcnow().isoformat()
         conn = cls.conn()
-        def _norm(p: str) -> str:
-            if not isinstance(p, str):
-                return ""
-            p = p.strip()
-            if not p:
-                return p
-            if p.startswith("http://") or p.startswith("https://"):
-                return p
-            if p.startswith("/uploads/") or p.startswith("uploads/"):
-                return p if p.startswith("/") else ("/" + p)
-            if p.startswith("/manga_projects/") or p.startswith("manga_projects/"):
-                return p if p.startswith("/") else ("/" + p)
-            # Assume it's a bare filename coming from /upload
-            base = os.path.basename(p)
-            return f"/uploads/{base}"
-        pages = [{"page_number": i, "image_path": _norm(path)} for i, path in enumerate(files, start=1)]
+        
+        # Process files if provided
+        pages = []
+        if files:
+            def _norm(p: str) -> str:
+                if not isinstance(p, str):
+                    return ""
+                p = p.strip()
+                if not p:
+                    return p
+                if p.startswith("http://") or p.startswith("https://"):
+                    return p
+                if p.startswith("/uploads/") or p.startswith("uploads/"):
+                    return p if p.startswith("/") else ("/" + p)
+                if p.startswith("/manga_projects/") or p.startswith("manga_projects/"):
+                    return p if p.startswith("/") else ("/" + p)
+                # Assume it's a bare filename coming from /upload
+                base = os.path.basename(p)
+                return f"/uploads/{base}"
+            pages = [{"page_number": i, "image_path": _norm(path)} for i, path in enumerate(files, start=1)]
+        
         # Backfill legacy 'projects' table for compatibility with any old FKs
         try:
             conn.execute(
                 "INSERT OR IGNORE INTO projects(id, title, created_at) VALUES(?,?,?)",
-                (pid, title, now),
+                (project_id, name or title, now),
             )
         except Exception:
             pass
+        
         conn.execute(
-            "INSERT INTO project_details(id, title, created_at, pages_json, character_markdown, metadata_json) VALUES(?,?,?,?,?,?)",
-            (pid, title, now, json.dumps(pages), "", json.dumps({})),
+            """INSERT INTO project_details(
+                id, title, created_at, pages_json, character_markdown, metadata_json,
+                manga_series_id, chapter_number, mangadex_chapter_id, mangadex_chapter_url, chapter_pages_count, has_images
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                project_id,
+                name or title,
+                now,
+                json.dumps(pages),
+                "",
+                json.dumps({}),
+                manga_series_id,
+                chapter_number,
+                mangadex_chapter_id,
+                mangadex_chapter_url,
+                chapter_pages_count,
+                has_images,
+            ),
         )
         conn.commit()
-        return {"id": pid, "title": title, "created_at": now, "chapters": len(files)}
+        return {"id": project_id, "title": name or title, "created_at": now, "chapters": len(files) if files else 0}
 
     @classmethod
     def list_projects(cls) -> List[Dict[str, Any]]:
@@ -559,6 +636,40 @@ class EditorDB:
         return {"id": series_id, "name": name, "created_at": now, "updated_at": now}
 
     @classmethod
+    def add_manga_series(
+        cls,
+        series_id: str,
+        name: str,
+        mangadex_id: Optional[str] = None,
+        description: Optional[str] = None,
+        author: Optional[str] = None,
+        status: Optional[str] = None,
+        cover_url: Optional[str] = None,
+        mangadex_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add a manga series with optional MangaDex metadata."""
+        now = datetime.utcnow().isoformat()
+        conn = cls.conn()
+        conn.execute(
+            """INSERT INTO manga_series(id, name, created_at, updated_at, mangadex_id, description, author, status, cover_url, mangadex_url) 
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (series_id, name, now, now, mangadex_id, description, author, status, cover_url, mangadex_url),
+        )
+        conn.commit()
+        return {
+            "id": series_id,
+            "name": name,
+            "created_at": now,
+            "updated_at": now,
+            "mangadex_id": mangadex_id,
+            "description": description,
+            "author": author,
+            "status": status,
+            "cover_url": cover_url,
+            "mangadex_url": mangadex_url,
+        }
+
+    @classmethod
     def get_manga_series(cls, series_id: str) -> Optional[Dict[str, Any]]:
         """Get manga series details with all its chapters."""
         row = cls.conn().execute(
@@ -570,7 +681,7 @@ class EditorDB:
         
         # Get all chapters for this series
         chapters = cls.conn().execute(
-            "SELECT id, title, chapter_number, created_at FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
+            "SELECT id, title, chapter_number, created_at, mangadex_chapter_id, mangadex_chapter_url, chapter_pages_count, has_images FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
             (series_id,),
         ).fetchall()
         
@@ -581,6 +692,10 @@ class EditorDB:
                 "title": ch[1],
                 "chapter_number": ch[2],
                 "created_at": ch[3],
+                "mangadex_chapter_id": ch[4],
+                "mangadex_chapter_url": ch[5],
+                "chapter_pages_count": ch[6],
+                "has_images": ch[7] or False,
             })
         
         return {
@@ -622,7 +737,7 @@ class EditorDB:
     def get_chapters_for_series(cls, series_id: str) -> List[Dict[str, Any]]:
         """Get all chapters for a manga series, ordered by chapter number."""
         rows = cls.conn().execute(
-            "SELECT id, title, chapter_number, created_at, pages_json FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
+            "SELECT id, title, chapter_number, created_at, pages_json, mangadex_chapter_id, mangadex_chapter_url, chapter_pages_count, has_images FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
             (series_id,),
         ).fetchall()
         
@@ -640,6 +755,10 @@ class EditorDB:
                 "chapter_number": r[2],
                 "created_at": r[3],
                 "page_count": page_count,
+                "mangadex_chapter_id": r[5],
+                "mangadex_chapter_url": r[6],
+                "chapter_pages_count": r[7],
+                "has_images": r[8] or False,
             })
         
         return chapters
@@ -2299,3 +2418,72 @@ async def api_tts_backfill_urls(project_id: str):
             continue
 
     return {"ok": True, "updated": updated, "found": found}
+
+@router.post("/api/upload-chapter-images")
+async def upload_chapter_images(request: Request):
+    """Upload images for a chapter manually"""
+    try:
+        from fastapi import UploadFile, File, Form
+        
+        form = await request.form()
+        project_id = form.get("project_id")
+        
+        if not project_id:
+            return JSONResponse(content={"error": "project_id is required"}, status_code=400)
+        
+        # Get the project to verify it exists
+        project = EditorDB.get_project(project_id)
+        if not project:
+            return JSONResponse(content={"error": "Project not found"}, status_code=404)
+        
+        # Get uploaded files
+        files = form.getlist("files")
+        if not files:
+            return JSONResponse(content={"error": "No files uploaded"}, status_code=400)
+        
+        # Create project directory
+        project_dir = os.path.join(MANGA_DIR, project_id)
+        os.makedirs(project_dir, exist_ok=True)
+        
+        # Save files
+        saved_files = []
+        for idx, file in enumerate(files, start=1):
+            if not hasattr(file, 'filename'):
+                continue
+                
+            # Get file extension
+            ext = os.path.splitext(file.filename)[1] or '.jpg'
+            filename = f"page_{idx:03d}{ext}"
+            file_path = os.path.join(project_dir, filename)
+            
+            # Save file
+            content = await file.read()
+            with open(file_path, 'wb') as f:
+                f.write(content)
+            
+            # Store relative path
+            relative_path = f"/manga_projects/{project_id}/{filename}"
+            saved_files.append(relative_path)
+        
+        if not saved_files:
+            return JSONResponse(content={"error": "No valid image files uploaded"}, status_code=400)
+        
+        # Update project with uploaded images
+        pages_json = [{"page_number": i, "image_path": path} for i, path in enumerate(saved_files, start=1)]
+        
+        conn = EditorDB.conn()
+        conn.execute(
+            "UPDATE project_details SET pages_json=?, has_images=1 WHERE id=?",
+            (json.dumps(pages_json), project_id)
+        )
+        conn.commit()
+        
+        return JSONResponse(content={
+            "success": True,
+            "filesUploaded": len(saved_files),
+            "projectId": project_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error uploading chapter images: {e}", exc_info=True)
+        return JSONResponse(content={"error": str(e)}, status_code=500)

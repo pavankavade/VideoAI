@@ -315,6 +315,360 @@ async def mangadex_tags():
             status_code=500
         )
 
+@app.get("/mangadex/manga/{manga_id}/chapters")
+async def get_manga_chapters(manga_id: str, limit: int = 100, offset: int = 0, order: str = "asc"):
+    """Get list of chapters for a specific manga"""
+    try:
+        base_url = f"https://api.mangadex.org/manga/{manga_id}/feed"
+        
+        params = {
+            "limit": limit,
+            "offset": offset,
+            "translatedLanguage[]": ["en"],
+            "order[chapter]": order,
+            "includes[]": ["scanlation_group", "user"],
+            "contentRating[]": ["safe", "suggestive", "erotica"],
+        }
+        
+        mangadex_secret = os.environ.get("MANGADX_SECRET", "").strip()
+        headers = {}
+        if mangadex_secret:
+            headers["Authorization"] = f"Bearer {mangadex_secret}"
+        
+        async with asyncio.timeout(30):
+            response = requests.get(base_url, params=params, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            return JSONResponse(content=response.json())
+        else:
+            logger.error(f"MangaDex chapters API error: {response.status_code}")
+            return JSONResponse(
+                content={"error": f"Failed to fetch chapters: {response.status_code}"},
+                status_code=response.status_code
+            )
+    
+    except asyncio.TimeoutError:
+        return JSONResponse(content={"error": "Request timed out"}, status_code=504)
+    except Exception as e:
+        logger.error(f"Error fetching manga chapters: {e}", exc_info=True)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/mangadex/chapter/{chapter_id}/pages")
+async def get_chapter_pages(chapter_id: str, quality: str = "data"):
+    """Get page URLs for a specific chapter using MangaDex At-Home API"""
+    try:
+        # Get chapter metadata first
+        chapter_info_url = f"https://api.mangadex.org/chapter/{chapter_id}"
+        
+        mangadex_secret = os.environ.get("MANGADX_SECRET", "").strip()
+        headers = {}
+        if mangadex_secret:
+            headers["Authorization"] = f"Bearer {mangadex_secret}"
+        
+        async with asyncio.timeout(10):
+            chapter_response = requests.get(chapter_info_url, headers=headers, timeout=10)
+        
+        if chapter_response.status_code != 200:
+            return JSONResponse(content={"error": "Chapter not found"}, status_code=404)
+        
+        chapter_data = chapter_response.json()
+        chapter_attrs = chapter_data.get("data", {}).get("attributes", {})
+        
+        # Get At-Home server and page list
+        at_home_url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
+        
+        async with asyncio.timeout(10):
+            at_home_response = requests.get(at_home_url, timeout=10)
+        
+        if at_home_response.status_code == 200:
+            at_home_data = at_home_response.json()
+            
+            base_url = at_home_data["baseUrl"]
+            chapter_hash = at_home_data["chapter"]["hash"]
+            
+            # Choose quality
+            if quality == "data-saver":
+                filenames = at_home_data["chapter"]["dataSaver"]
+                quality_path = "data-saver"
+            else:
+                filenames = at_home_data["chapter"]["data"]
+                quality_path = "data"
+            
+            # Construct full image URLs
+            page_urls = [
+                f"{base_url}/{quality_path}/{chapter_hash}/{filename}"
+                for filename in filenames
+            ]
+            
+            return JSONResponse(content={
+                "success": True,
+                "chapterId": chapter_id,
+                "chapterNumber": chapter_attrs.get("chapter"),
+                "chapterTitle": chapter_attrs.get("title"),
+                "pages": page_urls,
+                "totalPages": len(page_urls),
+                "quality": quality,
+                "baseUrl": base_url,
+                "hash": chapter_hash,
+            })
+        else:
+            logger.error(f"At-Home API error: {at_home_response.status_code}")
+            return JSONResponse(
+                content={"error": f"Failed to fetch pages: {at_home_response.status_code}"},
+                status_code=at_home_response.status_code
+            )
+    
+    except asyncio.TimeoutError:
+        return JSONResponse(content={"error": "Request timed out"}, status_code=504)
+    except Exception as e:
+        logger.error(f"Error fetching chapter pages: {e}", exc_info=True)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/mangadex/import-series")
+async def import_mangadex_series(request: Request):
+    """Import a MangaDex manga as a series in the manga editor dashboard"""
+    try:
+        from mangaeditor import EditorDB
+        
+        body = await request.json()
+        manga_id = body.get("mangaId")
+        
+        if not manga_id:
+            return JSONResponse(content={"error": "mangaId is required"}, status_code=400)
+        
+        # Fetch manga metadata
+        manga_url = f"https://api.mangadex.org/manga/{manga_id}"
+        params = {
+            "includes[]": ["cover_art", "author", "artist"]
+        }
+        
+        mangadex_secret = os.environ.get("MANGADX_SECRET", "").strip()
+        headers = {}
+        if mangadex_secret:
+            headers["Authorization"] = f"Bearer {mangadex_secret}"
+        
+        async with asyncio.timeout(10):
+            manga_response = requests.get(manga_url, params=params, headers=headers, timeout=10)
+        
+        if manga_response.status_code != 200:
+            return JSONResponse(content={"error": "Manga not found"}, status_code=404)
+        
+        manga_data = manga_response.json()
+        manga_attrs = manga_data["data"]["attributes"]
+        manga_rels = manga_data["data"]["relationships"]
+        
+        # Extract metadata
+        title = manga_attrs.get("title", {}).get("en", "Unknown Title")
+        description_obj = manga_attrs.get("description", {})
+        description = description_obj.get("en", "") or next(iter(description_obj.values()), "")
+        status = manga_attrs.get("status", "unknown")
+        
+        # Get author
+        author = ""
+        for rel in manga_rels:
+            if rel.get("type") == "author":
+                author = rel.get("attributes", {}).get("name", "")
+                break
+        
+        # Get cover art
+        cover_url = ""
+        cover_filename = ""
+        for rel in manga_rels:
+            if rel.get("type") == "cover_art":
+                cover_filename = rel.get("attributes", {}).get("fileName", "")
+                break
+        
+        if cover_filename:
+            cover_url = f"https://uploads.mangadex.org/covers/{manga_id}/{cover_filename}.512.jpg"
+        
+        # Fetch chapters - handle pagination to get all chapters
+        chapters_url = f"https://api.mangadex.org/manga/{manga_id}/feed"
+        all_chapters = []
+        offset = 0
+        limit = 100
+        max_requests = 10  # Safety limit
+        requests_made = 0
+        
+        while requests_made < max_requests:
+            chapters_params = {
+                "translatedLanguage[]": "en",
+                "order[chapter]": "asc",  # Ascending order to get all chapters
+                "order[publishAt]": "desc",  # Latest upload first for same chapter
+                "limit": limit,
+                "offset": offset,
+                "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"],
+                "includeExternalUrl": 0
+            }
+            
+            async with asyncio.timeout(10):
+                chapters_response = requests.get(chapters_url, params=chapters_params, headers=headers, timeout=10)
+            
+            requests_made += 1
+            
+            if chapters_response.status_code != 200:
+                logger.error(f"Failed to fetch chapters: {chapters_response.status_code}")
+                return JSONResponse(content={"error": "Failed to fetch chapters"}, status_code=500)
+            
+            chapters_data = chapters_response.json()
+            batch = chapters_data.get("data", [])
+            
+            logger.info(f"Batch {requests_made}: Got {len(batch)} chapters, offset={offset}")
+            
+            if not batch:
+                break
+                
+            all_chapters.extend(batch)
+            
+            # Check if there are more chapters
+            total = chapters_data.get("total", 0)
+            logger.info(f"Total available: {total}, fetched so far: {len(all_chapters)}")
+            
+            if len(all_chapters) >= total:
+                break
+                
+            offset += limit
+        
+        logger.info(f"Fetched {len(all_chapters)} total chapters for manga {manga_id}")
+        
+        # Group chapters by chapter number and keep only the latest English version
+        chapters_by_number = {}
+        for chapter in all_chapters:
+            chapter_attrs = chapter.get("attributes", {})
+            chapter_num = chapter_attrs.get("chapter")
+            
+            if not chapter_num:
+                continue
+                
+            # Skip non-numeric chapters
+            try:
+                chapter_number = float(chapter_num)
+            except (ValueError, TypeError):
+                logger.debug(f"Skipping non-numeric chapter: {chapter_num}")
+                continue
+            
+            # Only keep the first (latest) occurrence of each chapter number
+            if chapter_number not in chapters_by_number:
+                chapters_by_number[chapter_number] = {
+                    "id": chapter.get("id"),
+                    "number": chapter_number,
+                    "title": chapter_attrs.get("title", ""),
+                    "pages": chapter_attrs.get("pages", 0),
+                    "publishAt": chapter_attrs.get("publishAt", "")
+                }
+        
+        logger.info(f"Grouped into {len(chapters_by_number)} unique chapters: {sorted(chapters_by_number.keys())}")
+        
+        # Create series in database (no need to call connect, it's automatic)
+        # Check if this manga is already imported
+        conn = EditorDB.conn()
+        existing = conn.execute(
+            "SELECT id FROM manga_series WHERE mangadex_id=?",
+            (manga_id,)
+        ).fetchone()
+        
+        if existing:
+            # Update existing series
+            series_id = existing[0]
+            conn.execute(
+                """UPDATE manga_series 
+                   SET name=?, description=?, author=?, status=?, cover_url=?, mangadex_url=?, updated_at=?
+                   WHERE id=?""",
+                (title, description, author, status, cover_url, f"https://mangadex.org/title/{manga_id}", 
+                 datetime.utcnow().isoformat(), series_id)
+            )
+            conn.commit()
+        else:
+            # Create new series
+            series_id = f"mdx_{manga_id}_{int(time.time() * 1000)}"
+            mangadex_url = f"https://mangadex.org/title/{manga_id}"
+            
+            EditorDB.add_manga_series(
+                series_id=series_id,
+                name=title,
+                mangadex_id=manga_id,
+                description=description,
+                author=author,
+                status=status,
+                cover_url=cover_url,
+                mangadex_url=mangadex_url
+            )
+        
+        # Create chapter placeholders
+        chapter_count = 0
+        # Sort chapters by number
+        for chapter_number in sorted(chapters_by_number.keys()):
+            chapter_data = chapters_by_number[chapter_number]
+            chapter_id = chapter_data["id"]
+            chapter_title = chapter_data["title"]
+            pages_count = chapter_data["pages"]
+            
+            # Format chapter number for display
+            if chapter_number == int(chapter_number):
+                chapter_num_str = str(int(chapter_number))
+            else:
+                chapter_num_str = str(chapter_number)
+            
+            # Build proper chapter title
+            if chapter_title:
+                project_name = f"{title} - Ch. {chapter_num_str}: {chapter_title}"
+            else:
+                project_name = f"{title} - Chapter {chapter_num_str}"
+            
+            # Chapter URL on MangaDex
+            mangadex_chapter_url = f"https://mangadex.org/chapter/{chapter_id}"
+            
+            # Create project for this chapter (skip if already exists)
+            project_id = f"{series_id}_ch{chapter_num_str}_{int(time.time() * 1000)}"
+            
+            # Check if chapter already exists for this series
+            # Use float comparison to support sub-chapters like 2.1, 2.2, 2.3
+            existing_chapter = conn.execute(
+                "SELECT id FROM project_details WHERE manga_series_id=? AND chapter_number=?",
+                (series_id, chapter_number)
+            ).fetchone()
+            
+            if existing_chapter:
+                # Update existing chapter
+                conn.execute(
+                    """UPDATE project_details 
+                       SET title=?, mangadex_chapter_id=?, mangadex_chapter_url=?, chapter_pages_count=?
+                       WHERE id=?""",
+                    (project_name, chapter_id, mangadex_chapter_url, pages_count, existing_chapter[0])
+                )
+                conn.commit()
+            else:
+                # Create new chapter with float chapter_number
+                EditorDB.create_project(
+                    project_id=project_id,
+                    name=project_name,
+                    manga_series_id=series_id,
+                    chapter_number=chapter_number,  # Use float, not int
+                    mangadex_chapter_id=chapter_id,
+                    mangadex_chapter_url=mangadex_chapter_url,
+                    chapter_pages_count=pages_count,
+                    has_images=0
+                )
+            
+            chapter_count += 1
+        
+        return JSONResponse(content={
+            "success": True,
+            "seriesId": series_id,
+            "title": title,
+            "chaptersImported": chapter_count,
+            "description": description,
+            "author": author,
+            "coverUrl": cover_url,
+            "mangadexUrl": f"https://mangadex.org/title/{manga_id}",
+            "isUpdate": existing is not None
+        })
+        
+    except asyncio.TimeoutError:
+        return JSONResponse(content={"error": "Request timed out"}, status_code=504)
+    except Exception as e:
+        logger.error(f"Error importing MangaDex series: {e}", exc_info=True)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 # Effect Configuration Endpoints
 if __name__ == "__main__":
     # Optional direct runner for convenience: `python main.py`
