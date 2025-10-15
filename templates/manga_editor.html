@@ -74,6 +74,7 @@
             </div>
             <div class="row">
               <button id="btnNarrateSequential" class="btn">Create Narration (All)</button>
+              <button id="btnContinueNarration" class="btn" style="background:#10b981">Continue Narration</button>
               <button id="btnRedoNarration" class="btn secondary" title="Overwrite existing narration">Redo Narration</button>
               <button id="btnNarratePage" class="btn secondary">Narrate Current Page</button>
             </div>
@@ -98,10 +99,10 @@
           <div style="font-weight:700;margin-bottom:8px">Character List (Markdown)</div>
           <textarea id="characterMd" class="textarea" placeholder="- Character Name: appearance notes\n- …"></textarea>
           <div class="nav">
-            <div class="status">You can prefill this before narrating, or let it auto-update after.</div>
+            <div class="status">⚠️ Manual update required: Edit character list as you narrate, then click Save.</div>
             <div class="row">
-              <button id="btnSaveCharacters" class="btn secondary">Save</button>
-              <button id="btnAutoCharacters" class="btn">Auto Update From Narration</button>
+              <button id="btnSaveCharacters" class="btn">💾 Save Character List</button>
+              <button id="btnAutoCharacters" class="btn secondary">Auto Update From Narration</button>
             </div>
           </div>
           </div>
@@ -125,12 +126,12 @@
         <div class="card">
           <div class="card-pad">
           <div style="font-weight:700;margin-bottom:8px">Current Chapter Summary</div>
-          <textarea id="storySummaryCurrent" class="textarea" placeholder="A summary of THIS chapter will appear here after narration is complete, or you can write your own..."></textarea>
+          <textarea id="storySummaryCurrent" class="textarea" placeholder="Auto-generated after narration completes. You can also edit manually..."></textarea>
           <div class="nav">
-            <div class="status">Auto-generated after full narration, or manually create/edit.</div>
+            <div class="status">✨ Auto-generated after narration completion. Manual editing optional.</div>
             <div class="row">
-              <button id="btnSaveStory" class="btn secondary">Save</button>
-              <button id="btnGenerateStory" class="btn">Generate Summary</button>
+              <button id="btnSaveStory" class="btn secondary">Save Manual Edits</button>
+              <button id="btnGenerateStory" class="btn secondary">Re-generate Summary</button>
             </div>
           </div>
           </div>
@@ -291,16 +292,33 @@
       }
     }
 
-    async function narrateAll(redo=false){
+    async function narrateAll(redo=false, skipExisting=false){
       const mdEl = document.getElementById('characterMd');
       const characterList = mdEl.value || '';
       // Only pages that have panels
-      const pagesWithPanels = (pages||[]).filter(pg => (pg.panels||[]).length > 0);
+      let pagesWithPanels = (pages||[]).filter(pg => (pg.panels||[]).length > 0);
+      
+      // If skipExisting, filter out pages that already have narration
+      if (skipExisting) {
+        pagesWithPanels = pagesWithPanels.filter(pg => {
+          const hasNarration = (pg.panels||[]).some(p => p.text && p.text.trim().length > 0);
+          return !hasNarration;
+        });
+      }
+      
       const total = pagesWithPanels.length;
-      if(total === 0){ alert('No panels found. Create panels first.'); return; }
+      if(total === 0){ 
+        if (skipExisting) {
+          alert('All pages already have narration!'); 
+        } else {
+          alert('No panels found. Create panels first.'); 
+        }
+        return; 
+      }
 
       let accumulated = '';
       setNarrationBusy(true, `Starting narration for ${total} page(s)…`, 0);
+      
       for(let i=0;i<total;i++){
         const pg = pagesWithPanels[i];
         const label = `Page ${i+1}/${total} (Page ${pg.page_number})…`;
@@ -310,7 +328,19 @@
             method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
             body: JSON.stringify({ characterList, context: accumulated })
           });
-          if(!resp.ok){ throw new Error(`Narration failed for page ${pg.page_number}`); }
+          
+          if(!resp.ok){ 
+            // Check if it's a blocked content error
+            const errorData = await resp.json().catch(() => null);
+            if (errorData && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.error === 'blocked') {
+              // Show blocked content UI
+              setNarrationBusy(false);
+              await showBlockedContentUI(pg.page_number, errorData.detail);
+              return; // Stop the batch narration
+            }
+            throw new Error(`Narration failed for page ${pg.page_number}`); 
+          }
+          
           const data = await resp.json();
           const items = (data && Array.isArray(data.panels)) ? data.panels : [];
           // Build context like server does
@@ -323,13 +353,210 @@
         }
       }
       setNarrationBusy(true, 'Finalizing…', 100);
-      // Optional: auto-update character list if user left it empty
-      if((characterList.trim().length === 0)){
-        try{ await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} }); }catch(_){ }
-      }
+      
+      // Reload data to get updated narrations
       await fetchSummary();
+      
+      // Automatically generate story summary after narration is complete
+      setNarrationBusy(true, 'Generating story summary…', 100);
+      try {
+        const summaryResp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { 
+          method:'POST', 
+          headers:{'ngrok-skip-browser-warning':'true'} 
+        });
+        if (summaryResp.ok) {
+          const summaryData = await summaryResp.json();
+          document.getElementById('storySummaryCurrent').value = summaryData.summary || '';
+        }
+      } catch(e) {
+        console.error('Story summary generation failed:', e);
+        // Don't fail the whole process if summary generation fails
+      }
+      
       setNarrationBusy(false);
-      if(redo){ alert('Narration updated'); }
+      
+      // Show completion message with prompt to update character list
+      let completionMsg = '';
+      if(redo) {
+        completionMsg = 'Narration updated and story summary generated!\n\nDon\'t forget to update the Character List if needed.';
+      } else if(skipExisting) {
+        completionMsg = 'Continued narration complete and story summary generated!\n\nDon\'t forget to update the Character List if needed.';
+      } else {
+        completionMsg = 'Narration complete and story summary generated!\n\nDon\'t forget to update the Character List manually.';
+      }
+      alert(completionMsg);
+    }
+
+    async function showBlockedContentUI(pageNumber, errorDetail) {
+      const prompt = errorDetail.prompt || 'Could not extract prompt';
+      const message = errorDetail.message || 'Content was blocked';
+      const blockReason = errorDetail.block_reason || 'UNKNOWN';
+      
+      // Find the page
+      const pageIdx = pages.findIndex(p => p.page_number === pageNumber);
+      if (pageIdx === -1) return;
+      
+      currentPageIndex = pageIdx;
+      renderPages();
+      
+      // Get panel count for this page
+      const pg = pages[pageIdx];
+      const panelCount = (pg.panels || []).length;
+      
+      // Create a modal/dialog for blocked content
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px';
+      modal.innerHTML = `
+        <div class="card" style="max-width:800px;width:100%;max-height:90vh;overflow:auto">
+          <div class="card-pad">
+            <h2 style="color:#ef4444;margin-bottom:16px">⚠️ Content Blocked for Page ${pageNumber}</h2>
+            <p style="margin-bottom:16px;color:#94a3b8">${message}</p>
+            <p style="margin-bottom:16px;color:#94a3b8"><strong>Block Reason:</strong> ${blockReason}</p>
+            
+            <div style="margin-bottom:16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <strong>System Prompt (for manual processing):</strong>
+                <button id="copyPromptBtn" class="btn secondary">📋 Copy Prompt</button>
+              </div>
+              <textarea readonly class="textarea" style="min-height:200px;font-family:monospace;font-size:12px;background:#0b1220">${prompt}</textarea>
+            </div>
+            
+            <div style="margin-bottom:16px">
+              <strong>Manual Narration Entry:</strong>
+              <p style="color:#94a3b8;margin:8px 0;font-size:14px">Paste JSON format from AI or enter line-by-line. <strong>Panel count: ${panelCount}</strong></p>
+              <div style="margin-bottom:8px">
+                <label style="display:flex;align-items:center;gap:8px;color:#94a3b8;font-size:14px">
+                  <input type="radio" name="narrationFormat" value="json" checked style="margin:0">
+                  JSON Format (recommended - panel_index starts at 1)
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;color:#94a3b8;font-size:14px">
+                  <input type="radio" name="narrationFormat" value="lines" style="margin:0">
+                  Line-by-line (one panel per line, auto-numbered)
+                </label>
+              </div>
+              <textarea id="manualNarrationInput" class="textarea" placeholder='JSON Format (panel_index: 1, 2, 3...):
+{
+  "panels": [
+    {
+      "panel_index": 1,
+      "text": "Your narration here"
+    },
+    {
+      "panel_index": 2,
+      "text": "Next panel narration"
+    }
+  ]
+}
+
+OR Line-by-line (auto-numbered 1, 2, 3...):
+Panel 1 narration
+Panel 2 narration
+Panel 3 narration' style="min-height:200px;font-family:monospace;font-size:13px"></textarea>
+            </div>
+            
+            <div class="row" style="justify-content:flex-end;gap:8px">
+              <button id="cancelBlockedBtn" class="btn secondary">Cancel</button>
+              <button id="saveManualNarrationBtn" class="btn">Save Manual Narration</button>
+            </div>
+          </div>
+        </div>
+      `;
+      
+      document.body.appendChild(modal);
+      
+      // Copy prompt button
+      modal.querySelector('#copyPromptBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(prompt).then(() => {
+          alert('Prompt copied to clipboard!');
+        }).catch(err => {
+          console.error('Failed to copy:', err);
+          alert('Failed to copy prompt');
+        });
+      });
+      
+      // Cancel button
+      modal.querySelector('#cancelBlockedBtn').addEventListener('click', () => {
+        document.body.removeChild(modal);
+      });
+      
+      // Save manual narration button
+      modal.querySelector('#saveManualNarrationBtn').addEventListener('click', async () => {
+        const manualText = modal.querySelector('#manualNarrationInput').value.trim();
+        if (!manualText) {
+          alert('Please enter narration text');
+          return;
+        }
+        
+        const pg = pages[pageIdx];
+        const panelCount = (pg.panels || []).length;
+        let panelsData = [];
+        
+        // Check which format is selected
+        const formatRadio = modal.querySelector('input[name="narrationFormat"]:checked');
+        const format = formatRadio ? formatRadio.value : 'json';
+        
+        if (format === 'json') {
+          // Try to parse as JSON first
+          try {
+            const parsed = JSON.parse(manualText);
+            
+            // Check if it has the expected structure
+            if (parsed.panels && Array.isArray(parsed.panels)) {
+              panelsData = parsed.panels.map(p => ({
+                panel_index: parseInt(p.panel_index) || 0,
+                text: String(p.text || '').trim()
+              })).filter(p => p.text && p.panel_index > 0);
+            } else {
+              throw new Error('JSON must have a "panels" array');
+            }
+          } catch (e) {
+            alert('Invalid JSON format. Please check the structure:\n{\n  "panels": [\n    {"panel_index": 1, "text": "..."},\n    {"panel_index": 2, "text": "..."}\n  ]\n}\n\nError: ' + e.message);
+            return;
+          }
+        } else {
+          // Line-by-line format
+          const lines = manualText.split('\n').filter(l => l.trim());
+          for (let i = 0; i < Math.min(lines.length, panelCount); i++) {
+            panelsData.push({
+              panel_index: i + 1,
+              text: lines[i].trim()
+            });
+          }
+        }
+        
+        if (panelsData.length === 0) {
+          alert('No valid narration data found');
+          return;
+        }
+        
+        // Validate panel indices
+        const maxIndex = Math.max(...panelsData.map(p => p.panel_index));
+        if (maxIndex > panelCount) {
+          if (!confirm(`Warning: You have panel_index ${maxIndex} but only ${panelCount} panels exist. Continue anyway?`)) {
+            return;
+          }
+        }
+        
+        // Save to backend
+        try {
+          const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${pageNumber}/manual`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true'},
+            body: JSON.stringify({ panels: panelsData })
+          });
+          
+          if (!resp.ok) {
+            throw new Error('Failed to save manual narration');
+          }
+          
+          document.body.removeChild(modal);
+          await fetchSummary();
+          alert(`Manual narration saved for page ${pageNumber}! (${panelsData.length} panels updated)`);
+        } catch (err) {
+          console.error(err);
+          alert('Failed to save manual narration: ' + err.message);
+        }
+      });
     }
 
     document.getElementById('btnCreatePanels').addEventListener('click', async ()=>{
@@ -343,12 +570,16 @@
     });
 
     document.getElementById('btnNarrateSequential').addEventListener('click', async ()=>{
-      narrateAll(false);
+      narrateAll(false, false);
+    });
+
+    document.getElementById('btnContinueNarration').addEventListener('click', async ()=>{
+      narrateAll(false, true);
     });
 
     document.getElementById('btnRedoNarration').addEventListener('click', async ()=>{
       if(!confirm('This will overwrite existing panel narrations. Continue?')) return;
-      narrateAll(true);
+      narrateAll(true, false);
     });
 
     document.getElementById('btnNarratePage').addEventListener('click', async ()=>{
@@ -356,25 +587,80 @@
       const pg = pages[currentPageIndex] || pages[0];
       const characterList = document.getElementById('characterMd').value || '';
       setNarrationBusy(true, `Generating narration for page ${pg.page_number}…`, 0);
-      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${encodeURIComponent(pg.page_number)}`, { method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ characterList }) });
-      if(!r.ok){ setNarrationBusy(false); alert('Narration failed'); return; }
-      await fetchSummary();
-      setNarrationBusy(false);
+      
+      try {
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${encodeURIComponent(pg.page_number)}`, { 
+          method:'POST', 
+          headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, 
+          body: JSON.stringify({ characterList }) 
+        });
+        
+        if(!r.ok){ 
+          const errorData = await r.json().catch(() => null);
+          if (errorData && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.error === 'blocked') {
+            setNarrationBusy(false);
+            await showBlockedContentUI(pg.page_number, errorData.detail);
+            return;
+          }
+          setNarrationBusy(false); 
+          alert('Narration failed'); 
+          return; 
+        }
+        
+        await fetchSummary();
+        setNarrationBusy(false);
+      } catch(e) {
+        setNarrationBusy(false);
+        alert('Narration failed: ' + (e.message || 'Unknown error'));
+      }
     });
 
     document.getElementById('btnSaveCharacters').addEventListener('click', async ()=>{
       const markdown = document.getElementById('characterMd').value || '';
-      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters`, { method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ markdown }) });
-      if(!r.ok){ alert('Save failed'); return; }
-      alert('Saved');
+      try {
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters`, { 
+          method:'PUT', 
+          headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, 
+          body: JSON.stringify({ markdown }) 
+        });
+        if(!r.ok){ 
+          const errData = await r.json().catch(() => ({}));
+          alert('Save failed: ' + (errData.detail || 'Unknown error')); 
+          return; 
+        }
+        const result = await r.json();
+        alert('Character list saved successfully!');
+      } catch(e) {
+        console.error('Character save error:', e);
+        alert('Failed to save character list: ' + e.message);
+      }
     });
 
     document.getElementById('btnAutoCharacters').addEventListener('click', async ()=>{
-      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
-      if(!r.ok){ alert('Auto update failed'); return; }
-      const d = await r.json();
-      document.getElementById('characterMd').value = d.markdown || '';
-      alert('Character list updated');
+      const btn = document.getElementById('btnAutoCharacters');
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Updating...';
+      try {
+        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { 
+          method:'POST', 
+          headers:{'ngrok-skip-browser-warning':'true'} 
+        });
+        if(!r.ok){ 
+          const errData = await r.json().catch(() => ({}));
+          alert('Auto update failed: ' + (errData.detail || 'Unknown error')); 
+          return; 
+        }
+        const d = await r.json();
+        document.getElementById('characterMd').value = d.markdown || '';
+        alert('Character list auto-updated from narrations!');
+      } catch(e) {
+        console.error('Character auto-update error:', e);
+        alert('Failed to auto-update character list: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
     });
 
     document.getElementById('btnSaveStory').addEventListener('click', async ()=>{

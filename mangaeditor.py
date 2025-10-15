@@ -1545,98 +1545,194 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
 
 @router.post("/api/project/{project_id}/narrate/page/{page_number}")
 async def api_narrate_single_page(project_id: str, page_number: int, payload: Dict[str, Any]):
-    if genai is None or not _GEMINI_KEYS:
-        raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
-
-    project = EditorDB.get_project(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    pages = EditorDB.get_pages(project_id)
-    # Ensure the page exists
-    if not any(int(p["page_number"]) == int(page_number) for p in pages):
-        raise HTTPException(status_code=404, detail="Page not found")
-    panels = EditorDB.get_panels_for_page(project_id, int(page_number))
-    imgs: List[bytes] = []
-    for p in panels:
-        img_url = extract_panel_image(p)
-        if not img_url:
-            continue
-        b = _load_image_bytes(img_url)
-        if b:
-            imgs.append(b)
-    if not imgs:
-        raise HTTPException(status_code=400, detail="Page has no panels")
-
-    char_md = str(payload.get("characterList") or EditorDB.get_character_list(project_id) or "")
-    context_txt = str(payload.get("context") or "")
-
-    model = _gemini_client()
-    if model is None:
-        raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
-
-    contents = _build_page_prompt(int(page_number), imgs, context_txt, char_md)
     try:
-        resp = model.generate_content(contents)
-        txt = resp.text or ""
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+        if genai is None or not _GEMINI_KEYS:
+            raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
 
-    data = _extract_json(txt)
-    out = []
-    if isinstance(data, dict) and isinstance(data.get("panels"), list):
-        num_panels = len(panels)
-        merged: Dict[int, List[str]] = {i: [] for i in range(1, num_panels + 1)}
-        for item in data["panels"]:
-            try:
-                idx = int(item.get("panel_index"))
-            except Exception:
-                idx = 1
-            if idx <= 0:
-                idx = 1
-            if num_panels <= 0:
+        project = EditorDB.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        pages = EditorDB.get_pages(project_id)
+        # Ensure the page exists
+        if not any(int(p["page_number"]) == int(page_number) for p in pages):
+            raise HTTPException(status_code=404, detail="Page not found")
+        panels = EditorDB.get_panels_for_page(project_id, int(page_number))
+        imgs: List[bytes] = []
+        for p in panels:
+            img_url = extract_panel_image(p)
+            if not img_url:
                 continue
-            if idx > num_panels:
-                idx = 1  # route overflow narrations to first panel
-            t = str(item.get("text") or "").strip()
-            if t:
-                merged[idx].append(t)
-        for i in range(1, num_panels + 1):
-            combined = " ".join(merged.get(i) or [])
-            if combined:
-                EditorDB.upsert_panel_narration(project_id, int(page_number), i, combined)
-                out.append({"panel_index": i, "text": combined})
-        # Cleanup any legacy rows without images on this page
-        try:
-            EditorDB.conn().execute(
-                "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
-                (project_id, int(page_number)),
-            )
-            EditorDB.conn().commit()
-        except Exception:
-            pass
-    else:
-        # fallback assignment in order
-        segs = [s.strip() for s in (txt or "").split(".") if s.strip()]
-        if len(panels) == 1:
-            combined = (". ".join(segs).strip() + ".") if segs else ""
-            EditorDB.upsert_panel_narration(project_id, int(page_number), 1, combined)
-            out.append({"panel_index": 1, "text": combined})
-        else:
-            for idx1 in range(1, len(panels) + 1):
-                t = (segs[idx1 - 1] + ".") if (idx1 - 1) < len(segs) else ""
-                EditorDB.upsert_panel_narration(project_id, int(page_number), idx1, t)
-                out.append({"panel_index": idx1, "text": t})
-        # Cleanup any legacy rows without images on this page
-        try:
-            EditorDB.conn().execute(
-                "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
-                (project_id, int(page_number)),
-            )
-            EditorDB.conn().commit()
-        except Exception:
-            pass
+            b = _load_image_bytes(img_url)
+            if b:
+                imgs.append(b)
+        if not imgs:
+            raise HTTPException(status_code=400, detail="Page has no panels")
 
-    return {"ok": True, "page_number": int(page_number), "panels": out}
+        char_md = str(payload.get("characterList") or EditorDB.get_character_list(project_id) or "")
+        context_txt = str(payload.get("context") or "")
+
+        model = _gemini_client()
+        if model is None:
+            raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
+
+        contents = _build_page_prompt(int(page_number), imgs, context_txt, char_md)
+        
+        # Helper to extract text prompt for copying
+        def extract_text_prompt(contents):
+            """Extract the text portions of the prompt for user to copy"""
+            try:
+                if isinstance(contents, list) and len(contents) > 0:
+                    parts = contents[0].get("parts", [])
+                    text_parts = [p for p in parts if isinstance(p, str)]
+                    return "\n".join(text_parts)
+            except Exception:
+                pass
+            return "Could not extract prompt text"
+        
+        try:
+            resp = model.generate_content(contents)
+            
+            # Check if the response was blocked
+            if not resp.candidates:
+                block_reason = "UNKNOWN"
+                feedback_msg = "No additional information available"
+                
+                if hasattr(resp, 'prompt_feedback'):
+                    feedback = resp.prompt_feedback
+                    if hasattr(feedback, 'block_reason'):
+                        block_reason = str(feedback.block_reason)
+                    feedback_msg = f"Prompt feedback: {feedback}"
+                
+                logger.warning(f"Gemini blocked prompt for project {project_id}, page {page_number}. Reason: {block_reason}, Feedback: {feedback_msg}")
+                
+                # Return the prompt text so user can copy it
+                prompt_text = extract_text_prompt(contents)
+                
+                raise HTTPException(
+                    status_code=400, 
+                    detail={
+                        "error": "blocked",
+                        "message": f"Content was blocked by Gemini safety filters. Block reason: {block_reason}. This may be due to inappropriate content in the images or context.",
+                        "block_reason": block_reason,
+                        "prompt": prompt_text,
+                        "page_number": int(page_number)
+                    }
+                )
+            
+            txt = resp.text or ""
+        except HTTPException:
+            raise
+        except ValueError as e:
+            # Handle the specific ValueError from accessing .text when candidates are empty
+            if "response.candidates" in str(e) or "blocked prompt" in str(e).lower():
+                logger.warning(f"Gemini blocked prompt for project {project_id}, page {page_number}: {e}")
+                prompt_text = extract_text_prompt(contents)
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "blocked",
+                        "message": "Content was blocked by Gemini safety filters. This may be due to inappropriate content in the images or context.",
+                        "block_reason": "OTHER",
+                        "prompt": prompt_text,
+                        "page_number": int(page_number)
+                    }
+                )
+            logger.error(f"Gemini API error for project {project_id}, page {page_number}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+        except Exception as e:
+            logger.error(f"Gemini API error for project {project_id}, page {page_number}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+
+        data = _extract_json(txt)
+        out = []
+        if isinstance(data, dict) and isinstance(data.get("panels"), list):
+            num_panels = len(panels)
+            merged: Dict[int, List[str]] = {i: [] for i in range(1, num_panels + 1)}
+            for item in data["panels"]:
+                try:
+                    idx = int(item.get("panel_index"))
+                except Exception:
+                    idx = 1
+                if idx <= 0:
+                    idx = 1
+                if num_panels <= 0:
+                    continue
+                if idx > num_panels:
+                    idx = 1  # route overflow narrations to first panel
+                t = str(item.get("text") or "").strip()
+                if t:
+                    merged[idx].append(t)
+            for i in range(1, num_panels + 1):
+                combined = " ".join(merged.get(i) or [])
+                if combined:
+                    EditorDB.upsert_panel_narration(project_id, int(page_number), i, combined)
+                    out.append({"panel_index": i, "text": combined})
+            # Cleanup any legacy rows without images on this page
+            try:
+                EditorDB.conn().execute(
+                    "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
+                    (project_id, int(page_number)),
+                )
+                EditorDB.conn().commit()
+            except Exception:
+                pass
+        else:
+            # fallback assignment in order
+            segs = [s.strip() for s in (txt or "").split(".") if s.strip()]
+            if len(panels) == 1:
+                combined = (". ".join(segs).strip() + ".") if segs else ""
+                EditorDB.upsert_panel_narration(project_id, int(page_number), 1, combined)
+                out.append({"panel_index": 1, "text": combined})
+            else:
+                for idx1 in range(1, len(panels) + 1):
+                    t = (segs[idx1 - 1] + ".") if (idx1 - 1) < len(segs) else ""
+                    EditorDB.upsert_panel_narration(project_id, int(page_number), idx1, t)
+                    out.append({"panel_index": idx1, "text": t})
+            # Cleanup any legacy rows without images on this page
+            try:
+                EditorDB.conn().execute(
+                    "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
+                    (project_id, int(page_number)),
+                )
+                EditorDB.conn().commit()
+            except Exception:
+                pass
+
+        return {"ok": True, "page_number": int(page_number), "panels": out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in api_narrate_single_page for project {project_id}, page {page_number}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/api/project/{project_id}/narrate/page/{page_number}/manual")
+async def api_save_manual_narration(project_id: str, page_number: int, payload: Dict[str, Any]):
+    """Manually save narration for panels on a page (when AI generation is blocked or user wants manual control)"""
+    try:
+        project = EditorDB.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        panels_data = payload.get("panels", [])
+        if not isinstance(panels_data, list):
+            raise HTTPException(status_code=400, detail="panels must be an array")
+        
+        saved_panels = []
+        for panel_item in panels_data:
+            panel_index = panel_item.get("panel_index")
+            text = panel_item.get("text", "").strip()
+            
+            if panel_index and text:
+                EditorDB.upsert_panel_narration(project_id, int(page_number), int(panel_index), text)
+                saved_panels.append({"panel_index": int(panel_index), "text": text})
+        
+        return {"ok": True, "page_number": int(page_number), "panels": saved_panels}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving manual narration for project {project_id}, page {page_number}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.get("/api/project/{project_id}/characters")

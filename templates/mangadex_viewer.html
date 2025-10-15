@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MangaDex Viewer - Advanced Search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/ui.build.css?v=1" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: #020617;
+      color: #e2e8f0;
+      position: relative;
+      min-height: 100vh;
+    }
+    
+    /* Animated gradient background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 600px;
+      background: radial-gradient(ellipse at top, rgba(99, 102, 241, 0.15), transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    
+    .main-content {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    
+    .container {
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+    
+    /* Header Styles */
+    .header-card {
+      background: linear-gradient(135deg, rgba(14, 26, 49, 0.8), rgba(11, 23, 45, 0.9));
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 24px;
+      padding: 40px 48px;
+      margin-bottom: 32px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+    }
+    
+    .page-title {
+      font-size: 36px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    
+    .page-subtitle {
+      color: #94a3b8;
+      font-size: 15px;
+      font-weight: 500;
+    }
+    
+    /* Filter Section */
+    .filter-section {
+      background: linear-gradient(135deg, rgba(14, 26, 49, 0.7), rgba(11, 23, 45, 0.85));
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 20px;
+      padding: 32px;
+      margin-bottom: 32px;
+      backdrop-filter: blur(15px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+    
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    
+    .filter-label {
+      font-weight: 600;
+      color: #cbd5e1;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .input, .select {
+      background: rgba(11, 23, 45, 0.8);
+      border: 1px solid rgba(71, 85, 105, 0.6);
+      color: #e6f0ff;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+    
+    .input:focus, .select:focus {
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+      outline: none;
+      background: rgba(11, 23, 45, 0.95);
+    }
+    
+    .input::placeholder {
+      color: #64748b;
+    }
+    
+    /* Tag Pills */
+    .tag-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    
+    .tag-pill {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: #a5b4fc;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    
+    .tag-pill:hover {
+      background: rgba(99, 102, 241, 0.25);
+      border-color: rgba(99, 102, 241, 0.5);
+    }
+    
+    .tag-pill.selected {
+      background: rgba(99, 102, 241, 0.3);
+      border-color: #6366f1;
+      color: #c7d2fe;
+    }
+    
+    .tag-pill .remove {
+      font-size: 16px;
+      line-height: 1;
+      opacity: 0.7;
+    }
+    
+    .tag-pill .remove:hover {
+      opacity: 1;
+    }
+    
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: none;
+      text-decoration: none;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: white;
+      box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(99, 102, 241, 0.4);
+    }
+    
+    .btn-secondary {
+      background: rgba(30, 41, 59, 0.8);
+      color: #e5e7eb;
+      border: 1px solid #334155;
+    }
+    
+    .btn-secondary:hover {
+      background: rgba(51, 65, 85, 0.9);
+      border-color: #475569;
+    }
+    
+    .filter-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      padding-top: 16px;
+      border-top: 1px solid rgba(71, 85, 105, 0.3);
+    }
+    
+    /* Results Grid */
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 0 4px;
+    }
+    
+    .results-count {
+      font-size: 18px;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    
+    .view-toggle {
+      display: flex;
+      gap: 8px;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 4px;
+      border-radius: 10px;
+      border: 1px solid rgba(71, 85, 105, 0.4);
+    }
+    
+    .view-btn {
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: transparent;
+      color: #94a3b8;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    
+    .view-btn.active {
+      background: #6366f1;
+      color: white;
+    }
+    
+    .manga-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+    
+    .manga-card {
+      background: linear-gradient(135deg, rgba(14, 26, 49, 0.7), rgba(11, 23, 45, 0.9));
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      border-radius: 16px;
+      overflow: hidden;
+      transition: all 0.3s ease;
+      cursor: pointer;
+      position: relative;
+    }
+    
+    .manga-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(99, 102, 241, 0.5);
+      box-shadow: 0 12px 40px rgba(99, 102, 241, 0.2);
+    }
+    
+    .manga-cover {
+      position: relative;
+      width: 100%;
+      height: 420px;
+      overflow: hidden;
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+    }
+    
+    .manga-cover img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.3s ease;
+    }
+    
+    .manga-card:hover .manga-cover img {
+      transform: scale(1.05);
+    }
+    
+    .manga-rating {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(10px);
+      padding: 6px 12px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fbbf24;
+    }
+    
+    .manga-status {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(10px);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .status-ongoing { color: #34d399; border: 1px solid rgba(52, 211, 153, 0.3); }
+    .status-completed { color: #60a5fa; border: 1px solid rgba(96, 165, 250, 0.3); }
+    .status-hiatus { color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
+    .status-cancelled { color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3); }
+    
+    .manga-info {
+      padding: 20px;
+    }
+    
+    .manga-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #e2e8f0;
+      margin-bottom: 8px;
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    
+    .manga-author {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 12px;
+    }
+    
+    .manga-description {
+      font-size: 13px;
+      color: #cbd5e1;
+      line-height: 1.6;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    
+    .manga-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    
+    .manga-tag {
+      background: rgba(71, 85, 105, 0.3);
+      color: #94a3b8;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    
+    .manga-meta {
+      display: flex;
+      justify-content: space-between;
+      padding-top: 16px;
+      border-top: 1px solid rgba(71, 85, 105, 0.3);
+      font-size: 12px;
+      color: #64748b;
+    }
+    
+    /* Loading & Empty States */
+    .loading-state, .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: #94a3b8;
+    }
+    
+    .loading-state svg, .empty-state svg {
+      margin: 0 auto 20px;
+      opacity: 0.4;
+    }
+    
+    .spinner {
+      border: 3px solid rgba(99, 102, 241, 0.2);
+      border-top: 3px solid #6366f1;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    /* Pagination */
+    .pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-top: 40px;
+    }
+    
+    .page-btn {
+      padding: 10px 16px;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(71, 85, 105, 0.6);
+      color: #cbd5e1;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .page-btn:hover:not(:disabled) {
+      background: rgba(51, 65, 85, 0.9);
+      border-color: #6366f1;
+    }
+    
+    .page-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    
+    .page-btn.active {
+      background: #6366f1;
+      border-color: #6366f1;
+      color: white;
+    }
+    
+    .page-info {
+      color: #94a3b8;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+      .header-card {
+        padding: 24px;
+      }
+      
+      .page-title {
+        font-size: 28px;
+      }
+      
+      .filter-section {
+        padding: 20px;
+      }
+      
+      .filter-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+      }
+      
+      .manga-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="main-content">
+    <div class="container">
+      <!-- Header -->
+      <div class="header-card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <h1 class="page-title">MangaDex Explorer</h1>
+            <p class="page-subtitle">Discover and explore manga from MangaDex with advanced filters</p>
+          </div>
+          <a href="/editor/dashboard" class="btn btn-secondary">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            Back to Dashboard
+          </a>
+        </div>
+      </div>
+
+      <!-- Advanced Filters -->
+      <div class="filter-section">
+        <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 24px; color: #e2e8f0; display: flex; align-items: center; gap: 10px;">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+          </svg>
+          Advanced Filters
+        </h2>
+        
+        <div class="filter-grid">
+          <!-- Search -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              </svg>
+              Search Title
+            </label>
+            <input type="text" id="searchTitle" class="input" placeholder="Enter manga title...">
+          </div>
+
+          <!-- Status -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Publication Status
+            </label>
+            <select id="statusFilter" class="select">
+              <option value="">All Status</option>
+              <option value="ongoing">Ongoing</option>
+              <option value="completed">Completed</option>
+              <option value="hiatus">Hiatus</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+
+          <!-- Content Rating -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+              Content Rating
+            </label>
+            <select id="contentRating" class="select">
+              <option value="">All Ratings</option>
+              <option value="safe">Safe</option>
+              <option value="suggestive">Suggestive</option>
+              <option value="erotica">Erotica</option>
+              <option value="pornographic">Pornographic</option>
+            </select>
+          </div>
+
+          <!-- Year -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
+              </svg>
+              Publication Year
+            </label>
+            <input type="number" id="yearFilter" class="input" placeholder="e.g. 2024" min="1900" max="2100">
+          </div>
+
+          <!-- Language -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+              </svg>
+              Original Language
+            </label>
+            <select id="languageFilter" class="select">
+              <option value="">All Languages</option>
+              <option value="ja">Japanese</option>
+              <option value="en">English</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="zh-hk">Chinese (Hong Kong)</option>
+            </select>
+          </div>
+
+          <!-- Sort Order -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4"/>
+              </svg>
+              Sort By
+            </label>
+            <select id="sortOrder" class="select">
+              <option value="relevance">Relevance</option>
+              <option value="latestUploadedChapter">Latest Upload</option>
+              <option value="followedCount">Most Followed</option>
+              <option value="createdAt">Newest</option>
+              <option value="updatedAt">Recently Updated</option>
+              <option value="year">Year</option>
+              <option value="rating">Rating</option>
+            </select>
+          </div>
+
+          <!-- Minimum Chapters Filter -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+              </svg>
+              Min. Chapters
+            </label>
+            <input type="number" id="minChapters" class="input" placeholder="e.g. 10" min="0">
+          </div>
+
+          <!-- Release Date Range -->
+          <div class="filter-group">
+            <label class="filter-label">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
+              </svg>
+              Released Within
+            </label>
+            <select id="releaseDateRange" class="select">
+              <option value="">Any Time</option>
+              <option value="6">Last 6 Months</option>
+              <option value="12">Last 12 Months</option>
+              <option value="24">Last 2 Years</option>
+              <option value="36">Last 3 Years</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Quick Filters Section -->
+        <div style="margin-top: 24px; padding-top: 24px; border-top: 1px solid rgba(71, 85, 105, 0.3);">
+          <label class="filter-label" style="margin-bottom: 12px;">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            Quick Filters
+          </label>
+          <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+            <button class="btn secondary" id="quickFilterPopular" style="font-size: 13px; padding: 10px 16px;">
+              🔥 Popular (10+ Chapters, 6-12 Months, By Follows)
+            </button>
+            <button class="btn secondary" id="quickFilterRecent" style="font-size: 13px; padding: 10px 16px;">
+              ⚡ Recent & Active (10+ Chapters, 6 Months)
+            </button>
+            <button class="btn secondary" id="quickFilterNewReleases" style="font-size: 13px; padding: 10px 16px;">
+              ✨ New Releases (Last 3 Months)
+            </button>
+          </div>
+        </div>
+
+        <!-- Tags Input -->
+        <div class="filter-group" style="margin-top: 24px;">
+          <label class="filter-label">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/>
+            </svg>
+            Include Tags (click to add popular tags or type custom)
+          </label>
+          <div class="tag-container" id="popularTags">
+            <span class="tag-pill" data-tag="Action">Action</span>
+            <span class="tag-pill" data-tag="Adventure">Adventure</span>
+            <span class="tag-pill" data-tag="Comedy">Comedy</span>
+            <span class="tag-pill" data-tag="Drama">Drama</span>
+            <span class="tag-pill" data-tag="Fantasy">Fantasy</span>
+            <span class="tag-pill" data-tag="Romance">Romance</span>
+            <span class="tag-pill" data-tag="Sci-Fi">Sci-Fi</span>
+            <span class="tag-pill" data-tag="Slice of Life">Slice of Life</span>
+            <span class="tag-pill" data-tag="Supernatural">Supernatural</span>
+            <span class="tag-pill" data-tag="Thriller">Thriller</span>
+          </div>
+          <input type="text" id="customTag" class="input" placeholder="Type custom tag and press Enter..." style="margin-top: 12px;">
+          <div class="tag-container" id="selectedTags" style="margin-top: 12px;"></div>
+        </div>
+
+        <!-- Filter Actions -->
+        <div class="filter-actions">
+          <button class="btn btn-secondary" id="clearFilters">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+            Clear Filters
+          </button>
+          <button class="btn btn-primary" id="applyFilters">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            Search Manga
+          </button>
+        </div>
+      </div>
+
+      <!-- Results Section -->
+      <div id="resultsSection" style="display: none;">
+        <div class="results-header">
+          <div class="results-count" id="resultsCount">0 results found</div>
+          <div class="view-toggle">
+            <button class="view-btn active" data-view="grid">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M10 3H3v7h7V3zM21 3h-7v7h7V3zM21 14h-7v7h7v-7zM10 14H3v7h7v-7z"/>
+              </svg>
+            </button>
+            <button class="view-btn" data-view="list">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="mangaResults" class="manga-grid"></div>
+
+        <!-- Pagination -->
+        <div class="pagination" id="pagination"></div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loadingState" class="loading-state" style="display: none;">
+        <div class="spinner"></div>
+        <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Searching MangaDex...</div>
+        <div style="font-size: 14px; opacity: 0.7;">This may take a moment</div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="emptyState" class="empty-state" style="display: none;">
+        <svg width="80" height="80" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+        </svg>
+        <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">No manga found</div>
+        <div style="font-size: 14px; opacity: 0.7;">Try adjusting your filters or search terms</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/mangadex_viewer.js"></script>
+</body>
+</html>
