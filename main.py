@@ -618,7 +618,9 @@ async def import_mangadex_series(request: Request):
             mangadex_chapter_url = f"https://mangadex.org/chapter/{chapter_id}"
             
             # Create project for this chapter (skip if already exists)
-            project_id = f"{series_id}_ch{chapter_num_str}_{int(time.time() * 1000)}"
+            # Replace dots with underscores in project_id to avoid URL routing issues
+            chapter_num_safe = chapter_num_str.replace('.', '_')
+            project_id = f"{series_id}_ch{chapter_num_safe}_{int(time.time() * 1000)}"
             
             # Check if chapter already exists for this series
             # Use float comparison to support sub-chapters like 2.1, 2.2, 2.3

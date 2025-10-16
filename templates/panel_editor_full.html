@@ -10,14 +10,15 @@
   <link rel="stylesheet" href="/static/ui.build.css?v=1" />
   <style>
     *{box-sizing:border-box}
-    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif}
+    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;margin:0}
     /* Fallback layout so page works even if certain Tailwind utilities are missing */
-    .layout{display:grid;grid-template-columns:280px 1fr;gap:16px;min-height:100vh}
-    .sidebar{background:#0b1220;border-right:1px solid #1e293b;padding:12px;overflow:auto}
+    .layout{display:grid;grid-template-columns:400px 1fr;gap:0;min-height:100vh}
+    .sidebar{background:#0b1220;border-right:1px solid #1e293b;padding:12px;overflow-y:auto;max-height:100vh;position:sticky;top:0}
     .main{padding:16px;overflow:auto;padding-bottom:96px}
   .panels-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-    .bottombar{position:fixed;left:280px;right:0;bottom:0;background:#0b1220;border-top:1px solid #1e293b;padding:8px 12px;z-index:50}
+    .bottombar{position:fixed;left:400px;right:0;bottom:0;background:#0b1220;border-top:1px solid #1e293b;padding:8px 12px;z-index:50}
     .card-pad{padding:12px}
+    .page-item-checkbox{width:16px;height:16px;cursor:pointer}
   </style>
   <script id="project-data" type="application/json">{{ project|tojson|safe }}</script>
 </head>
@@ -50,6 +51,18 @@
       <div class="card bottombar">
         <div class="row" style="flex-wrap:wrap;justify-content:space-between;gap:8px">
           <div class="row" style="gap:8px">
+            <button id="deleteSelectedPages" class="btn" style="background:#ef4444;border-color:#ef4444" disabled>
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="margin-right:4px">
+                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+              </svg>
+              Delete Pages
+            </button>
+            <button id="reorderPagesBtn" class="btn secondary">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="margin-right:4px">
+                <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
+              </svg>
+              Reorder Pages
+            </button>
             <select id="globalEffect" class="select">
               <option value="none">Effect: None</option>
               <option value="kenburns">Effect: Ken Burns</option>
@@ -86,12 +99,14 @@
   const project = JSON.parse(document.getElementById('project-data')?.textContent || '{}');
     let pages = [];
     let currentIndex = 0;
+    let selectedPages = new Set(); // Track selected pages for deletion
 
     async function fetchSummary(){
       const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}`, { headers:{'ngrok-skip-browser-warning':'true'} });
       if(!r.ok) throw new Error('Failed to load project');
       const d = await r.json();
       pages = d.pages || [];
+      selectedPages.clear(); // Reset selections after refresh
       renderPagesList();
       renderCurrentPage();
     }
@@ -101,17 +116,48 @@
       root.innerHTML = '';
       pages.forEach((pg,i)=>{
         const row = document.createElement('div');
-        row.className = 'flex items-center gap-2 p-2 border rounded-md bg-slate-900 cursor-pointer ' + (i===currentIndex?' outline outline-2 outline-blue-500':'');
+        row.className = 'flex items-center gap-2 p-2 border rounded-md bg-slate-900 ' + (i===currentIndex?' outline outline-2 outline-blue-500':'');
         row.innerHTML = `
-          <div class="w-12 h-12 rounded-md bg-black/40 overflow-hidden border"><img class="w-full h-full object-cover" src="${pg.image_url || ''}"></div>
-          <div>
+          <input type="checkbox" class="page-item-checkbox" data-page-index="${i}" ${selectedPages.has(i) ? 'checked' : ''} onclick="event.stopPropagation()">
+          <div class="w-16 h-16 rounded-md bg-black/40 overflow-hidden border flex-shrink-0 cursor-pointer" data-navigate="${i}">
+            <img class="w-full h-full object-cover" src="${pg.image_url || ''}">
+          </div>
+          <div class="flex-1 cursor-pointer" data-navigate="${i}">
             <div class="font-medium">Page ${pg.page_number}</div>
             <div class="muted">${(pg.panels||[]).length} panel(s)</div>
           </div>
         `;
-        row.addEventListener('click', ()=>{ currentIndex = i; renderPagesList(); renderCurrentPage(); });
+        
+        // Handle checkbox changes
+        const checkbox = row.querySelector('.page-item-checkbox');
+        checkbox.addEventListener('change', (e) => {
+          if (e.target.checked) {
+            selectedPages.add(i);
+          } else {
+            selectedPages.delete(i);
+          }
+          updateDeleteButton();
+        });
+        
+        // Handle navigation clicks (image and text)
+        row.querySelectorAll('[data-navigate]').forEach(el => {
+          el.addEventListener('click', () => { 
+            currentIndex = i; 
+            renderPagesList(); 
+            renderCurrentPage(); 
+          });
+        });
+        
         root.appendChild(row);
       });
+    }
+
+    function updateDeleteButton() {
+      const btn = document.getElementById('deleteSelectedPages');
+      if (btn) {
+        btn.textContent = selectedPages.size > 0 ? `Delete ${selectedPages.size} Page(s)` : 'Delete Pages';
+        btn.disabled = selectedPages.size === 0;
+      }
     }
 
     function renderCurrentPage(){
@@ -212,6 +258,203 @@
     document.getElementById('openVideoEditor').addEventListener('click', ()=>{
       window.location.href = `/editor/video-editor/${encodeURIComponent(project.id)}`;
     });
+    
+    // Delete selected pages
+    document.getElementById('deleteSelectedPages').addEventListener('click', async ()=>{
+      if(selectedPages.size === 0) {
+        alert('No pages selected');
+        return;
+      }
+      
+      const pageNums = Array.from(selectedPages).map(i => pages[i].page_number).sort((a,b) => a-b);
+      const message = `Delete ${selectedPages.size} page(s)?\n\nPages: ${pageNums.join(', ')}\n\nThis cannot be undone.`;
+      
+      if(!confirm(message)) return;
+      
+      const btn = document.getElementById('deleteSelectedPages');
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Deleting...';
+      
+      try {
+        let deletedCount = 0;
+        // Delete pages one by one
+        for(const pageIndex of Array.from(selectedPages).sort((a,b) => b-a)) { // Delete in reverse order
+          const pg = pages[pageIndex];
+          if(!pg) continue;
+          
+          const response = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/page/${encodeURIComponent(pg.page_number)}`, {
+            method: 'DELETE',
+            headers: {'ngrok-skip-browser-warning': 'true'}
+          });
+          
+          if(response.ok) {
+            deletedCount++;
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            console.error(`Failed to delete page ${pg.page_number}:`, errorData.detail);
+          }
+        }
+        
+        if(deletedCount > 0) {
+          alert(`Successfully deleted ${deletedCount} page(s)`);
+          selectedPages.clear();
+          await fetchSummary();
+          // Reset to first page if current was deleted
+          if(currentIndex >= pages.length) {
+            currentIndex = Math.max(0, pages.length - 1);
+          }
+        } else {
+          alert('Failed to delete pages');
+        }
+      } catch(error) {
+        console.error('Delete error:', error);
+        alert('Failed to delete pages: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    });
+    
+    // Reorder pages functionality
+    document.getElementById('reorderPagesBtn').addEventListener('click', () => {
+      showReorderDialog();
+    });
+    
+    function showReorderDialog() {
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+        padding: 20px;
+      `;
+      
+      const pagesList = pages.map((pg, idx) => `
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;background:#0b1220;border:1px solid #1e293b;border-radius:8px;margin-bottom:8px">
+          <div style="display:flex;gap:8px">
+            <button class="btn secondary" data-move-up="${idx}" ${idx === 0 ? 'disabled' : ''} style="padding:6px">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M5 15l7-7 7 7"/>
+              </svg>
+            </button>
+            <button class="btn secondary" data-move-down="${idx}" ${idx === pages.length - 1 ? 'disabled' : ''} style="padding:6px">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M19 9l-7 7-7-7"/>
+              </svg>
+            </button>
+          </div>
+          <div style="flex:1">
+            <div style="font-weight:600;color:#e2e8f0">Page ${pg.page_number}</div>
+            <div style="font-size:12px;color:#64748b">${pg.panels?.length || 0} panels</div>
+          </div>
+          <div style="font-weight:600;color:#8b5cf6;font-size:16px;min-width:40px;text-align:center">→ ${idx + 1}</div>
+        </div>
+      `).join('');
+      
+      modal.innerHTML = `
+        <div style="background:#0f1729;border:1px solid #1e293b;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+            <h3 style="margin:0;font-size:18px;font-weight:700;color:#e2e8f0">Reorder Pages</h3>
+            <button id="closeReorderModal" class="btn secondary" style="padding:6px 12px">×</button>
+          </div>
+          
+          <div style="margin-bottom:16px;color:#94a3b8;font-size:13px">
+            Use arrows to move pages up/down. Pages will be automatically renumbered sequentially (1, 2, 3...) based on the order shown.
+          </div>
+          
+          <div id="reorderList">
+            ${pagesList}
+          </div>
+          
+          <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px">
+            <button id="cancelReorder" class="btn secondary">Cancel</button>
+            <button id="saveReorder" class="btn" style="background:#8b5cf6;border-color:#8b5cf6">Save Order</button>
+          </div>
+        </div>
+      `;
+      
+      document.body.appendChild(modal);
+      
+      // Move up button
+      modal.querySelectorAll('[data-move-up]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-move-up'));
+          if (idx > 0) {
+            [pages[idx - 1], pages[idx]] = [pages[idx], pages[idx - 1]];
+            modal.remove();
+            showReorderDialog();
+          }
+        });
+      });
+      
+      // Move down button
+      modal.querySelectorAll('[data-move-down]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-move-down'));
+          if (idx < pages.length - 1) {
+            [pages[idx], pages[idx + 1]] = [pages[idx + 1], pages[idx]];
+            modal.remove();
+            showReorderDialog();
+          }
+        });
+      });
+      
+      // Close button
+      modal.querySelector('#closeReorderModal').addEventListener('click', () => modal.remove());
+      modal.querySelector('#cancelReorder').addEventListener('click', () => modal.remove());
+      
+      // Save button
+      modal.querySelector('#saveReorder').addEventListener('click', async () => {
+        // Automatically assign sequential page numbers based on current order
+        const newPageNumbers = pages.map((pg, idx) => idx + 1);
+        
+        // Update page numbers in pages array
+        pages.forEach((pg, idx) => {
+          pg.page_number = newPageNumbers[idx];
+        });
+        
+        try {
+          const response = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/reorder-pages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
+            body: JSON.stringify({ pages: pages.map((pg, idx) => ({ 
+              page_number: idx + 1,  // Sequential numbering
+              image_path: pg.image_path 
+            }))})
+          });
+          
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            alert('Failed to reorder pages: ' + (errorData.detail || 'Unknown error'));
+            return;
+          }
+          
+          modal.remove();
+          await fetchSummary();
+          alert('Pages reordered successfully!');
+        } catch (error) {
+          console.error('Reorder error:', error);
+          alert('Failed to reorder pages: ' + error.message);
+        }
+      });
+      
+      // Close on backdrop click
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+      });
+    }
+    
     document.getElementById('saveAll').addEventListener('click', async ()=>{
       const pg = pages[currentIndex];
       if(!pg) return;

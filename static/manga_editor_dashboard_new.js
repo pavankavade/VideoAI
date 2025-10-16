@@ -80,7 +80,11 @@ async function renderSeriesCard(series){
         </div>
         <div class="actions">
           ${!hasImages && isMangadexChapter ? `
-          <button class="btn" onclick="event.stopPropagation();uploadChapterImages('${ch.id}', '${ch.title.replace(/'/g, "\\'")}', this)" style="font-size:12px;padding:8px 12px;background:#10b981;border-color:#10b981" title="Upload images for this chapter">
+          <button class="btn" onclick="event.stopPropagation();fetchChapterImages('${ch.id}', '${ch.mangadex_chapter_url}', '${ch.title.replace(/'/g, "\\'")}', this)" style="font-size:12px;padding:8px 12px;background:#8b5cf6;border-color:#8b5cf6" title="Fetch images from MangaDex using Puppeteer">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 11l3 3m0 0l3-3m-3 3V8"/></svg>
+            Fetch Images
+          </button>
+          <button class="btn" onclick="event.stopPropagation();uploadChapterImages('${ch.id}', '${ch.title.replace(/'/g, "\\'")}', this)" style="font-size:12px;padding:8px 12px;background:#10b981;border-color:#10b981" title="Manually upload images for this chapter">
             <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
             Add Images
           </button>
@@ -105,7 +109,7 @@ async function renderSeriesCard(series){
     }).join('');
   
   return `
-    <div class="series-card">
+    <div class="series-card" data-series-id="${series.id}" data-chapters='${JSON.stringify(chapters).replace(/'/g, "&apos;")}'>
       <div class="series-header">
         <div style="display:flex;align-items:center;gap:14px;flex:1">
           <svg class="chevron" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
@@ -122,6 +126,14 @@ async function renderSeriesCard(series){
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" onclick="event.stopPropagation();fetchAllSeriesImages('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#8b5cf6;border-color:#8b5cf6" title="Fetch images for all MangaDex chapters without images">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 11l3 3m0 0l3-3m-3 3V8"/></svg>
+            Fetch All Images
+          </button>
+          <button class="btn" onclick="event.stopPropagation();createAllSeriesPanels('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#06b6d4;border-color:#06b6d4" title="Create panels for all chapters with images">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
+            Create All Panels
+          </button>
           <button class="btn" onclick="event.stopPropagation();openAddChapter('${series.id}', '${series.name}')" style="font-size:13px;padding:10px 16px">
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             Add Chapter
@@ -571,6 +583,335 @@ async function uploadChapterImages(chapterId, chapterTitle, buttonElement) {
   
   // Trigger file picker
   fileInput.click();
+}
+
+// Fetch chapter images from MangaDex using Puppeteer
+async function fetchChapterImages(chapterId, mangadexUrl, chapterTitle, buttonElement) {
+  if (!confirm(`Fetch images for "${chapterTitle}" from MangaDex?\n\nThis will use Puppeteer to scrape the manga pages and upload them automatically.`)) {
+    return;
+  }
+  
+  const originalHTML = buttonElement.innerHTML;
+  
+  try {
+    // Show loading state
+    buttonElement.disabled = true;
+    buttonElement.innerHTML = `
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
+      </svg>
+      Fetching...
+    `;
+    
+    showNotification('Starting Puppeteer to fetch images...', 'info');
+    
+    const r = await fetch('/editor/api/fetch-chapter-images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chapter_id: chapterId,
+        mangadex_url: mangadexUrl
+      })
+    });
+    
+    if (!r.ok) {
+      const errorData = await r.json();
+      throw new Error(errorData.detail || 'Failed to fetch images');
+    }
+    
+    const result = await r.json();
+    
+    // Show success state
+    buttonElement.innerHTML = `
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M5 13l4 4L19 7"/>
+      </svg>
+      Fetched ${result.image_count} Images!
+    `;
+    buttonElement.style.background = '#10b981';
+    buttonElement.style.borderColor = '#10b981';
+    
+    showNotification(`Successfully fetched ${result.image_count} images for ${chapterTitle}!`, 'success');
+    
+    // Reload the page after 2 seconds
+    setTimeout(() => {
+      window.location.reload();
+    }, 2000);
+    
+  } catch (error) {
+    console.error('Fetch error:', error);
+    
+    // Show error state
+    buttonElement.innerHTML = `
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+      Fetch Failed
+    `;
+    buttonElement.style.background = '#ef4444';
+    buttonElement.style.borderColor = '#ef4444';
+    
+    showNotification(`Failed to fetch images: ${error.message}`, 'error');
+    
+    // Restore button after error
+    setTimeout(() => {
+      buttonElement.disabled = false;
+      buttonElement.innerHTML = originalHTML;
+      buttonElement.style.background = '#8b5cf6';
+      buttonElement.style.borderColor = '#8b5cf6';
+    }, 3000);
+  }
+}
+
+// Fetch images for all chapters in a series that need them
+async function fetchAllSeriesImages(seriesId, seriesName, buttonElement) {
+  // Get the series card and chapters data
+  const seriesCard = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+  if (!seriesCard) {
+    showNotification('Could not find series data', 'error');
+    return;
+  }
+  
+  const chaptersJson = seriesCard.getAttribute('data-chapters');
+  const chapters = JSON.parse(chaptersJson);
+  
+  // Filter chapters that need images: MangaDex chapters without images
+  const chaptersToFetch = chapters.filter(ch => {
+    const hasImages = ch.has_images === 1 || (ch.page_count && ch.page_count > 0);
+    const isMangadexChapter = ch.mangadex_chapter_id && ch.mangadex_chapter_id.length > 0;
+    return !hasImages && isMangadexChapter;
+  });
+  
+  if (chaptersToFetch.length === 0) {
+    showNotification('All chapters already have images!', 'info');
+    return;
+  }
+  
+  const chapterList = chaptersToFetch.map(ch => `Chapter ${ch.chapter_number}: ${ch.title}`).join('\n');
+  if (!confirm(`Fetch images for ${chaptersToFetch.length} chapter(s) in "${seriesName}"?\n\n${chapterList}\n\nThis may take a while...`)) {
+    return;
+  }
+  
+  const originalHTML = buttonElement.innerHTML;
+  buttonElement.disabled = true;
+  
+  let successCount = 0;
+  let failCount = 0;
+  
+  for (let i = 0; i < chaptersToFetch.length; i++) {
+    const ch = chaptersToFetch[i];
+    
+    // Update button with progress
+    buttonElement.innerHTML = `
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
+      </svg>
+      Fetching ${i + 1}/${chaptersToFetch.length}...
+    `;
+    
+    showNotification(`Fetching Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToFetch.length})`, 'info');
+    
+    try {
+      const r = await fetch('/editor/api/fetch-chapter-images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chapter_id: ch.id,
+          mangadex_url: ch.mangadex_chapter_url || `https://mangadex.org/chapter/${ch.mangadex_chapter_id}`
+        })
+      });
+      
+      if (!r.ok) {
+        const errorData = await r.json();
+        throw new Error(errorData.detail || 'Failed to fetch images');
+      }
+      
+      const result = await r.json();
+      successCount++;
+      showNotification(`✓ Chapter ${ch.chapter_number}: Fetched ${result.image_count} images`, 'success');
+      
+    } catch (error) {
+      console.error(`Error fetching chapter ${ch.chapter_number}:`, error);
+      failCount++;
+      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
+    }
+    
+    // Small delay between requests to avoid overwhelming the server
+    if (i < chaptersToFetch.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  
+  // Show final summary
+  const summary = `Fetch All Complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  
+  // Update button to show completion
+  buttonElement.innerHTML = `
+    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path d="M5 13l4 4L19 7"/>
+    </svg>
+    Done (${successCount}/${chaptersToFetch.length})
+  `;
+  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
+  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
+  
+  // Reload the page after 3 seconds
+  setTimeout(() => {
+    window.location.reload();
+  }, 3000);
+}
+
+// Create panels for all chapters in a series
+async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
+  // Get the series card and chapters data
+  const seriesCard = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+  if (!seriesCard) {
+    showNotification('Could not find series data', 'error');
+    return;
+  }
+  
+  const chaptersJson = seriesCard.getAttribute('data-chapters');
+  const chapters = JSON.parse(chaptersJson);
+  
+  console.log(`Found ${chapters.length} total chapters in series`);
+  
+  // Filter chapters that need panels: chapters with images but no panels or incomplete panels
+  const chaptersToProcess = chapters.filter(ch => {
+    const hasImages = ch.has_images === 1 || (ch.page_count && ch.page_count > 0);
+    // We want chapters with images
+    return hasImages;
+  });
+  
+  console.log(`Filtered to ${chaptersToProcess.length} chapters with images`);
+  
+  if (chaptersToProcess.length === 0) {
+    showNotification('No chapters with images found! Fetch images first.', 'info');
+    return;
+  }
+  
+  const chapterList = chaptersToProcess.map(ch => `Chapter ${ch.chapter_number}: ${ch.title}`).join('\n');
+  if (!confirm(`Create panels for ${chaptersToProcess.length} chapter(s) in "${seriesName}"?\n\n${chapterList}\n\nThis may take a while...`)) {
+    return;
+  }
+  
+  const originalHTML = buttonElement.innerHTML;
+  buttonElement.disabled = true;
+  
+  let successCount = 0;
+  let failCount = 0;
+  let totalPanelsCreated = 0;
+  
+  for (let i = 0; i < chaptersToProcess.length; i++) {
+    const ch = chaptersToProcess[i];
+    
+    // Update button with progress
+    buttonElement.innerHTML = `
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
+      </svg>
+      Creating ${i + 1}/${chaptersToProcess.length}...
+    `;
+    
+    showNotification(`Creating panels for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToProcess.length})`, 'info');
+    
+    try {
+      // Get project details to know how many pages
+      const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      
+      if (!projectResp.ok) {
+        throw new Error('Failed to get chapter details');
+      }
+      
+      const projectData = await projectResp.json();
+      const pages = projectData.pages || [];
+      
+      console.log(`Chapter ${ch.chapter_number} has ${pages.length} pages`);
+      
+      if (pages.length === 0) {
+        throw new Error('No pages found');
+      }
+      
+      // Create panels for each page
+      let chapterPanelCount = 0;
+      for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+        const page = pages[pageIdx];
+        
+        // Update progress within chapter
+        buttonElement.innerHTML = `
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
+            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+            <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
+          </svg>
+          Ch ${i + 1}/${chaptersToProcess.length} - Pg ${pageIdx + 1}/${pages.length}
+        `;
+        
+        try {
+          const panelResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/panels/create/page/${encodeURIComponent(page.page_number)}`, {
+            method: 'POST',
+            headers: { 'ngrok-skip-browser-warning': 'true' }
+          });
+          
+          if (!panelResp.ok) {
+            const errorText = await panelResp.text();
+            console.error(`Failed to create panels for page ${page.page_number}:`, errorText);
+            continue; // Continue with next page even if one fails
+          }
+          
+          const panelData = await panelResp.json();
+          const panelsCreated = (panelData.created || panelData.panel_count || panelData.panels_created || 0);
+          chapterPanelCount += panelsCreated;
+          
+          console.log(`Created ${panelsCreated} panels for page ${page.page_number}`);
+          
+          // Wait a bit between pages to avoid overwhelming the panel detection service
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+        } catch (pageError) {
+          console.error(`Exception creating panels for page ${page.page_number}:`, pageError);
+          continue; // Continue with next page
+        }
+      }
+      
+      successCount++;
+      totalPanelsCreated += chapterPanelCount;
+      showNotification(`✓ Chapter ${ch.chapter_number}: Created ${chapterPanelCount} panels (${pages.length} pages)`, 'success');
+      
+    } catch (error) {
+      console.error(`Error creating panels for chapter ${ch.chapter_number}:`, error);
+      failCount++;
+      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
+    }
+    
+    // Longer delay between chapters to ensure panel service isn't overwhelmed
+    if (i < chaptersToProcess.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  
+  // Show final summary
+  const summary = `Create All Panels Complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}\nTotal Panels: ${totalPanelsCreated}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  
+  // Update button to show completion
+  buttonElement.innerHTML = `
+    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path d="M5 13l4 4L19 7"/>
+    </svg>
+    Done (${successCount}/${chaptersToProcess.length})
+  `;
+  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
+  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
+  
+  // Reload the page after 3 seconds
+  setTimeout(() => {
+    window.location.reload();
+  }, 3000);
 }
 
 // Show notification helper

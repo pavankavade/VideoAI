@@ -1103,7 +1103,7 @@ def _build_page_prompt(page_number: int, panel_images: List[bytes], accumulated_
 
 
 # ---------------------------- Routes ----------------------------
-@router.get("/manga-editor/{project_id}", response_class=HTMLResponse)
+@router.get("/manga-editor/{project_id:path}", response_class=HTMLResponse)
 async def editor_page(request: Request, project_id: str):
     project = EditorDB.get_project(project_id)
     if not project:
@@ -1123,7 +1123,7 @@ async def editor_dashboard(request: Request):
     )
 
 
-@router.get("/api/project/{project_id}")
+@router.get("/api/project/{project_id:path}")
 async def api_get_project_summary(project_id: str):
     project = EditorDB.get_project(project_id)
     if not project:
@@ -1154,7 +1154,7 @@ async def api_get_project_summary(project_id: str):
     }
 
 
-@router.post("/api/project/{project_id}/panels/create")
+@router.post("/api/project/{project_id:path}/panels/create")
 async def api_create_panels(project_id: str):
     """Create panels for all pages using external PANEL_API_URL, store crops in project folder, and save to DB."""
     if not PANEL_API_URL:
@@ -1175,7 +1175,11 @@ async def api_create_panels(project_id: str):
         img_path = pg["image_path"]
         # Resolve local absolute path if needed
         abs_path = img_path
-        if img_path.startswith("/uploads/"):
+        if img_path.startswith("/manga_projects/"):
+            abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
+        elif img_path.startswith("manga_projects/"):
+            abs_path = os.path.join(BASE_DIR, img_path)
+        elif img_path.startswith("/uploads/"):
             abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
         elif img_path.startswith("uploads/"):
             abs_path = os.path.join(BASE_DIR, img_path)
@@ -1323,7 +1327,7 @@ async def api_create_panels(project_id: str):
     return {"ok": True, "created": results}
 
 
-@router.post("/api/project/{project_id}/panels/create/page/{page_number}")
+@router.post("/api/project/{project_id:path}/panels/create/page/{page_number}")
 async def api_create_panels_single_page(project_id: str, page_number: int):
     """Create panels for a single page, used for granular progress in the UI."""
     if not PANEL_API_URL:
@@ -1343,7 +1347,11 @@ async def api_create_panels_single_page(project_id: str, page_number: int):
     img_path = pg["image_path"]
     # Resolve local absolute path if needed
     abs_path = img_path
-    if img_path.startswith("/uploads/"):
+    if img_path.startswith("/manga_projects/"):
+        abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
+    elif img_path.startswith("manga_projects/"):
+        abs_path = os.path.join(BASE_DIR, img_path)
+    elif img_path.startswith("/uploads/"):
         abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
     elif img_path.startswith("uploads/"):
         abs_path = os.path.join(BASE_DIR, img_path)
@@ -1481,7 +1489,7 @@ async def api_create_panels_single_page(project_id: str, page_number: int):
         raise HTTPException(status_code=500, detail="Failed to create panels for this page")
 
 
-@router.post("/api/project/{project_id}/narrate/sequential")
+@router.post("/api/project/{project_id:path}/narrate/sequential")
 async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
     """
     Generate narration page by page (no parallelism). For each page, produce a sentence per panel.
@@ -1662,7 +1670,7 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
     return {"ok": True, "results": results}
 
 
-@router.post("/api/project/{project_id}/narrate/page/{page_number}")
+@router.post("/api/project/{project_id:path}/narrate/page/{page_number}")
 async def api_narrate_single_page(project_id: str, page_number: int, payload: Dict[str, Any]):
     try:
         if genai is None or not _GEMINI_KEYS:
@@ -1825,7 +1833,7 @@ async def api_narrate_single_page(project_id: str, page_number: int, payload: Di
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.post("/api/project/{project_id}/narrate/page/{page_number}/manual")
+@router.post("/api/project/{project_id:path}/narrate/page/{page_number}/manual")
 async def api_save_manual_narration(project_id: str, page_number: int, payload: Dict[str, Any]):
     """Manually save narration for panels on a page (when AI generation is blocked or user wants manual control)"""
     try:
@@ -1854,19 +1862,19 @@ async def api_save_manual_narration(project_id: str, page_number: int, payload: 
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.get("/api/project/{project_id}/characters")
+@router.get("/api/project/{project_id:path}/characters")
 async def api_get_characters(project_id: str):
     return {"project_id": project_id, "markdown": EditorDB.get_character_list(project_id)}
 
 
-@router.put("/api/project/{project_id}/characters")
+@router.put("/api/project/{project_id:path}/characters")
 async def api_set_characters(project_id: str, payload: Dict[str, Any]):
     md = str(payload.get("markdown") or "")
     EditorDB.set_character_list(project_id, md)
     return {"ok": True}
 
 
-@router.post("/api/project/{project_id}/characters/update")
+@router.post("/api/project/{project_id:path}/characters/update")
 async def api_update_characters_from_narrations(project_id: str):
     if genai is None or not _GEMINI_KEYS:
         raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
@@ -1903,7 +1911,7 @@ async def api_update_characters_from_narrations(project_id: str):
 
 
 # ---------------------------- Story Summary APIs ----------------------------
-@router.get("/api/project/{project_id}/story")
+@router.get("/api/project/{project_id:path}/story")
 async def api_get_story(project_id: str):
     """Get both current chapter summary and previous chapters summary."""
     current = EditorDB.get_story_summary_current(project_id)
@@ -1919,7 +1927,7 @@ async def api_get_story(project_id: str):
     }
 
 
-@router.put("/api/project/{project_id}/story")
+@router.put("/api/project/{project_id:path}/story")
 async def api_set_story(project_id: str, payload: Dict[str, Any]):
     """Set the current chapter's summary."""
     summary = str(payload.get("summary") or "")
@@ -1930,7 +1938,7 @@ async def api_set_story(project_id: str, payload: Dict[str, Any]):
     return {"ok": True}
 
 
-@router.post("/api/project/{project_id}/story/generate")
+@router.post("/api/project/{project_id:path}/story/generate")
 async def api_generate_story_summary(project_id: str):
     """Generate a story summary for the CURRENT chapter from all panel narrations using Gemini AI."""
     if genai is None or not _GEMINI_KEYS:
@@ -1971,7 +1979,7 @@ async def api_generate_story_summary(project_id: str):
     return {"ok": True, "summary": summary}
 
 
-@router.post("/api/project/{project_id}/story/fetch-previous")
+@router.post("/api/project/{project_id:path}/story/fetch-previous")
 async def api_fetch_previous_summaries(project_id: str):
     """Fetch and concatenate all previous chapters' summaries into this chapter's 'Story So Far' section."""
     result = EditorDB.fetch_and_save_previous_summaries(project_id)
@@ -2032,7 +2040,7 @@ async def api_add_chapter_to_series(series_id: str, payload: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Failed to create chapter: {e}")
 
 
-@router.put("/api/manga/series/migrate/{project_id}")
+@router.put("/api/manga/series/migrate/{project_id:path}")
 async def api_migrate_project_to_series(project_id: str, payload: Dict[str, Any]):
     """Migrate an existing project to belong to a manga series."""
     series_id = str(payload.get("series_id") or "").strip()
@@ -2137,7 +2145,7 @@ async def api_create_project(payload: Dict[str, Any]):
     return proj
 
 
-@router.delete("/api/projects/{project_id}")
+@router.delete("/api/projects/{project_id:path}")
 async def api_delete_project(project_id: str):
     if not EditorDB.get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
@@ -2146,7 +2154,7 @@ async def api_delete_project(project_id: str):
 
 
 # ---------------------------- New Full-Page Panel Editor ----------------------------
-@router.get("/panel-editor/{project_id}", response_class=HTMLResponse)
+@router.get("/panel-editor/{project_id:path}", response_class=HTMLResponse)
 async def panel_editor_full(request: Request, project_id: str):
     proj = EditorDB.get_project(project_id)
     if not proj:
@@ -2157,7 +2165,7 @@ async def panel_editor_full(request: Request, project_id: str):
     )
 
 
-@router.put("/api/project/{project_id}/panel/{page_number}/{panel_index}/text")
+@router.put("/api/project/{project_id:path}/panel/{page_number}/{panel_index}/text")
 async def api_update_panel_text(project_id: str, page_number: int, panel_index: int, payload: Dict[str, Any]):
     proj = EditorDB.get_project(project_id)
     if not proj:
@@ -2186,7 +2194,7 @@ async def api_update_panel_text(project_id: str, page_number: int, panel_index: 
     return {"ok": True, "page_number": int(page_number), "panel_index": idx, "text": text}
 
 
-@router.put("/api/project/{project_id}/panel/{page_number}/{panel_index}/audio")
+@router.put("/api/project/{project_id:path}/panel/{page_number}/{panel_index}/audio")
 async def api_update_panel_audio(project_id: str, page_number: int, panel_index: int, payload: Dict[str, Any]):
     proj = EditorDB.get_project(project_id)
     if not proj:
@@ -2220,7 +2228,7 @@ async def api_update_panel_audio(project_id: str, page_number: int, panel_index:
     return {"ok": True, "page_number": int(page_number), "panel_index": idx}
 
 
-@router.put("/api/project/{project_id}/panel/{page_number}/{panel_index}/config")
+@router.put("/api/project/{project_id:path}/panel/{page_number}/{panel_index}/config")
 async def api_update_panel_config(project_id: str, page_number: int, panel_index: int, payload: Dict[str, Any]):
     proj = EditorDB.get_project(project_id)
     if not proj:
@@ -2241,7 +2249,7 @@ async def api_update_panel_config(project_id: str, page_number: int, panel_index
     return {"ok": True, "page_number": int(page_number), "panel_index": idx, "effect": eff, "transition": trans}
 
 
-@router.put("/api/project/{project_id}/page/{page_number}/config")
+@router.put("/api/project/{project_id:path}/page/{page_number}/config")
 async def api_update_page_config(project_id: str, page_number: int, payload: Dict[str, Any]):
     """Apply effect/transition to all panels on a page."""
     proj = EditorDB.get_project(project_id)
@@ -2258,8 +2266,123 @@ async def api_update_page_config(project_id: str, page_number: int, payload: Dic
     return {"ok": True, "page_number": int(page_number), "count": len(panels), "effect": eff, "transition": trans}
 
 
+@router.delete("/api/project/{project_id:path}/page/{page_number}")
+async def api_delete_page(project_id: str, page_number: int):
+    """Delete a page and its panels from the project, then auto-renumber remaining pages sequentially."""
+    proj = EditorDB.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        # Get current pages
+        pages_json = proj.get("pages") or []
+        
+        # Remove the page with matching page_number
+        updated_pages = [p for p in pages_json if p.get("page_number") != page_number]
+        
+        if len(updated_pages) == len(pages_json):
+            raise HTTPException(status_code=404, detail="Page not found")
+        
+        # Sort by current page_number to maintain order
+        updated_pages.sort(key=lambda x: x.get("page_number", 0))
+        
+        # Renumber pages sequentially (1, 2, 3, ...)
+        for idx, page in enumerate(updated_pages, start=1):
+            page["page_number"] = idx
+        
+        # Update database
+        conn = EditorDB.conn()
+        conn.execute(
+            "UPDATE project_details SET pages_json=? WHERE id=?",
+            (json.dumps(updated_pages), project_id)
+        )
+        conn.commit()
+        
+        # Also delete panel data for this page and renumber metadata pages
+        metadata = json.loads(proj.get("metadata") or "{}")
+        if "pages" in metadata:
+            # Remove deleted page from metadata
+            metadata["pages"] = [p for p in metadata["pages"] if p.get("page_number") != page_number]
+            
+            # Sort and renumber metadata pages
+            metadata["pages"].sort(key=lambda x: x.get("page_number", 0))
+            for idx, page in enumerate(metadata["pages"], start=1):
+                page["page_number"] = idx
+            
+            conn.execute(
+                "UPDATE project_details SET metadata_json=? WHERE id=?",
+                (json.dumps(metadata), project_id)
+            )
+            conn.commit()
+        
+        logger.info(f"Deleted page {page_number} from project {project_id}, renumbered {len(updated_pages)} remaining pages")
+        return {"ok": True, "deleted_page": page_number, "remaining_pages": len(updated_pages), "renumbered": True}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting page: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete page: {str(e)}")
+
+
+@router.post("/api/project/{project_id:path}/reorder-pages")
+async def api_reorder_pages(project_id: str, payload: Dict[str, Any]):
+    """Reorder pages in the project."""
+    proj = EditorDB.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    new_pages = payload.get("pages", [])
+    if not new_pages:
+        raise HTTPException(status_code=400, detail="Pages array is required")
+    
+    try:
+        # Get current pages and metadata
+        current_pages = proj.get("pages") or []
+        metadata = json.loads(proj.get("metadata") or "{}")
+        
+        # Create a mapping of old page numbers to new page numbers
+        page_number_map = {}
+        for idx, new_page in enumerate(new_pages):
+            old_page = current_pages[idx] if idx < len(current_pages) else None
+            if old_page:
+                old_page_number = old_page.get("page_number")
+                new_page_number = new_page.get("page_number")
+                page_number_map[old_page_number] = new_page_number
+        
+        # Update pages_json with new page numbers
+        updated_pages = []
+        for idx, new_page in enumerate(new_pages):
+            if idx < len(current_pages):
+                page = current_pages[idx].copy()
+                page["page_number"] = new_page.get("page_number")
+                updated_pages.append(page)
+        
+        # Update metadata pages with new page numbers
+        if "pages" in metadata:
+            for meta_page in metadata["pages"]:
+                old_num = meta_page.get("page_number")
+                if old_num in page_number_map:
+                    meta_page["page_number"] = page_number_map[old_num]
+        
+        # Save to database
+        conn = EditorDB.conn()
+        conn.execute(
+            "UPDATE project_details SET pages_json=?, metadata_json=? WHERE id=?",
+            (json.dumps(updated_pages), json.dumps(metadata), project_id)
+        )
+        conn.commit()
+        
+        logger.info(f"Reordered {len(updated_pages)} pages for project {project_id}")
+        return {"ok": True, "pages_count": len(updated_pages)}
+        
+    except Exception as e:
+        logger.error(f"Error reordering pages: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to reorder pages: {str(e)}")
+
+
 # ---------------------------- TTS synthesis (DB-backed) ----------------------------
-@router.post("/api/project/{project_id}/tts/synthesize/page/{page_number}")
+@router.post("/api/project/{project_id:path}/tts/synthesize/page/{page_number}")
 async def api_tts_synthesize_page(project_id: str, page_number: int):
     """Synthesize TTS for all panels on a page using narration_text stored in DB.
     Saves audio files under /manga_projects/{project_id}/tts and updates panel audio URLs in DB.
@@ -2351,7 +2474,7 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
     }
 
 
-@router.post("/api/project/{project_id}/tts/synthesize/all")
+@router.post("/api/project/{project_id:path}/tts/synthesize/all")
 async def api_tts_synthesize_all(project_id: str):
     """Synthesize TTS for all pages in the project sequentially. Returns a summary.
     Note: The UI can also call the page endpoint in a loop to show per-page progress.
@@ -2383,7 +2506,7 @@ async def api_tts_synthesize_all(project_id: str):
     return {"ok": True, "total_created": int(total_created), "pages": page_summaries}
 
 
-@router.post("/api/project/{project_id}/tts/backfill")
+@router.post("/api/project/{project_id:path}/tts/backfill")
 async def api_tts_backfill_urls(project_id: str):
     """Backfill audio URL entries in DB from files on disk under /manga_projects/{project_id}/tts.
     It scans tts_page_{page}_panel_{idx}.wav and writes the corresponding URL to panels.audio_b64.
@@ -2487,3 +2610,130 @@ async def upload_chapter_images(request: Request):
     except Exception as e:
         logger.error(f"Error uploading chapter images: {e}", exc_info=True)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@router.post("/api/fetch-chapter-images")
+async def fetch_chapter_images(payload: Dict[str, Any]):
+    """Fetch chapter images from MangaDex using their API"""
+    try:
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        chapter_id = payload.get("chapter_id")
+        mangadex_url = payload.get("mangadex_url")
+        
+        if not chapter_id or not mangadex_url:
+            raise HTTPException(status_code=400, detail="chapter_id and mangadex_url are required")
+        
+        # Get the project to verify it exists
+        project = EditorDB.get_project(chapter_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+        
+        # Extract MangaDex chapter ID from URL
+        # URL format: https://mangadex.org/chapter/{uuid}
+        mangadex_chapter_id = mangadex_url.split('/chapter/')[-1].split('?')[0].split('#')[0]
+        
+        logger.info(f"Fetching images for chapter {chapter_id} from MangaDex chapter {mangadex_chapter_id}")
+        
+        # Get chapter pages using MangaDex API
+        at_home_url = f"https://api.mangadex.org/at-home/server/{mangadex_chapter_id}"
+        
+        mangadex_secret = os.environ.get("MANGADX_SECRET", "").strip()
+        headers = {}
+        if mangadex_secret:
+            headers["Authorization"] = f"Bearer {mangadex_secret}"
+        
+        at_home_response = requests.get(at_home_url, headers=headers, timeout=10)
+        
+        if at_home_response.status_code != 200:
+            raise HTTPException(status_code=404, detail=f"MangaDex chapter not found: {mangadex_chapter_id}")
+        
+        at_home_data = at_home_response.json()
+        
+        base_url = at_home_data["baseUrl"]
+        chapter_hash = at_home_data["chapter"]["hash"]
+        filenames = at_home_data["chapter"]["data"]  # High quality images
+        
+        if not filenames:
+            raise HTTPException(status_code=404, detail="No images found for this chapter")
+        
+        logger.info(f"Found {len(filenames)} images to download")
+        
+        # Create project directory
+        project_dir = os.path.join(MANGA_DIR, chapter_id)
+        os.makedirs(project_dir, exist_ok=True)
+        
+        # Define download function to run in thread
+        def download_images():
+            """Download images in a separate thread"""
+            saved_files = []
+            
+            for idx, filename in enumerate(filenames, start=1):
+                try:
+                    # Construct image URL
+                    image_url = f"{base_url}/data/{chapter_hash}/{filename}"
+                    
+                    logger.info(f"Downloading image {idx}/{len(filenames)}: {filename}")
+                    
+                    # Download image
+                    response = requests.get(image_url, timeout=30)
+                    response.raise_for_status()
+                    image_data = response.content
+                    
+                    # Determine file extension from original filename
+                    ext = os.path.splitext(filename)[1] or '.jpg'
+                    
+                    # Save image with sequential naming
+                    save_filename = f"page_{idx:03d}{ext}"
+                    file_path = os.path.join(project_dir, save_filename)
+                    
+                    with open(file_path, 'wb') as f:
+                        f.write(image_data)
+                    
+                    # Store relative path
+                    relative_path = f"/manga_projects/{chapter_id}/{save_filename}"
+                    saved_files.append(relative_path)
+                    
+                    logger.info(f"Saved image {idx}/{len(filenames)}: {save_filename}")
+                    
+                except Exception as e:
+                    logger.error(f"Error downloading image {idx}: {e}")
+                    continue
+            
+            return saved_files
+        
+        # Run download in thread pool
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            saved_files = await loop.run_in_executor(executor, download_images)
+        
+        if not saved_files:
+            raise HTTPException(status_code=500, detail="Failed to download any images")
+        
+        # Update project with fetched images
+        pages_json = [{"page_number": i, "image_path": path} for i, path in enumerate(saved_files, start=1)]
+        
+        conn = EditorDB.conn()
+        conn.execute(
+            "UPDATE project_details SET pages_json=?, has_images=1 WHERE id=?",
+            (json.dumps(pages_json), chapter_id)
+        )
+        conn.commit()
+        
+        logger.info(f"Successfully fetched {len(saved_files)} images for chapter {chapter_id}")
+        
+        return {
+            "success": True,
+            "image_count": len(saved_files),
+            "chapter_id": chapter_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching chapter images: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch images: {str(e)}")
+
+
+
