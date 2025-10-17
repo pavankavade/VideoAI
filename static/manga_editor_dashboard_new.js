@@ -132,19 +132,19 @@ async function renderSeriesCard(series){
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn" onclick="event.stopPropagation();fetchAllSeriesImages('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#8b5cf6;border-color:#8b5cf6" title="Fetch images for all MangaDex chapters without images">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 11l3 3m0 0l3-3m-3 3V8"/></svg>
-            Fetch All Images
+          <button class="btn" onclick="event.stopPropagation();fetchAllSeriesImages('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#8b5cf6;border-color:#8b5cf6;min-width:auto" title="Fetch images for all MangaDex chapters without images">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 11l3 3m0 0l3-3m-3 3V8"/></svg>
           </button>
-          <button class="btn" onclick="event.stopPropagation();createAllSeriesPanels('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#06b6d4;border-color:#06b6d4" title="Create panels for all chapters with images">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
-            Create All Panels
+          <button class="btn" onclick="event.stopPropagation();createAllSeriesPanels('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#06b6d4;border-color:#06b6d4;min-width:auto" title="Create panels for all chapters with images">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
           </button>
-          <button class="btn" onclick="event.stopPropagation();generateAllNarrations('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#f59e0b;border-color:#f59e0b" title="Generate narrations for all chapters (auto-updates character list & summary)">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-            Generate All Narrations
+          <button class="btn" onclick="event.stopPropagation();generateAllNarrations('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#f59e0b;border-color:#f59e0b;min-width:auto" title="Generate narrations for all chapters (auto-updates character list & summary)">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
           </button>
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-left:1px solid rgba(255,255,255,0.1);margin-left:8px">
+          <button class="btn" onclick="event.stopPropagation();synthesizeSeries('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#22c55e;border-color:#22c55e;min-width:auto" title="Synthesize audio for all chapters in this series">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>
+          </button>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-left:1px solid rgba(255,255,255,0.1);margin-left:4px">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer;user-select:none" title="Override existing processed data and start from Chapter 1 for all actions">
               <input type="checkbox" id="override-${series.id}" style="margin:0;transform:scale(0.9)" onclick="event.stopPropagation()">
               <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="opacity:0.7">
@@ -153,13 +153,11 @@ async function renderSeriesCard(series){
               Override
             </label>
           </div>
-          <button class="btn" onclick="event.stopPropagation();openAddChapter('${series.id}', '${series.name}')" style="font-size:13px;padding:10px 16px">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-            Add Chapter
+          <button class="btn" onclick="event.stopPropagation();openAddChapter('${series.id}', '${series.name}')" style="padding:10px 12px;min-width:auto" title="Add a new chapter to this series">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           </button>
-          <button class="btn secondary" onclick="event.stopPropagation();deleteSeries('${series.id}', '${series.name}', ${chapters.length})" style="font-size:13px;padding:10px 16px;border-color:rgba(239,68,68,0.3);color:#ef4444" title="Delete this manga series">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-            Delete
+          <button class="btn secondary" onclick="event.stopPropagation();deleteSeries('${series.id}', '${series.name}', ${chapters.length})" style="padding:10px 12px;border-color:rgba(239,68,68,0.3);color:#ef4444;min-width:auto" title="Delete this manga series">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
           </button>
         </div>
       </div>
@@ -234,17 +232,20 @@ async function loadStandaloneProjects(){
           <td style="padding:20px 24px;color:#94a3b8;font-size:14px">${new Date(p.createdAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'})}</td>
           <td style="padding:20px 24px">
             <div class="actions">
-              <a class="btn" href="/editor/panel-editor/${p.id}" style="background:linear-gradient(135deg,#3b82f6,#2563eb)" title="Edit panels for this project">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                Panels
+              <a class="btn" href="/editor/panel-editor/${p.id}" style="background:linear-gradient(135deg,#3b82f6,#2563eb);padding:8px 12px;min-width:auto" title="View Panels">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
               </a>
-              <a class="btn secondary" href="/editor/manga-editor/${p.id}" title="Open manga editor for narration and characters">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                Manga Editor
+              <a class="btn secondary" href="/editor/manga-editor/${p.id}" style="padding:8px 12px;min-width:auto" title="Manga Editor">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
               </a>
-              <button class="btn secondary" onclick="deleteProject('${p.id}')" style="border-color:rgba(239,68,68,0.3);color:#ef4444" title="Delete this project">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                Delete
+              <a class="btn secondary" href="/editor/video-editor/${p.id}" style="padding:8px 12px;min-width:auto" title="Video Editor">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              </a>
+              <button class="btn secondary" onclick="synthesizeProject('${p.id}')" style="padding:8px 12px;min-width:auto;border-color:rgba(34,197,94,0.3);color:#22c55e" title="Synthesize All Audio">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>
+              </button>
+              <button class="btn secondary" onclick="deleteProject('${p.id}')" style="padding:8px 12px;min-width:auto;border-color:rgba(239,68,68,0.3);color:#ef4444" title="Delete Project">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
               </button>
             </div>
           </td>
@@ -480,6 +481,34 @@ async function deleteProject(id){
   await loadData();
 }
 
+async function synthesizeProject(projectId){
+  if(!confirm('Synthesize audio for all panels in this project?\n\nThis will generate TTS audio for all narration text.')) return;
+  
+  // Create progress modal
+  const modal = createProgressModal('Synthesizing Project', 'Initializing...');
+  document.body.appendChild(modal);
+  
+  try {
+    const response = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/all`, {
+      method: 'POST',
+      headers: {'ngrok-skip-browser-warning': 'true'}
+    });
+    
+    if(!response.ok) {
+      throw new Error(`Synthesis failed: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    const panelCount = result.total_created || result.synthesized_count || 0;
+    updateProgressModal(modal, 'Complete!', `Successfully synthesized ${panelCount} panels`, 100);
+    setTimeout(() => modal.remove(), 2000);
+  } catch(error) {
+    console.error('Synthesis error:', error);
+    updateProgressModal(modal, 'Error', error.message, 0);
+    setTimeout(() => modal.remove(), 3000);
+  }
+}
+
 async function deleteSeries(seriesId, seriesName, chapterCount){
   if(chapterCount > 0){
     const deleteChapters = confirm(
@@ -712,25 +741,21 @@ async function fetchAllSeriesImages(seriesId, seriesName, buttonElement) {
     return;
   }
   
-  const originalHTML = buttonElement.innerHTML;
-  buttonElement.disabled = true;
+  const notificationId = `notification-fetch-${seriesId}`;
+  showNotification(`Starting image fetch for ${chaptersToFetch.length} chapters...`, 'info', 0, notificationId);
   
   let successCount = 0;
   let failCount = 0;
   
   for (let i = 0; i < chaptersToFetch.length; i++) {
     const ch = chaptersToFetch[i];
+    const progress = Math.round(((i + 1) / chaptersToFetch.length) * 100);
     
-    // Update button with progress
-    buttonElement.innerHTML = `
-      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
-        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
-        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
-      </svg>
-      Fetching ${i + 1}/${chaptersToFetch.length}...
-    `;
-    
-    showNotification(`Fetching Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToFetch.length})`, 'info');
+    updateNotificationProgress(
+      notificationId,
+      `Fetching Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToFetch.length})`,
+      progress
+    );
     
     try {
       const r = await fetch('/editor/api/fetch-chapter-images', {
@@ -749,38 +774,27 @@ async function fetchAllSeriesImages(seriesId, seriesName, buttonElement) {
       
       const result = await r.json();
       successCount++;
-      showNotification(`✓ Chapter ${ch.chapter_number}: Fetched ${result.image_count} images`, 'success');
       
     } catch (error) {
       console.error(`Error fetching chapter ${ch.chapter_number}:`, error);
       failCount++;
-      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
     }
     
-    // Small delay between requests to avoid overwhelming the server
+    // Small delay between requests
     if (i < chaptersToFetch.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
   
   // Show final summary
-  const summary = `Fetch All Complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}`;
-  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  removeNotification(notificationId);
+  const summary = `Fetch Complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error', 5000);
   
-  // Update button to show completion
-  buttonElement.innerHTML = `
-    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path d="M5 13l4 4L19 7"/>
-    </svg>
-    Done (${successCount}/${chaptersToFetch.length})
-  `;
-  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
-  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
-  
-  // Reload the page after 3 seconds
+  // Reload the page
   setTimeout(() => {
     window.location.reload();
-  }, 3000);
+  }, 2000);
 }
 
 // Create panels for all chapters in a series
@@ -847,8 +861,8 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
     return;
   }
   
-  const originalHTML = buttonElement.innerHTML;
-  buttonElement.disabled = true;
+  const notificationId = `notification-panels-${seriesId}`;
+  showNotification(`Starting panel creation for ${chaptersToProcess.length} chapters...`, 'info', 0, notificationId);
   
   let successCount = 0;
   let failCount = 0;
@@ -856,17 +870,13 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
   
   for (let i = 0; i < chaptersToProcess.length; i++) {
     const ch = chaptersToProcess[i];
+    const progress = Math.round(((i + 1) / chaptersToProcess.length) * 100);
     
-    // Update button with progress
-    buttonElement.innerHTML = `
-      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
-        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
-        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
-      </svg>
-      Creating ${i + 1}/${chaptersToProcess.length}...
-    `;
-    
-    showNotification(`Creating panels for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToProcess.length})`, 'info');
+    updateNotificationProgress(
+      notificationId,
+      `Creating panels for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToProcess.length})`,
+      progress
+    );
     
     try {
       // Get project details to know how many pages
@@ -892,14 +902,16 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
       for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
         const page = pages[pageIdx];
         
-        // Update progress within chapter
-        buttonElement.innerHTML = `
-          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
-            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
-            <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
-          </svg>
-          Ch ${i + 1}/${chaptersToProcess.length} - Pg ${pageIdx + 1}/${pages.length}
-        `;
+        // Update progress with page detail
+        const chapterProgress = Math.round((i / chaptersToProcess.length) * 100);
+        const pageProgress = Math.round((pageIdx / pages.length) * 100);
+        const totalProgress = Math.round((chapterProgress + (pageProgress / chaptersToProcess.length)));
+        
+        updateNotificationProgress(
+          notificationId,
+          `Ch ${ch.chapter_number} - Page ${pageIdx + 1}/${pages.length} (${i + 1}/${chaptersToProcess.length} chapters)`,
+          totalProgress
+        );
         
         try {
           const panelResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/panels/create/page/${encodeURIComponent(page.page_number)}`, {
@@ -930,12 +942,10 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
       
       successCount++;
       totalPanelsCreated += chapterPanelCount;
-      showNotification(`✓ Chapter ${ch.chapter_number}: Created ${chapterPanelCount} panels (${pages.length} pages)`, 'success');
       
     } catch (error) {
       console.error(`Error creating panels for chapter ${ch.chapter_number}:`, error);
       failCount++;
-      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
     }
     
     // Longer delay between chapters to ensure panel service isn't overwhelmed
@@ -945,31 +955,52 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
   }
   
   // Show final summary
-  const summary = `Create All Panels Complete!\n\nSuccess: ${successCount}\nFailed: ${failCount}\nTotal Panels: ${totalPanelsCreated}`;
-  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  removeNotification(notificationId);
+  const summary = `Panel Creation Complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}\n📊 Total Panels: ${totalPanelsCreated}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error', 5000);
   
-  // Update button to show completion
-  buttonElement.innerHTML = `
-    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path d="M5 13l4 4L19 7"/>
-    </svg>
-    Done (${successCount}/${chaptersToProcess.length})
-  `;
-  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
-  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
-  
-  // Reload the page after 3 seconds
+  // Reload the page
   setTimeout(() => {
     window.location.reload();
-  }, 3000);
+  }, 2000);
 }
 
 // Show notification helper
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', duration = 5000, id = null) {
+  // If id is provided and notification exists, update it
+  if (id) {
+    const existing = document.getElementById(id);
+    if (existing) {
+      const messageEl = existing.querySelector('.notification-message');
+      const progressBar = existing.querySelector('.notification-progress');
+      if (messageEl) messageEl.textContent = message;
+      
+      // Update color based on type
+      if (type === 'success') {
+        existing.style.background = '#10b981';
+      } else if (type === 'error') {
+        existing.style.background = '#ef4444';
+      } else {
+        existing.style.background = '#6366f1';
+      }
+      
+      // If duration is provided, auto-remove
+      if (duration > 0) {
+        setTimeout(() => {
+          existing.remove();
+        }, duration);
+      }
+      
+      return existing;
+    }
+  }
+  
   const notification = document.createElement('div');
+  if (id) notification.id = id;
+  
   notification.style.cssText = `
     position: fixed;
-    top: 20px;
+    top: ${20 + (document.querySelectorAll('[id^="notification-"]').length * 80)}px;
     right: 20px;
     padding: 16px 20px;
     background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#6366f1'};
@@ -980,14 +1011,49 @@ function showNotification(message, type = 'info') {
     max-width: 400px;
     font-size: 14px;
     font-weight: 500;
+    min-width: 300px;
   `;
-  notification.textContent = message;
+  
+  notification.innerHTML = `
+    <div class="notification-message" style="margin-bottom: 8px;">${message}</div>
+    <div class="notification-progress" style="height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; overflow: hidden; display: none;">
+      <div class="notification-progress-bar" style="height: 100%; width: 0%; background: rgba(255,255,255,0.9); transition: width 0.3s ease;"></div>
+    </div>
+  `;
   
   document.body.appendChild(notification);
   
-  setTimeout(() => {
+  // Auto-remove if duration is provided
+  if (duration > 0) {
+    setTimeout(() => {
+      notification.remove();
+    }, duration);
+  }
+  
+  return notification;
+}
+
+function updateNotificationProgress(notificationId, message, percentage) {
+  const notification = document.getElementById(notificationId);
+  if (!notification) return;
+  
+  const messageEl = notification.querySelector('.notification-message');
+  const progressContainer = notification.querySelector('.notification-progress');
+  const progressBar = notification.querySelector('.notification-progress-bar');
+  
+  if (messageEl) messageEl.textContent = message;
+  
+  if (progressContainer && progressBar) {
+    progressContainer.style.display = 'block';
+    progressBar.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
+  }
+}
+
+function removeNotification(notificationId) {
+  const notification = document.getElementById(notificationId);
+  if (notification) {
     notification.remove();
-  }, 5000);
+  }
 }
 
 async function generateAllNarrations(seriesId, seriesName, buttonElement) {
@@ -1078,27 +1144,22 @@ async function generateAllNarrations(seriesId, seriesName, buttonElement) {
     return;
   }
   
-  const originalHTML = buttonElement.innerHTML;
-  buttonElement.disabled = true;
+  const notificationId = `notification-narrations-${seriesId}`;
+  showNotification(`Starting narration generation for ${needNarrations.length} chapters...`, 'info', 0, notificationId);
   
   let successCount = 0;
   let failCount = 0;
-  let totalPanelsCreated = 0;
   
   // Process each chapter one at a time
   for (let i = 0; i < needNarrations.length; i++) {
     const ch = needNarrations[i];
+    const progress = Math.round(((i + 1) / needNarrations.length) * 100);
     
-    // Update button with progress
-    buttonElement.innerHTML = `
-      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
-        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
-        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
-      </svg>
-      Ch ${i + 1}/${needNarrations.length}...
-    `;
-    
-    showNotification(`Generating narrations for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${needNarrations.length})`, 'info');
+    updateNotificationProgress(
+      notificationId,
+      `Generating narrations for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${needNarrations.length})`,
+      progress
+    );
     
     try {
       // Generate narrations for this chapter
@@ -1118,13 +1179,10 @@ async function generateAllNarrations(seriesId, seriesName, buttonElement) {
       const result = await response.json();
       
       successCount++;
-      const charUpdated = result.characterListUpdated ? ' (character list updated)' : '';
-      showNotification(`✓ Chapter ${ch.chapter_number}: Narrations created${charUpdated}`, 'success');
       
     } catch (error) {
       console.error(`Error generating narrations for chapter ${ch.chapter_number}:`, error);
       failCount++;
-      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
     }
     
     // Delay between chapters to avoid overwhelming the API
@@ -1134,22 +1192,278 @@ async function generateAllNarrations(seriesId, seriesName, buttonElement) {
   }
   
   // Show final summary
+  removeNotification(notificationId);
   const skipped = status.total_chapters - needNarrations.length;
-  const summary = `Narration Generation Complete!\n\n✅ Successful: ${successCount}\n❌ Failed: ${failCount}\n⏭️ Skipped: ${skipped}`;
-  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  const summary = `Narration Generation Complete!\n✅ Successful: ${successCount}\n❌ Failed: ${failCount}\n⏭️ Skipped: ${skipped}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error', 5000);
   
-  // Update button to show completion
-  buttonElement.innerHTML = `
-    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path d="M5 13l4 4L19 7"/>
-    </svg>
-    Done (${successCount}/${needNarrations.length})
-  `;
-  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
-  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
-  
-  // Reload the page after 3 seconds
+  // Reload the page
   setTimeout(() => {
     window.location.reload();
-  }, 3000);
+  }, 2000);
+}
+
+// Synthesize all audio for all projects sequentially
+async function synthesizeAllSeries(){
+  if(!confirm('Synthesize audio for ALL projects?\n\nThis will sequentially process each project and generate TTS audio for all narration text.\n\nThis may take a while. Continue?')) return;
+  
+  // Create progress modal
+  const modal = createProgressModal('Synthesizing All Series', 'Loading projects...');
+  document.body.appendChild(modal);
+  
+  try {
+    // Fetch all projects
+    const r = await fetch('/editor/api/projects');
+    if(!r.ok) throw new Error('Failed to load projects');
+    const data = await r.json();
+    const projects = data.projects || [];
+    
+    if(projects.length === 0) {
+      updateProgressModal(modal, 'No Projects', 'No projects found to synthesize', 0);
+      setTimeout(() => modal.remove(), 2000);
+      return;
+    }
+    
+    let completed = 0;
+    let successCount = 0;
+    let failCount = 0;
+    const total = projects.length;
+    
+    // Process each project sequentially
+    for(const project of projects) {
+      updateProgressModal(modal, `Processing: ${project.title}`, `Project ${completed + 1} of ${total}`, Math.round((completed / total) * 100));
+      
+      try {
+        const response = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/all`, {
+          method: 'POST',
+          headers: {'ngrok-skip-browser-warning': 'true'}
+        });
+        
+        if(response.ok) {
+          const result = await response.json();
+          successCount++;
+          completed++;
+          const panelCount = result.total_created || result.synthesized_count || 0;
+          updateProgressModal(modal, `✓ Completed: ${project.title}`, `Project ${completed} of ${total} done (${panelCount} panels synthesized)`, Math.round((completed / total) * 100));
+        } else {
+          failCount++;
+          completed++;
+          console.error(`Failed to synthesize project ${project.id}:`, response.status);
+          updateProgressModal(modal, `✗ Failed: ${project.title}`, `Project ${completed} of ${total} (failed)`, Math.round((completed / total) * 100));
+        }
+      } catch(error) {
+        failCount++;
+        completed++;
+        console.error(`Error synthesizing project ${project.id}:`, error);
+        updateProgressModal(modal, `✗ Error: ${project.title}`, `Project ${completed} of ${total} (error)`, Math.round((completed / total) * 100));
+      }
+      
+      // Small delay between projects to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Show final summary
+    const summary = `✅ Success: ${successCount}\n❌ Failed: ${failCount}\n📊 Total: ${total}`;
+    updateProgressModal(modal, 'All Complete!', summary, 100);
+    setTimeout(() => modal.remove(), 5000);
+    
+  } catch(error) {
+    console.error('Series synthesis error:', error);
+    updateProgressModal(modal, 'Error', error.message, 0);
+    setTimeout(() => modal.remove(), 3000);
+  }
+}
+
+// Synthesize audio for all chapters in a specific series
+async function synthesizeSeries(seriesId, seriesName, buttonElement) {
+  // Check override flag
+  const override = isOverrideEnabled(seriesId);
+  console.log(`Synthesize Series - Override mode: ${override}`);
+  
+  // Get the series card and chapters data
+  const seriesCard = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+  if (!seriesCard) {
+    showNotification('Could not find series data', 'error');
+    return;
+  }
+  
+  const chaptersJson = seriesCard.getAttribute('data-chapters');
+  const chapters = JSON.parse(chaptersJson);
+  
+  console.log(`Found ${chapters.length} total chapters in series`);
+  
+  // Filter chapters that need synthesis
+  const chaptersToProcess = [];
+  for (const ch of chapters) {
+    const hasImages = ch.has_images === 1 || (ch.page_count && ch.page_count > 0);
+    if (!hasImages) {
+      console.log(`Chapter ${ch.chapter_number} has no images - skipping`);
+      continue; // Skip chapters without images
+    }
+    
+    // Check if this chapter already has audio synthesized (skip this check if override is enabled)
+    if (!override) {
+      try {
+        const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}`, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        
+        if (projectResp.ok) {
+          const projectData = await projectResp.json();
+          const pages = projectData.pages || [];
+          
+          // Check if all panels have audio
+          let allHaveAudio = true;
+          for (const page of pages) {
+            const panels = page.panels || [];
+            for (const panel of panels) {
+              if (!panel.audio || panel.audio.length === 0) {
+                allHaveAudio = false;
+                break;
+              }
+            }
+            if (!allHaveAudio) break;
+          }
+          
+          if (allHaveAudio && pages.length > 0) {
+            console.log(`Chapter ${ch.chapter_number} already has audio for all panels - skipping`);
+            continue; // Skip this chapter as it already has audio
+          }
+        }
+      } catch (e) {
+        console.error(`Error checking audio for chapter ${ch.chapter_number}:`, e);
+      }
+    } else {
+      console.log(`Chapter ${ch.chapter_number} - Override enabled, will process regardless of existing audio`);
+    }
+    
+    // Add this chapter to the list to process
+    chaptersToProcess.push(ch);
+  }
+  
+  console.log(`Filtered to ${chaptersToProcess.length} chapters that need audio synthesis`);
+  
+  if (chaptersToProcess.length === 0) {
+    showNotification('All chapters already have audio synthesized!', 'success');
+    return;
+  }
+  
+  const chapterList = chaptersToProcess.map(ch => `Chapter ${ch.chapter_number}: ${ch.title}`).join('\n');
+  const firstChapter = chaptersToProcess[0].chapter_number;
+  if (!confirm(`Synthesize audio for ${chaptersToProcess.length} chapter(s) in "${seriesName}"?\n\nStarting from Chapter ${firstChapter}:\n${chapterList}\n\nThis may take a while...`)) {
+    return;
+  }
+  
+  const notificationId = `notification-synthesize-${seriesId}`;
+  showNotification(`Starting audio synthesis for ${chaptersToProcess.length} chapters...`, 'info', 0, notificationId);
+  
+  let successCount = 0;
+  let failCount = 0;
+  let totalPanelsSynthesized = 0;
+  
+  for (let i = 0; i < chaptersToProcess.length; i++) {
+    const ch = chaptersToProcess[i];
+    const progress = Math.round(((i + 1) / chaptersToProcess.length) * 100);
+    
+    updateNotificationProgress(
+      notificationId,
+      `Synthesizing Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${chaptersToProcess.length})`,
+      progress
+    );
+    
+    try {
+      // Synthesize audio for this chapter
+      const response = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/tts/synthesize/all`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to synthesize audio`);
+      }
+      
+      const result = await response.json();
+      const panelCount = result.total_created || result.synthesized_count || 0;
+      
+      successCount++;
+      totalPanelsSynthesized += panelCount;
+      
+    } catch (error) {
+      console.error(`Error synthesizing audio for chapter ${ch.chapter_number}:`, error);
+      failCount++;
+    }
+    
+    // Delay between chapters to avoid overwhelming the TTS API
+    if (i < chaptersToProcess.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  
+  // Show final summary
+  removeNotification(notificationId);
+  const summary = `Audio Synthesis Complete!\n✅ Successful: ${successCount}\n❌ Failed: ${failCount}\n🔊 Total Panels: ${totalPanelsSynthesized}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error', 5000);
+  
+  // Reload the page
+  setTimeout(() => {
+    window.location.reload();
+  }, 2000);
+}
+
+
+function createProgressModal(title, message) {
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 20px;
+  `;
+  
+  modal.innerHTML = `
+    <div style="background:#0f1729;border:1px solid #1e293b;border-radius:16px;padding:32px;max-width:500px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px">
+        <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#3b82f6,#2563eb);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg width="24" height="24" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+          </svg>
+        </div>
+        <div style="flex:1">
+          <h3 class="modal-title" style="margin:0;font-size:18px;font-weight:700;color:#e2e8f0">${title}</h3>
+        </div>
+      </div>
+      
+      <div class="modal-message" style="margin-bottom:20px;color:#94a3b8;font-size:14px;line-height:1.6;white-space:pre-line">${message}</div>
+      
+      <div style="background:#0b1220;border-radius:10px;overflow:hidden;height:12px;margin-bottom:12px">
+        <div class="modal-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#3b82f6,#2563eb);transition:width 0.3s ease"></div>
+      </div>
+      
+      <div class="modal-percentage" style="text-align:center;color:#64748b;font-size:13px;font-weight:600">0%</div>
+    </div>
+  `;
+  
+  return modal;
+}
+
+function updateProgressModal(modal, title, message, percentage) {
+  const titleEl = modal.querySelector('.modal-title');
+  const messageEl = modal.querySelector('.modal-message');
+  const progressBar = modal.querySelector('.modal-progress-bar');
+  const percentageEl = modal.querySelector('.modal-percentage');
+  
+  if(titleEl) titleEl.textContent = title;
+  if(messageEl) messageEl.textContent = message;
+  if(progressBar) progressBar.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
+  if(percentageEl) percentageEl.textContent = `${Math.round(percentage)}%`;
 }

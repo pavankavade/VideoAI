@@ -54,21 +54,20 @@ async function loadProjects(){
           <td style="padding:20px 24px;color:#94a3b8;font-size:14px">${new Date(p.createdAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'})}</td>
           <td style="padding:20px 24px">
             <div class="actions">
-              <a class="btn" href="/editor/panel-editor/${p.id}" style="background:linear-gradient(135deg,#3b82f6,#2563eb)">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                View Panels
+              <a class="btn" href="/editor/panel-editor/${p.id}" style="background:linear-gradient(135deg,#3b82f6,#2563eb);padding:8px 12px;min-width:auto" title="View Panels">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
               </a>
-              <a class="btn secondary" href="/editor/manga-editor/${p.id}">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                Manga Editor
+              <a class="btn secondary" href="/editor/manga-editor/${p.id}" style="padding:8px 12px;min-width:auto" title="Manga Editor">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
               </a>
-              <a class="btn secondary" href="/editor/video-editor/${p.id}">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Video Editor
+              <a class="btn secondary" href="/editor/video-editor/${p.id}" style="padding:8px 12px;min-width:auto" title="Video Editor">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
               </a>
-              <button class="btn secondary" onclick="deleteProject('${p.id}')" style="border-color:rgba(239,68,68,0.3);color:#ef4444">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                Delete
+              <button class="btn secondary" onclick="synthesizeProject('${p.id}')" style="padding:8px 12px;min-width:auto;border-color:rgba(34,197,94,0.3);color:#22c55e" title="Synthesize All Audio">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>
+              </button>
+              <button class="btn secondary" onclick="deleteProject('${p.id}')" style="padding:8px 12px;min-width:auto;border-color:rgba(239,68,68,0.3);color:#ef4444" title="Delete Project">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
               </button>
             </div>
           </td>
@@ -162,4 +161,142 @@ async function deleteProject(id){
   const r = await fetch(`/editor/api/projects/${encodeURIComponent(id)}`, { method:'DELETE' });
   if(!r.ok){ alert('Delete failed'); return; }
   await loadProjects();
+}
+
+async function synthesizeProject(projectId){
+  if(!confirm('Synthesize audio for all panels in this project?\n\nThis will generate TTS audio for all narration text.')) return;
+  
+  // Create progress modal
+  const modal = createProgressModal('Synthesizing Project', 'Initializing...');
+  document.body.appendChild(modal);
+  
+  try {
+    const response = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/all`, {
+      method: 'POST',
+      headers: {'ngrok-skip-browser-warning': 'true'}
+    });
+    
+    if(!response.ok) {
+      throw new Error(`Synthesis failed: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    updateProgressModal(modal, 'Complete!', `Successfully synthesized ${result.synthesized_count || 0} panels`, 100);
+    setTimeout(() => modal.remove(), 2000);
+  } catch(error) {
+    console.error('Synthesis error:', error);
+    updateProgressModal(modal, 'Error', error.message, 0);
+    setTimeout(() => modal.remove(), 3000);
+  }
+}
+
+async function synthesizeAllSeries(){
+  if(!confirm('Synthesize audio for ALL projects in the series?\n\nThis will sequentially process each chapter and generate TTS audio for all narration text.\n\nThis may take a while. Continue?')) return;
+  
+  // Create progress modal
+  const modal = createProgressModal('Synthesizing All Series', 'Loading projects...');
+  document.body.appendChild(modal);
+  
+  try {
+    // Fetch all projects
+    const r = await fetch('/editor/api/projects');
+    if(!r.ok) throw new Error('Failed to load projects');
+    const data = await r.json();
+    const projects = data.projects || [];
+    
+    if(projects.length === 0) {
+      updateProgressModal(modal, 'No Projects', 'No projects found to synthesize', 0);
+      setTimeout(() => modal.remove(), 2000);
+      return;
+    }
+    
+    let completed = 0;
+    const total = projects.length;
+    
+    // Process each project sequentially
+    for(const project of projects) {
+      updateProgressModal(modal, `Processing ${project.title}`, `Chapter ${completed + 1} of ${total}`, Math.round((completed / total) * 100));
+      
+      try {
+        const response = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/all`, {
+          method: 'POST',
+          headers: {'ngrok-skip-browser-warning': 'true'}
+        });
+        
+        if(response.ok) {
+          completed++;
+          updateProgressModal(modal, `Completed ${project.title}`, `Chapter ${completed} of ${total} done`, Math.round((completed / total) * 100));
+        } else {
+          console.error(`Failed to synthesize project ${project.id}:`, response.status);
+        }
+      } catch(error) {
+        console.error(`Error synthesizing project ${project.id}:`, error);
+      }
+      
+      // Small delay between projects to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    updateProgressModal(modal, 'All Complete!', `Successfully processed ${completed} of ${total} projects`, 100);
+    setTimeout(() => modal.remove(), 3000);
+    
+  } catch(error) {
+    console.error('Series synthesis error:', error);
+    updateProgressModal(modal, 'Error', error.message, 0);
+    setTimeout(() => modal.remove(), 3000);
+  }
+}
+
+function createProgressModal(title, message) {
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 20px;
+  `;
+  
+  modal.innerHTML = `
+    <div style="background:#0f1729;border:1px solid #1e293b;border-radius:16px;padding:32px;max-width:500px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px">
+        <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#3b82f6,#2563eb);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg width="24" height="24" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+          </svg>
+        </div>
+        <div style="flex:1">
+          <h3 class="modal-title" style="margin:0;font-size:18px;font-weight:700;color:#e2e8f0">${title}</h3>
+        </div>
+      </div>
+      
+      <div class="modal-message" style="margin-bottom:20px;color:#94a3b8;font-size:14px;line-height:1.6">${message}</div>
+      
+      <div style="background:#0b1220;border-radius:10px;overflow:hidden;height:12px;margin-bottom:12px">
+        <div class="modal-progress-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#3b82f6,#2563eb);transition:width 0.3s ease"></div>
+      </div>
+      
+      <div class="modal-percentage" style="text-align:center;color:#64748b;font-size:13px;font-weight:600">0%</div>
+    </div>
+  `;
+  
+  return modal;
+}
+
+function updateProgressModal(modal, title, message, percentage) {
+  const titleEl = modal.querySelector('.modal-title');
+  const messageEl = modal.querySelector('.modal-message');
+  const progressBar = modal.querySelector('.modal-progress-bar');
+  const percentageEl = modal.querySelector('.modal-percentage');
+  
+  if(titleEl) titleEl.textContent = title;
+  if(messageEl) messageEl.textContent = message;
+  if(progressBar) progressBar.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
+  if(percentageEl) percentageEl.textContent = `${Math.round(percentage)}%`;
 }
