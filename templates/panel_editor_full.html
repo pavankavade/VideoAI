@@ -199,6 +199,10 @@
               </select>
               <button class="btn secondary" data-savecfg="${p.index}">Save</button>
             </div>
+            <div class="row mt-2" style="gap:8px;align-items:center">
+              <button class="btn" data-synth="${p.index}">${p.audio ? 'Resynthesize' : 'Synthesize'}</button>
+              <div class="muted" style="font-size:12px" data-synth-status="${p.index}"></div>
+            </div>
             <div class="audio-slot mt-2" data-audio="${p.index}"></div>
             </div>
           </div>
@@ -234,6 +238,56 @@
           const pn = (pages[currentIndex]||{}).page_number;
           const ok = await savePanelConfig(pn, idx, eff, trans);
           if(ok){ btn.textContent = 'Saved'; setTimeout(()=>btn.textContent='Save Config', 1000); }
+        });
+      });
+
+      // Wire per-panel synth buttons
+      root.querySelectorAll('button[data-synth]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const idx = parseInt(btn.getAttribute('data-synth'))||1;
+          const pn = (pages[currentIndex]||{}).page_number;
+          const statusEl = root.querySelector(`[data-synth-status="${idx}"]`);
+          let hasAudio = false;
+          try{
+            btn.disabled = true;
+            const original = btn.textContent;
+            btn.textContent = 'Synthesizing…';
+            if(statusEl) statusEl.textContent = 'Starting...';
+            const audioUrl = await synthPanel(project.id, pn, idx);
+            if(audioUrl){
+              // Save audio URL to server for this panel
+              const saved = await savePanelAudio(pn, idx, audioUrl);
+              // Update local model
+              const pLoc = (pages[currentIndex]||{}).panels?.find(x=>parseInt(x.index)===parseInt(idx));
+              if(pLoc) pLoc.audio = audioUrl;
+              // Render audio control
+              renderAudioFor(idx, audioUrl);
+              if(statusEl) statusEl.textContent = 'Done';
+              hasAudio = true;
+              // Update button text to Resynthesize
+              btn.textContent = 'Resynthesize';
+            } else {
+              if(statusEl) statusEl.textContent = 'Failed';
+              alert('Synthesis failed for panel ' + idx);
+              // Keep original label (Synthesize or Resynthesize)
+              btn.textContent = original;
+            }
+          }catch(err){
+            console.error(err);
+            if(statusEl) statusEl.textContent = 'Error';
+            alert('Failed to synthesize panel: ' + err.message);
+            // restore original label
+            try{ btn.textContent = btn.textContent || 'Synthesize'; }catch(e){}
+          }finally{
+            btn.disabled = false;
+            // If we created audio, ensure button shows Resynthesize, otherwise show original
+            if(!hasAudio){
+              // Determine current state from local model in case it changed
+              const pLoc2 = (pages[currentIndex]||{}).panels?.find(x=>parseInt(x.index)===parseInt(idx));
+              btn.textContent = (pLoc2 && pLoc2.audio) ? 'Resynthesize' : 'Synthesize';
+            }
+            setTimeout(()=>{ if(statusEl) statusEl.textContent = ''; }, 2500);
+          }
         });
       });
     }
@@ -468,9 +522,25 @@
       alert('Saved');
     });
 
-    // Global: synthesize audio for all pages/panels via backend (DB-powered)
+    // Global: synthesize audio for pages that are missing audio
     document.getElementById('synthAll').addEventListener('click', async (e)=>{
       const btn = e.currentTarget;
+      // Determine pages that have at least one panel missing audio
+      const pagesToProcess = (pages || []).filter(pg => {
+        const panels = pg.panels || [];
+        return panels.some(p => !p.audio);
+      });
+
+      if(!pagesToProcess || pagesToProcess.length === 0){
+        alert('All pages already have audio — nothing to synthesize.');
+        return;
+      }
+
+      // Show which pages will be processed and confirm with the user
+      const pageNums = pagesToProcess.map(p => p.page_number).sort((a,b)=>a-b);
+      const confirmMsg = `This will synthesize audio for ${pageNums.length} page(s): ${pageNums.join(', ')}\n\nProceed?`;
+      if(!confirm(confirmMsg)) return;
+
       btn.disabled = true; const original = btn.textContent; btn.textContent = 'Synthesizing…';
       const progressEl = document.getElementById('synthProgress');
       const barWrap = document.getElementById('synthBarWrap');
@@ -479,27 +549,23 @@
       progressEl.textContent = 'Starting…'; bar.style.width = '0%';
 
       try{
-        // Fetch pages once for counts
-        const totalPages = pages.length;
+        const totalPages = pagesToProcess.length;
         let pagesDone = 0;
 
-        for(let i=0;i<pages.length;i++){
-          const pg = pages[i];
+        for(const pg of pagesToProcess){
           const pn = pg.page_number;
           progressEl.textContent = `Synthesizing Page ${pn}…`;
-          // Call backend to synthesize this page using stored texts
           const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/page/${encodeURIComponent(pn)}`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
           if(!r.ok){
             console.warn('Page synth failed', pn, r.status);
           }else{
             const data = await r.json();
-            // Update local UI for this page
             const resPanels = (data && data.panels) || [];
             resPanels.forEach(item=>{
               if(item && item.audio_url){
                 renderAudioFor(item.panel_index, item.audio_url);
-                // also patch local model
-                const pgLocal = pages[i];
+                // patch local model: find the page object and update its panel
+                const pgLocal = pages.find(x => parseInt(x.page_number) === parseInt(pn));
                 if(pgLocal && Array.isArray(pgLocal.panels)){
                   const pLoc = pgLocal.panels.find(x=>parseInt(x.index)===parseInt(item.panel_index));
                   if(pLoc){ pLoc.audio = item.audio_url; }
@@ -513,8 +579,9 @@
           bar.style.width = pct + '%';
           progressEl.textContent = `Completed ${pagesDone}/${totalPages} pages`;
 
-          // If user is viewing this page, re-render to reflect updates in selects/audio
-          if(i===currentIndex){ renderCurrentPage(); }
+          // If user is viewing a page we updated, re-render to reflect updates in selects/audio
+          const currentPageNumber = (pages[currentIndex]||{}).page_number;
+          if(currentPageNumber && pageNums.includes(currentPageNumber)){ renderCurrentPage(); }
         }
 
         progressEl.textContent = 'All done';
@@ -573,6 +640,32 @@
         body: JSON.stringify({ audioUrl })
       });
       return r.ok;
+    }
+
+    // Synthesize a single panel via backend and return the audio URL (or null)
+    async function synthPanel(projectId, pageNumber, panelIndex){
+      // The server currently exposes a per-page synth endpoint. Call it and extract
+      // the audio for the requested panel index instead of calling a non-existing
+      // per-panel route (which returned 405).
+      const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/page/${encodeURIComponent(pageNumber)}`, {
+        method: 'POST', headers: {'ngrok-skip-browser-warning':'true'}
+      });
+      if(!resp.ok){
+        console.warn('Page synth failed when synthesizing single panel', pageNumber, panelIndex, resp.status);
+        return null;
+      }
+      const data = await resp.json().catch(()=>null);
+      if(!data) return null;
+      // Response shape used elsewhere: { panels: [{ panel_index, audio_url }, ...] }
+      if(Array.isArray(data.panels)){
+        const item = data.panels.find(it => parseInt(it.panel_index)===parseInt(panelIndex));
+        if(item && item.audio_url) return item.audio_url;
+      }
+      // Some backends may return a single object for the panel
+      if(data.panel && parseInt(data.panel.panel_index)===parseInt(panelIndex) && data.panel.audio_url) return data.panel.audio_url;
+      // Or maybe return { panel_index: X, audio_url: '...' }
+      if(parseInt(data.panel_index)===parseInt(panelIndex) && data.audio_url) return data.audio_url;
+      return null;
     }
 
     async function savePanelConfig(pageNumber, panelIndex, effect, transition){

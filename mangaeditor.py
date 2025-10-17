@@ -3031,8 +3031,25 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
                 "cfg_weight": "0.5",
                 "temperature": "0.8",
             }
-            r = requests.post(TTS_API_URL, data=payload, timeout=60)
+            # Allow optional API key header for TTS provider
+            tts_headers = {}
+            tts_key = os.environ.get("TTS_API_KEY", "").strip()
+            tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
+            if tts_key:
+                # If header is Authorization and value doesn't start with Bearer, prefix it
+                if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
+                    tts_headers[tts_key_header] = f"Bearer {tts_key}"
+                else:
+                    tts_headers[tts_key_header] = tts_key
+
+            r = requests.post(TTS_API_URL, data=payload, headers=tts_headers or None, timeout=60)
             if r.status_code != 200:
+                # Log provider response for easier debugging (trim to 2k chars)
+                try:
+                    body = r.text
+                except Exception:
+                    body = "<unreadable>"
+                logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, idx, (body[:2000] if body else ""))
                 results.append({
                     "panel_index": idx,
                     "text": text,
@@ -3073,6 +3090,117 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
         "created": int(created),
         "panels": results,
     }
+
+
+@router.post("/api/project/{project_id:path}/tts/synthesize/page/{page_number}/panel/{panel_index}")
+async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_index: int):
+    """Synthesize TTS for a single panel on a page using narration_text stored in DB.
+    Saves audio file under /manga_projects/{project_id}/tts and updates panel audio URL in DB.
+    Returns the single panel result for UI convenience.
+    """
+    if not TTS_API_URL:
+        raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
+
+    proj = EditorDB.get_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    panels = EditorDB.get_panels_for_page(project_id, int(page_number))
+    if not panels:
+        raise HTTPException(status_code=404, detail="No panels for this page")
+
+    # Find the requested panel. get_panels_for_page returns display 'index' (1-based)
+    target = None
+    for p in panels:
+        try:
+            if int(p.get("index") or 0) == int(panel_index):
+                target = p
+                break
+        except Exception:
+            continue
+
+    if target is None:
+        # try fallback: maybe stored as 0-based in DB
+        for p in panels:
+            try:
+                if int(p.get("index") or 0) == int(panel_index) - 1:
+                    target = p
+                    break
+            except Exception:
+                continue
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="Panel not found")
+
+    text = str(target.get("text") or "").strip()
+    project_dir = os.path.join(MANGA_DIR, project_id)
+    out_dir = os.path.join(project_dir, "tts")
+    os.makedirs(out_dir, exist_ok=True)
+
+    if not text:
+        # nothing to synthesize; return existing audio or skipped
+        return {
+            "ok": True,
+            "page_number": int(page_number),
+            "panel": {
+                "panel_index": int(panel_index),
+                "text": "",
+                "audio_url": target.get("audio"),
+                "status": "skipped"
+            }
+        }
+
+    try:
+        payload = {
+            "text": text,
+            "exaggeration": "0.5",
+            "cfg_weight": "0.5",
+            "temperature": "0.8",
+        }
+        # Optional API key header support for TTS provider
+        tts_headers = {}
+        tts_key = os.environ.get("TTS_API_KEY", "").strip()
+        tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
+        if tts_key:
+            if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
+                tts_headers[tts_key_header] = f"Bearer {tts_key}"
+            else:
+                tts_headers[tts_key_header] = tts_key
+
+        r = requests.post(TTS_API_URL, data=payload, headers=tts_headers or None, timeout=60)
+        if r.status_code != 200:
+            try:
+                body = r.text
+            except Exception:
+                body = "<unreadable>"
+            logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, panel_index, (body[:2000] if body else ""))
+            raise HTTPException(status_code=502, detail=f"TTS provider error: {r.status_code}")
+
+        # Save audio
+        fname = f"tts_page_{int(page_number)}_panel_{int(panel_index)}.wav"
+        abs_path = os.path.join(out_dir, fname)
+        with open(abs_path, "wb") as wf:
+            wf.write(r.content)
+        url = f"/manga_projects/{project_id}/tts/{fname}"
+
+        # Persist to DB
+        EditorDB.set_panel_audio(project_id, int(page_number), int(panel_index), url)
+
+        return {
+            "ok": True,
+            "page_number": int(page_number),
+            "panel": {
+                "panel_index": int(panel_index),
+                "text": text,
+                "audio_url": url,
+                "status": "ok"
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("TTS failed for page %s panel %s", page_number, panel_index)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/project/{project_id:path}/tts/synthesize/all")
