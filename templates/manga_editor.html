@@ -629,7 +629,13 @@ Panel 3 narration' style="min-height:200px;font-family:monospace;font-size:13px"
           return; 
         }
         const result = await r.json();
-        alert('Character list saved successfully!');
+        
+        // Show detailed message based on whether this is part of a series
+        if (result.series_id && result.chapters_updated) {
+          alert(`✅ Character list saved successfully!\n\n📚 Propagated to ${result.chapters_updated} chapter(s) in this series.\n\nAll chapters now have the same character list.`);
+        } else {
+          alert('✅ Character list saved successfully!');
+        }
       } catch(e) {
         console.error('Character save error:', e);
         alert('Failed to save character list: ' + e.message);

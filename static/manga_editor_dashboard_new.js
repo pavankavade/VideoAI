@@ -6,6 +6,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let currentSeriesId = null;
 
+// Utility function to check if override is enabled for a series
+function isOverrideEnabled(seriesId) {
+  const checkbox = document.getElementById(`override-${seriesId}`);
+  return checkbox ? checkbox.checked : false;
+}
+
 async function loadData(){
   await Promise.all([loadSeries(), loadStandaloneProjects()]);
 }
@@ -134,6 +140,19 @@ async function renderSeriesCard(series){
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
             Create All Panels
           </button>
+          <button class="btn" onclick="event.stopPropagation();generateAllNarrations('${series.id}', '${series.name}', this)" style="font-size:13px;padding:10px 16px;background:#f59e0b;border-color:#f59e0b" title="Generate narrations for all chapters (auto-updates character list & summary)">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            Generate All Narrations
+          </button>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-left:1px solid rgba(255,255,255,0.1);margin-left:8px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer;user-select:none" title="Override existing processed data and start from Chapter 1 for all actions">
+              <input type="checkbox" id="override-${series.id}" style="margin:0;transform:scale(0.9)" onclick="event.stopPropagation()">
+              <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" style="opacity:0.7">
+                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+              </svg>
+              Override
+            </label>
+          </div>
           <button class="btn" onclick="event.stopPropagation();openAddChapter('${series.id}', '${series.name}')" style="font-size:13px;padding:10px 16px">
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             Add Chapter
@@ -766,6 +785,10 @@ async function fetchAllSeriesImages(seriesId, seriesName, buttonElement) {
 
 // Create panels for all chapters in a series
 async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
+  // Check override flag
+  const override = isOverrideEnabled(seriesId);
+  console.log(`Create All Panels - Override mode: ${override}`);
+  
   // Get the series card and chapters data
   const seriesCard = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
   if (!seriesCard) {
@@ -778,22 +801,49 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
   
   console.log(`Found ${chapters.length} total chapters in series`);
   
-  // Filter chapters that need panels: chapters with images but no panels or incomplete panels
-  const chaptersToProcess = chapters.filter(ch => {
+  // Filter chapters that need panels: chapters with images but no panels yet
+  const chaptersToProcess = [];
+  for (const ch of chapters) {
     const hasImages = ch.has_images === 1 || (ch.page_count && ch.page_count > 0);
-    // We want chapters with images
-    return hasImages;
-  });
+    if (!hasImages) {
+      continue; // Skip chapters without images
+    }
+    
+    // Check if this chapter already has panels (skip this check if override is enabled)
+    if (!override) {
+      try {
+        const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}`, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        
+        if (projectResp.ok) {
+          const projectData = await projectResp.json();
+          if (projectData.allPanelsReady) {
+            console.log(`Chapter ${ch.chapter_number} already has all panels - skipping`);
+            continue; // Skip this chapter as it already has panels
+          }
+        }
+      } catch (e) {
+        console.error(`Error checking panels for chapter ${ch.chapter_number}:`, e);
+      }
+    } else {
+      console.log(`Chapter ${ch.chapter_number} - Override enabled, will process regardless of existing panels`);
+    }
+    
+    // Add this chapter to the list to process
+    chaptersToProcess.push(ch);
+  }
   
-  console.log(`Filtered to ${chaptersToProcess.length} chapters with images`);
+  console.log(`Filtered to ${chaptersToProcess.length} chapters that need panels`);
   
   if (chaptersToProcess.length === 0) {
-    showNotification('No chapters with images found! Fetch images first.', 'info');
+    showNotification('All chapters already have panels created!', 'success');
     return;
   }
   
   const chapterList = chaptersToProcess.map(ch => `Chapter ${ch.chapter_number}: ${ch.title}`).join('\n');
-  if (!confirm(`Create panels for ${chaptersToProcess.length} chapter(s) in "${seriesName}"?\n\n${chapterList}\n\nThis may take a while...`)) {
+  const firstChapter = chaptersToProcess[0].chapter_number;
+  if (!confirm(`Create panels for ${chaptersToProcess.length} chapter(s) in "${seriesName}"?\n\nStarting from Chapter ${firstChapter}:\n${chapterList}\n\nThis may take a while...`)) {
     return;
   }
   
@@ -938,4 +988,168 @@ function showNotification(message, type = 'info') {
   setTimeout(() => {
     notification.remove();
   }, 5000);
+}
+
+async function generateAllNarrations(seriesId, seriesName, buttonElement) {
+  // Check override flag
+  const override = isOverrideEnabled(seriesId);
+  console.log(`Generate All Narrations - Override mode: ${override}`);
+  
+  // First, get the narration status to show preview
+  let needNarrations = [];
+  
+  try {
+    const statusResponse = await fetch(`/editor/api/manga/series/${encodeURIComponent(seriesId)}/narration-status?override=${override}`, {
+      headers: { 'ngrok-skip-browser-warning': 'true' }
+    });
+    
+    if (!statusResponse.ok) {
+      showNotification('Failed to check narration status', 'error');
+      return;
+    }
+    
+    const status = await statusResponse.json();
+    
+    // Build confirmation message
+    const withNarrations = status.chapters_with_narrations || [];
+    needNarrations = status.chapters_needing_narrations || [];
+    const withoutPanels = status.chapters_without_panels || [];
+    
+    let message = `Generate narrations for "${seriesName}"?\n\n`;
+    if (override) {
+      message += `🔄 OVERRIDE MODE: Will process ALL chapters (ignoring existing narrations)\n\n`;
+    }
+    message += `📊 Status:\n`;
+    message += `✅ Already done: ${withNarrations.length} chapter(s)\n`;
+    message += `🔄 Will process: ${needNarrations.length} chapter(s)\n`;
+    message += `⚠️  Missing panels: ${withoutPanels.length} chapter(s)\n`;
+    message += `📚 Total: ${status.total_chapters} chapter(s)\n\n`;
+    
+    if (withNarrations.length > 0 && withNarrations.length <= 10) {
+      message += `✅ Chapters with narrations (will skip):\n`;
+      withNarrations.forEach(ch => {
+        message += `   - Chapter ${ch.chapter_number}: ${ch.title}\n`;
+      });
+      message += `\n`;
+    }
+    
+    if (needNarrations.length > 0) {
+      message += `🔄 Chapters to process:\n`;
+      const displayCount = Math.min(needNarrations.length, 10);
+      needNarrations.slice(0, displayCount).forEach(ch => {
+        message += `   - Chapter ${ch.chapter_number}: ${ch.title}\n`;
+      });
+      if (needNarrations.length > displayCount) {
+        message += `   ... and ${needNarrations.length - displayCount} more\n`;
+      }
+      message += `\n`;
+    }
+    
+    if (withoutPanels.length > 0) {
+      message += `⚠️  Chapters without panels (will skip):\n`;
+      withoutPanels.forEach(ch => {
+        message += `   - Chapter ${ch.chapter_number}: ${ch.title}\n`;
+      });
+      message += `\n`;
+    }
+    
+    if (needNarrations.length === 0) {
+      if (withoutPanels.length > 0) {
+        message += `\nAction needed: Create panels for chapters ${withoutPanels.map(ch => ch.chapter_number).join(', ')} first.`;
+      } else {
+        showNotification('All chapters already have narrations! ✅', 'success');
+        return;
+      }
+    } else {
+      message += `\nThis will:\n`;
+      message += `- Auto-update character list\n`;
+      message += `- Auto-generate story summary\n`;
+      message += `- May take several minutes...\n`;
+    }
+    
+    message += `\nContinue?`;
+    
+    if (!confirm(message)) {
+      return;
+    }
+  } catch (error) {
+    console.error('Status check error:', error);
+    showNotification('Failed to check status. Please try again.', 'error');
+    return;
+  }
+  
+  const originalHTML = buttonElement.innerHTML;
+  buttonElement.disabled = true;
+  
+  let successCount = 0;
+  let failCount = 0;
+  let totalPanelsCreated = 0;
+  
+  // Process each chapter one at a time
+  for (let i = 0; i < needNarrations.length; i++) {
+    const ch = needNarrations[i];
+    
+    // Update button with progress
+    buttonElement.innerHTML = `
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="animation: spin 1s linear infinite">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 0110 10" stroke-opacity="0.75"/>
+      </svg>
+      Ch ${i + 1}/${needNarrations.length}...
+    `;
+    
+    showNotification(`Generating narrations for Chapter ${ch.chapter_number}: ${ch.title} (${i + 1}/${needNarrations.length})`, 'info');
+    
+    try {
+      // Generate narrations for this chapter
+      const response = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/narrate/sequential`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true'
+        },
+        body: JSON.stringify({})
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to generate narrations`);
+      }
+      
+      const result = await response.json();
+      
+      successCount++;
+      const charUpdated = result.characterListUpdated ? ' (character list updated)' : '';
+      showNotification(`✓ Chapter ${ch.chapter_number}: Narrations created${charUpdated}`, 'success');
+      
+    } catch (error) {
+      console.error(`Error generating narrations for chapter ${ch.chapter_number}:`, error);
+      failCount++;
+      showNotification(`✗ Chapter ${ch.chapter_number}: ${error.message}`, 'error');
+    }
+    
+    // Delay between chapters to avoid overwhelming the API
+    if (i < needNarrations.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  
+  // Show final summary
+  const skipped = status.total_chapters - needNarrations.length;
+  const summary = `Narration Generation Complete!\n\n✅ Successful: ${successCount}\n❌ Failed: ${failCount}\n⏭️ Skipped: ${skipped}`;
+  showNotification(summary, successCount > 0 ? 'success' : 'error');
+  
+  // Update button to show completion
+  buttonElement.innerHTML = `
+    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path d="M5 13l4 4L19 7"/>
+    </svg>
+    Done (${successCount}/${needNarrations.length})
+  `;
+  buttonElement.style.background = successCount > 0 ? '#10b981' : '#ef4444';
+  buttonElement.style.borderColor = successCount > 0 ? '#10b981' : '#ef4444';
+  
+  // Reload the page after 3 seconds
+  setTimeout(() => {
+    window.location.reload();
+  }, 3000);
 }

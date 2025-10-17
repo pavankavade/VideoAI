@@ -100,7 +100,8 @@ class EditorDB:
                 author TEXT,
                 status TEXT,
                 cover_url TEXT,
-                mangadex_url TEXT
+                mangadex_url TEXT,
+                character_markdown TEXT DEFAULT ''
             );
             """
         )
@@ -247,6 +248,10 @@ class EditorDB:
                 c.execute("ALTER TABLE manga_series ADD COLUMN cover_url TEXT")
             if "mangadex_url" not in cols:
                 c.execute("ALTER TABLE manga_series ADD COLUMN mangadex_url TEXT")
+            if "character_markdown" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN character_markdown TEXT DEFAULT ''")
+            if "story_summary" not in cols:
+                c.execute("ALTER TABLE manga_series ADD COLUMN story_summary TEXT DEFAULT ''")
         except Exception:
             pass
         
@@ -368,7 +373,10 @@ class EditorDB:
 
     @classmethod
     def get_project(cls, project_id: str) -> Optional[Dict[str, Any]]:
-        row = cls.conn().execute("SELECT id, title, created_at, pages_json, metadata_json FROM project_details WHERE id=?", (project_id,)).fetchone()
+        row = cls.conn().execute(
+            "SELECT id, title, created_at, pages_json, metadata_json, manga_series_id FROM project_details WHERE id=?", 
+            (project_id,)
+        ).fetchone()
         if not row:
             return None
 
@@ -381,6 +389,9 @@ class EditorDB:
             metadata = json.loads(row["metadata_json"] or "{}")
         except (json.JSONDecodeError, TypeError):
             metadata = {}
+
+        # Add manga_series_id to the project data
+        series_id = row["manga_series_id"] if len(row) > 5 else None
 
         # To provide the full details the video editor needs, we must also fetch the panels for each page.
         full_pages = []
@@ -408,6 +419,7 @@ class EditorDB:
             "createdAt": row["created_at"],
             "pages": full_pages,
             "metadata": metadata, # Pass the layers and other metadata
+            "manga_series_id": series_id, # Add series ID directly
         }
 
     @classmethod
@@ -573,6 +585,47 @@ class EditorDB:
             (project_id,),
         ).fetchone()
         return row[0] if row else ""
+
+    @classmethod
+    def set_series_character_list(cls, series_id: str, markdown: str) -> None:
+        """Set the character list for an entire manga series."""
+        conn = cls.conn()
+        conn.execute("UPDATE manga_series SET character_markdown=? WHERE id=?", (markdown, series_id))
+        conn.commit()
+
+    @classmethod
+    def get_series_character_list(cls, series_id: str) -> str:
+        """Get the character list for a manga series."""
+        row = cls.conn().execute(
+            "SELECT character_markdown FROM manga_series WHERE id=?",
+            (series_id,),
+        ).fetchone()
+        return row[0] if row else ""
+
+    @classmethod
+    def propagate_character_list_to_chapters(cls, series_id: str, markdown: str) -> int:
+        """Update character list for all chapters in a series.
+        
+        Returns:
+            Number of chapters updated
+        """
+        conn = cls.conn()
+        
+        # Get all chapters in the series
+        chapters = conn.execute(
+            "SELECT id FROM project_details WHERE manga_series_id=?",
+            (series_id,),
+        ).fetchall()
+        
+        # Update each chapter
+        for (chapter_id,) in chapters:
+            conn.execute(
+                "UPDATE project_details SET character_markdown=? WHERE id=?",
+                (markdown, chapter_id),
+            )
+        
+        conn.commit()
+        return len(chapters)
 
     @classmethod
     def fetch_and_save_previous_summaries(cls, project_id: str) -> Dict[str, Any]:
@@ -793,19 +846,23 @@ class EditorDB:
         
         pages = [{"page_number": i, "image_path": _norm(path)} for i, path in enumerate(files, start=1)]
         
-        # Get accumulated context from previous chapters
-        previous_chapters = cls.get_chapters_for_series(series_id)
-        prev_chars = ""
+        # Get character list and summary - prioritize series-level
+        series_chars = cls.get_series_character_list(series_id)
+        prev_chars = series_chars if series_chars else ""
         prev_summary = ""
         
-        if previous_chapters:
-            # Get the most recent chapter's character list and summary
-            for ch in reversed(previous_chapters):
-                if ch["chapter_number"] < chapter_number:
-                    prev_ch_id = ch["id"]
-                    prev_chars = cls.get_character_list(prev_ch_id)
-                    prev_summary = cls.get_story_summary(prev_ch_id)
-                    break
+        # If no series-level character list, get from previous chapters
+        if not prev_chars:
+            previous_chapters = cls.get_chapters_for_series(series_id)
+            
+            if previous_chapters:
+                # Get the most recent chapter's character list and summary
+                for ch in reversed(previous_chapters):
+                    if ch["chapter_number"] < chapter_number:
+                        prev_ch_id = ch["id"]
+                        prev_chars = cls.get_character_list(prev_ch_id)
+                        prev_summary = cls.get_story_summary(prev_ch_id)
+                        break
         
         # Backfill legacy 'projects' table
         try:
@@ -1076,7 +1133,7 @@ def _build_page_prompt(page_number: int, panel_images: List[bytes], accumulated_
         "Produce one vivid, short sentence per panel, but ensure each sentence connects naturally to the next so it reads like a continuous story, not a list. "
         "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
         "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
-        "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'Kusch' not 'Kusch Bilboar') or a pronoun. "
+        "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
         "Return ONLY JSON with an array 'panels', where each element is {panel_index: number, text: string}. No extra commentary."
     )
     if accumulated_context:
@@ -1142,7 +1199,39 @@ async def api_get_project_summary(project_id: str):
             "image_url": pg.get("image_path"),
             "panels": panels,
         })
-    char_md = EditorDB.get_character_list(project_id)
+    
+    # Get character list - prioritize series-level if available
+    char_md = ""
+    # Get series_id directly from project data, fallback to metadata for backward compatibility
+    series_id = project.get("manga_series_id")
+    if not series_id:
+        metadata = project.get("metadata") or {}
+        series_id = metadata.get("manga_series_id")
+    
+    print(f"[DEBUG] Loading character list for project {project_id}")
+    print(f"[DEBUG] Series ID: {series_id}")
+    print(f"[DEBUG] Series ID source: {'direct' if project.get('manga_series_id') else 'metadata' if series_id else 'none'}")
+    
+    if series_id:
+        # If part of a series, prioritize series-level character list
+        series_char_md = EditorDB.get_series_character_list(series_id)
+        chapter_char_md = EditorDB.get_character_list(project_id)
+        
+        print(f"[DEBUG] Series character list length: {len(series_char_md) if series_char_md else 0}")
+        print(f"[DEBUG] Chapter character list length: {len(chapter_char_md) if chapter_char_md else 0}")
+        
+        if series_char_md and series_char_md.strip():
+            char_md = series_char_md
+            print(f"[DEBUG] Using series character list")
+        else:
+            # Fall back to chapter-level if no series character list
+            char_md = chapter_char_md
+            print(f"[DEBUG] Using chapter character list (series empty)")
+    else:
+        # Not part of a series, use chapter-level
+        char_md = EditorDB.get_character_list(project_id)
+        print(f"[DEBUG] Using chapter character list (no series)")
+    
     story_summary = EditorDB.get_story_summary(project_id)
     narrs = EditorDB.get_panel_narrations(project_id)
     return {
@@ -1151,6 +1240,7 @@ async def api_get_project_summary(project_id: str):
         "allPanelsReady": bool(all_have_panels),
         "characterList": char_md,
         "storySummary": story_summary,
+        "seriesId": series_id,
     }
 
 
@@ -1195,17 +1285,39 @@ async def api_create_panels(project_id: str):
             continue
         try:
             # Send file with optional upstream params (match legacy behavior)
-            with open(abs_path, "rb") as f:
-                files = {"file": (os.path.basename(abs_path), f, "image/png")}
-                params = {
-                    "add_border": "true",
-                    "border_width": 4,
-                    "border_color": "black",
-                    "curved_border": "true",
-                    "corner_radius": 20,
-                }
-                logger.info(f"[panels/create] Posting page {pn} to PANEL_API_URL: {PANEL_API_URL}")
-                r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+            # Add retry logic for unreliable connections (ngrok, etc.)
+            max_retries = 3
+            retry_delay = 2
+            r = None
+            
+            for attempt in range(max_retries):
+                try:
+                    with open(abs_path, "rb") as f:
+                        files = {"file": (os.path.basename(abs_path), f, "image/png")}
+                        params = {
+                            "add_border": "true",
+                            "border_width": 4,
+                            "border_color": "black",
+                            "curved_border": "true",
+                            "corner_radius": 20,
+                        }
+                        logger.info(f"[panels/create] Posting page {pn} to PANEL_API_URL (attempt {attempt+1}/{max_retries}): {PANEL_API_URL}")
+                        r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+                        break  # Success
+                except (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    if attempt < max_retries - 1:
+                        import time
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"[panels/create] Connection error for page {pn} on attempt {attempt+1}, retrying in {wait_time}s: {str(e)[:100]}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"[panels/create] All {max_retries} attempts failed for page {pn}")
+                        continue  # Skip this page and continue with next
+            
+            if r is None:
+                logger.warning(f"[panels/create] No response received for page {pn}, skipping")
+                continue
+                
             if r.status_code != 200:
                 logger.warning(f"[panels/create] Upstream error for page {pn}: status {r.status_code}")
                 continue
@@ -1367,17 +1479,40 @@ async def api_create_panels_single_page(project_id: str, page_number: int):
 
     try:
         # Send file with optional upstream params (match legacy behavior)
-        with open(abs_path, "rb") as f:
-            files = {"file": (os.path.basename(abs_path), f, "image/png")}
-            params = {
-                "add_border": "true",
-                "border_width": 4,
-                "border_color": "black",
-                "curved_border": "true",
-                "corner_radius": 20,
-            }
-            logger.info(f"[panels/create/page] Posting page {pn} to PANEL_API_URL: {PANEL_API_URL}")
-            r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+        # Add retry logic for unreliable connections (ngrok, etc.)
+        max_retries = 3
+        retry_delay = 2  # seconds
+        last_exception = None
+        r = None
+        
+        for attempt in range(max_retries):
+            try:
+                with open(abs_path, "rb") as f:
+                    files = {"file": (os.path.basename(abs_path), f, "image/png")}
+                    params = {
+                        "add_border": "true",
+                        "border_width": 4,
+                        "border_color": "black",
+                        "curved_border": "true",
+                        "corner_radius": 20,
+                    }
+                    logger.info(f"[panels/create/page] Posting page {pn} to PANEL_API_URL (attempt {attempt+1}/{max_retries}): {PANEL_API_URL}")
+                    r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+                    break  # Success, exit retry loop
+            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    import time
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"[panels/create/page] Connection error on attempt {attempt+1}, retrying in {wait_time}s: {str(e)[:100]}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"[panels/create/page] All {max_retries} attempts failed for page {pn}")
+                    raise HTTPException(status_code=502, detail=f"Failed to connect to panel API after {max_retries} attempts: {str(e)[:200]}")
+        
+        if r is None:
+            raise HTTPException(status_code=502, detail="Failed to get response from panel API")
+            
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Upstream error: {r.status_code}")
         content_type = r.headers.get("content-type", "").lower()
@@ -1634,9 +1769,12 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
             accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
             results.append({"page_number": pn, "panels": page_out})
 
-    # Auto-generate story summary after all narrations are complete
+    # Auto-update character list from narrations
+    updated_character_list = ""
     try:
         narr = EditorDB.get_panel_narrations(project_id)
+        print(f"[DEBUG] Auto-update for project {project_id}: Found {len(narr) if narr else 0} narrations")
+        
         if narr:
             # Create a compact context, sorted by page/panel
             items = []
@@ -1646,6 +1784,40 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
 
             model = _gemini_client()
             if model is not None:
+                print(f"[DEBUG] Generating character list from {len(items)} panels")
+                # First, auto-update character list
+                prompt = (
+                    "Analyze the following manga panel narrations and create a comprehensive character list in Markdown format. "
+                    "For each character mentioned, list their name and a brief description (role, traits, relationships). "
+                    "Format as a bulleted list under '# Characters' heading. "
+                    "Only include characters that actually appear or are mentioned in the narration.\n\n"
+                    "Panel Narrations:\n" + corpus
+                )
+                try:
+                    resp = model.generate_content(prompt)
+                    char_markdown = resp.text or ""
+                    print(f"[DEBUG] Generated character list length: {len(char_markdown)}")
+                    
+                    # Save character list
+                    EditorDB.set_character_list(project_id, char_markdown)
+                    updated_character_list = char_markdown
+                    print(f"[DEBUG] Saved character list to chapter")
+                    
+                    # If part of a series, propagate to all chapters
+                    project = EditorDB.get_project(project_id)
+                    if project:
+                        metadata = project.get("metadata") or {}
+                        series_id = metadata.get("manga_series_id")
+                        print(f"[DEBUG] Series ID: {series_id}")
+                        if series_id:
+                            EditorDB.set_series_character_list(series_id, char_markdown)
+                            chapters_updated = EditorDB.propagate_character_list_to_chapters(series_id, char_markdown)
+                            print(f"[DEBUG] Propagated character list to series and {chapters_updated} chapters")
+                except Exception as e:
+                    print(f"Warning: Failed to auto-update character list: {e}")
+                
+                # Second, auto-generate story summary
+                print(f"[DEBUG] Generating story summary")
                 prompt = (
                     "Based on the following manga panel narrations, generate a cohesive story summary. "
                     "The summary should capture the main plot points, character developments, and key events in a flowing narrative. "
@@ -1656,18 +1828,21 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                 try:
                     resp = model.generate_content(prompt)
                     summary = resp.text or ""
+                    print(f"[DEBUG] Generated summary length: {len(summary)}")
                     # Save to CURRENT summary field
                     EditorDB.set_story_summary_current(project_id, summary)
                     # Also update legacy field
                     EditorDB.set_story_summary(project_id, summary)
-                except Exception:
-                    # Don't fail the whole narration if story summary generation fails
-                    pass
-    except Exception:
-        # Best effort; don't fail the narration if summary generation fails
-        pass
+                    print(f"[DEBUG] Saved story summary")
+                except Exception as e:
+                    print(f"Warning: Failed to auto-generate story summary: {e}")
+            else:
+                print(f"[DEBUG] Gemini client not available")
+    except Exception as e:
+        # Best effort; don't fail the narration if auto-updates fail
+        print(f"Warning: Failed during auto-update process: {e}")
 
-    return {"ok": True, "results": results}
+    return {"ok": True, "results": results, "characterListUpdated": bool(updated_character_list)}
 
 
 @router.post("/api/project/{project_id:path}/narrate/page/{page_number}")
@@ -1867,11 +2042,153 @@ async def api_get_characters(project_id: str):
     return {"project_id": project_id, "markdown": EditorDB.get_character_list(project_id)}
 
 
+@router.post("/api/debug/test-character-propagation/{series_id}")
+async def api_test_character_propagation(series_id: str):
+    """Debug endpoint to test character list propagation."""
+    try:
+        test_characters = """# Test Characters
+- Test Character 1: A brave hero with blue hair
+- Test Character 2: A mysterious villain with red eyes
+- Test Character 3: A wise mentor figure"""
+        
+        print(f"[DEBUG] Testing character propagation for series {series_id}")
+        
+        # Save to series
+        EditorDB.set_series_character_list(series_id, test_characters)
+        print(f"[DEBUG] Saved test characters to series")
+        
+        # Propagate to chapters
+        chapters_updated = EditorDB.propagate_character_list_to_chapters(series_id, test_characters)
+        print(f"[DEBUG] Propagated to {chapters_updated} chapters")
+        
+        # Verify by reading back
+        series_chars = EditorDB.get_series_character_list(series_id)
+        print(f"[DEBUG] Retrieved series characters: {len(series_chars)} chars")
+        
+        return {
+            "ok": True,
+            "series_id": series_id,
+            "test_characters": test_characters,
+            "chapters_updated": chapters_updated,
+            "retrieved_length": len(series_chars),
+            "retrieved_match": series_chars == test_characters
+        }
+    except Exception as e:
+        return {"error": str(e), "traceback": str(e.__traceback__)}
+
+
+@router.get("/api/debug/database-schema")
+async def api_debug_database_schema():
+    """Debug endpoint to check database schema."""
+    try:
+        conn = EditorDB.conn()
+        
+        # Check manga_series table structure
+        series_schema = conn.execute("PRAGMA table_info(manga_series)").fetchall()
+        
+        # Check project_details table structure  
+        project_schema = conn.execute("PRAGMA table_info(project_details)").fetchall()
+        
+        # Check if character_markdown field exists in manga_series
+        series_has_char_field = any(col[1] == 'character_markdown' for col in series_schema)
+        
+        return {
+            "manga_series_schema": [{"name": col[1], "type": col[2], "notnull": bool(col[3])} for col in series_schema],
+            "project_details_schema": [{"name": col[1], "type": col[2], "notnull": bool(col[3])} for col in project_schema],
+            "series_has_character_field": series_has_char_field,
+            "message": "Check if character_markdown field exists in manga_series table"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/api/project/{project_id:path}/debug-characters")
+async def api_debug_characters(project_id: str):
+    """Debug endpoint to check character list storage and loading."""
+    try:
+        project = EditorDB.get_project(project_id)
+        if not project:
+            return {"error": "Project not found"}
+        
+        metadata = project.get("metadata") or {}
+        series_id = metadata.get("manga_series_id")
+        
+        # Get character lists from both sources
+        chapter_chars = EditorDB.get_character_list(project_id)
+        series_chars = EditorDB.get_series_character_list(series_id) if series_id else None
+        
+        # Get raw database data
+        conn = EditorDB.conn()
+        
+        # Check project_details table
+        project_row = conn.execute(
+            "SELECT character_markdown FROM project_details WHERE project_id=?",
+            (project_id,)
+        ).fetchone()
+        
+        # Check manga_series table if series exists
+        series_row = None
+        if series_id:
+            series_row = conn.execute(
+                "SELECT character_markdown FROM manga_series WHERE id=?",
+                (series_id,)
+            ).fetchone()
+        
+        return {
+            "project_id": project_id,
+            "series_id": series_id,
+            "chapter_character_list": chapter_chars,
+            "series_character_list": series_chars,
+            "raw_project_row": project_row[0] if project_row else None,
+            "raw_series_row": series_row[0] if series_row else None,
+            "has_series": bool(series_id),
+            "metadata": metadata
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.put("/api/project/{project_id:path}/characters")
 async def api_set_characters(project_id: str, payload: Dict[str, Any]):
     md = str(payload.get("markdown") or "")
+    
+    print(f"[DEBUG] Saving character list for project {project_id}")
+    print(f"[DEBUG] Character list length: {len(md)}")
+    
+    # Save to the current chapter
     EditorDB.set_character_list(project_id, md)
-    return {"ok": True}
+    print(f"[DEBUG] Saved to chapter level")
+    
+    # Check if this project belongs to a series
+    project = EditorDB.get_project(project_id)
+    if project:
+        # Get series_id directly from project data, fallback to metadata for backward compatibility
+        series_id = project.get("manga_series_id")
+        if not series_id:
+            metadata = project.get("metadata") or {}
+            series_id = metadata.get("manga_series_id")
+        
+        print(f"[DEBUG] Series ID: {series_id}")
+        print(f"[DEBUG] Series ID source: {'direct' if project.get('manga_series_id') else 'metadata' if series_id else 'none'}")
+        
+        if series_id:
+            # Save to the series level
+            EditorDB.set_series_character_list(series_id, md)
+            print(f"[DEBUG] Saved to series level")
+            
+            # Propagate to all chapters in the series
+            chapters_updated = EditorDB.propagate_character_list_to_chapters(series_id, md)
+            print(f"[DEBUG] Propagated to {chapters_updated} chapters")
+            
+            return {
+                "ok": True,
+                "series_id": series_id,
+                "chapters_updated": chapters_updated,
+                "message": f"Character list saved and propagated to {chapters_updated} chapter(s) in the series"
+            }
+    
+    print(f"[DEBUG] No series ID found")
+    return {"ok": True, "message": "Character list saved for this chapter"}
 
 
 @router.post("/api/project/{project_id:path}/characters/update")
@@ -2018,6 +2335,40 @@ async def api_get_manga_series(series_id: str):
     return series
 
 
+@router.get("/api/manga/series/{series_id}/characters")
+async def api_get_series_characters(series_id: str):
+    """Get the series-level character list."""
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    char_md = EditorDB.get_series_character_list(series_id)
+    return {"series_id": series_id, "markdown": char_md}
+
+
+@router.put("/api/manga/series/{series_id}/characters")
+async def api_set_series_characters(series_id: str, payload: Dict[str, Any]):
+    """Set the character list for an entire series and propagate to all chapters."""
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    md = str(payload.get("markdown") or "")
+    
+    # Save to series
+    EditorDB.set_series_character_list(series_id, md)
+    
+    # Propagate to all chapters
+    chapters_updated = EditorDB.propagate_character_list_to_chapters(series_id, md)
+    
+    return {
+        "ok": True,
+        "series_id": series_id,
+        "chapters_updated": chapters_updated,
+        "message": f"Character list saved and propagated to {chapters_updated} chapter(s)"
+    }
+
+
 @router.post("/api/manga/series/{series_id}/chapters")
 async def api_add_chapter_to_series(series_id: str, payload: Dict[str, Any]):
     """Add a new chapter to a manga series."""
@@ -2038,6 +2389,256 @@ async def api_add_chapter_to_series(series_id: str, payload: Dict[str, Any]):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create chapter: {e}")
+
+
+@router.post("/api/manga/series/{series_id}/chapters")
+async def api_add_chapter_to_series(series_id: str, payload: Dict[str, Any]):
+    """Add a new chapter to a manga series."""
+    chapter_number = payload.get("chapter_number")
+    if chapter_number is None:
+        raise HTTPException(status_code=400, detail="chapter_number is required")
+    
+    title = str(payload.get("title") or f"Chapter {chapter_number}").strip()
+    files = payload.get("files") or []
+    
+    if not isinstance(files, list) or not files:
+        raise HTTPException(status_code=400, detail="files must be a non-empty array of image paths")
+    
+    try:
+        chapter = EditorDB.add_chapter_to_series(series_id, int(chapter_number), title, files)
+        return chapter
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create chapter: {e}")
+
+
+@router.get("/api/manga/series/{series_id}/narration-status")
+async def api_get_narration_status(series_id: str, override: bool = False):
+    """
+    Get the narration status for all chapters in a series.
+    Returns which chapters have narrations and which need them.
+    
+    Args:
+        series_id: The manga series ID
+        override: If True, ignores existing narrations and treats all chapters as needing narrations
+    """
+    # Get series details
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    chapters = series.get("chapters", [])
+    if not chapters:
+        return {
+            "series_id": series_id,
+            "series_name": series.get("name"),
+            "total_chapters": 0,
+            "chapters_with_narrations": [],
+            "chapters_needing_narrations": [],
+            "chapters_without_panels": [],
+            "override_mode": override
+        }
+    
+    chapters_with_narrations = []
+    chapters_needing_narrations = []
+    chapters_without_panels = []
+    
+    for ch in chapters:
+        chapter_info = {
+            "chapter_number": ch["chapter_number"],
+            "title": ch["title"],
+            "id": ch["id"]
+        }
+        
+        # Check if chapter has panels
+        pages = EditorDB.get_pages(ch["id"])
+        if not pages:
+            chapters_without_panels.append(chapter_info)
+            continue
+            
+        has_all_panels = True
+        for pg in pages:
+            pn = int(pg.get("page_number") or 0)
+            panels = EditorDB.get_panels_for_page(ch["id"], pn)
+            if not panels:
+                has_all_panels = False
+                break
+        
+        if not has_all_panels:
+            chapters_without_panels.append(chapter_info)
+            continue
+        
+        # Check if chapter has narrations (skip this check if override is enabled)
+        if override:
+            # In override mode, all chapters with panels need narrations (ignore existing)
+            chapters_needing_narrations.append(chapter_info)
+        else:
+            # Normal mode: check if narrations exist
+            narrations = EditorDB.get_panel_narrations(ch["id"])
+            has_narrations = any(text.strip() for text in narrations.values())
+            
+            if has_narrations:
+                chapters_with_narrations.append(chapter_info)
+            else:
+                chapters_needing_narrations.append(chapter_info)
+    
+    return {
+        "series_id": series_id,
+        "series_name": series.get("name"),
+        "total_chapters": len(chapters),
+        "chapters_with_narrations": chapters_with_narrations,
+        "chapters_needing_narrations": chapters_needing_narrations,
+        "chapters_without_panels": chapters_without_panels,
+        "override_mode": override
+    }
+
+
+@router.post("/api/manga/series/{series_id}/narrate-all")
+async def api_narrate_all_series_chapters_execute(series_id: str):
+    """Execute narration generation for all chapters in a series."""
+    if genai is None or not _GEMINI_KEYS:
+        raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+    
+    # Get series details
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+    
+    chapters = series.get("chapters", [])
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters found in series")
+    
+    # Filter chapters that need narration
+    chapters_to_process = []
+    for ch in chapters:
+        # Check if chapter has narrations already
+        narrations = EditorDB.get_panel_narrations(ch["id"])
+        # Check if any narrations have actual text (not empty)
+        has_narrations = any(text.strip() for text in narrations.values())
+        
+        if not has_narrations:
+            chapters_to_process.append(ch)
+    
+    if not chapters_to_process:
+        return {
+            "ok": True,
+            "message": "All chapters already have narrations",
+            "processed": 0,
+            "skipped": len(chapters),
+            "failed": 0,
+            "total_chapters": len(chapters),
+            "results": []
+        }
+    
+    success_count = 0
+    failed_count = 0
+    results = []
+    
+    for ch in chapters_to_process:
+        chapter_id = ch["id"]
+        chapter_num = ch["chapter_number"]
+        chapter_title = ch["title"]
+        
+        try:
+            # Get chapter details
+            project = EditorDB.get_project(chapter_id)
+            if not project:
+                failed_count += 1
+                results.append({
+                    "chapter_number": chapter_num,
+                    "title": chapter_title,
+                    "status": "failed",
+                    "error": "Chapter not found"
+                })
+                continue
+            
+            pages = EditorDB.get_pages(chapter_id)
+            if not pages:
+                failed_count += 1
+                results.append({
+                    "chapter_number": chapter_num,
+                    "title": chapter_title,
+                    "status": "failed",
+                    "error": "No pages found"
+                })
+                continue
+            
+            # Check if chapter has panels
+            all_have_panels = True
+            for pg in pages:
+                pn = int(pg.get("page_number") or 0)
+                panels = EditorDB.get_panels_for_page(chapter_id, pn)
+                if not panels:
+                    all_have_panels = False
+                    break
+            
+            if not all_have_panels:
+                failed_count += 1
+                results.append({
+                    "chapter_number": chapter_num,
+                    "title": chapter_title,
+                    "status": "failed",
+                    "error": "Missing panels - create panels first"
+                })
+                continue
+            
+            # Generate narrations for this chapter
+            start_page = pages[0].get("page_number", 1)
+            end_page = pages[-1].get("page_number", start_page)
+            
+            # Get character list from series level
+            char_md = EditorDB.get_series_character_list(series_id)
+            if not char_md:
+                char_md = EditorDB.get_character_list(chapter_id)
+            
+            # Call the narration generation (reuse sequential logic)
+            payload = {
+                "startPage": start_page,
+                "endPage": end_page,
+                "characterList": char_md
+            }
+            
+            try:
+                # Call the existing sequential narration endpoint logic
+                narration_result = await api_narrate_sequential(chapter_id, payload)
+                
+                success_count += 1
+                results.append({
+                    "chapter_number": chapter_num,
+                    "title": chapter_title,
+                    "status": "success",
+                    "character_list_updated": narration_result.get("characterListUpdated", False)
+                })
+                
+            except Exception as e:
+                failed_count += 1
+                results.append({
+                    "chapter_number": chapter_num,
+                    "title": chapter_title,
+                    "status": "failed",
+                    "error": str(e)
+                })
+                
+        except Exception as e:
+            failed_count += 1
+            results.append({
+                "chapter_number": chapter_num,
+                "title": chapter_title,
+                "status": "failed",
+                "error": str(e)
+            })
+    
+    return {
+        "ok": True,
+        "series_id": series_id,
+        "series_name": series.get("name"),
+        "processed": success_count,
+        "failed": failed_count,
+        "skipped": len(chapters) - len(chapters_to_process),
+        "total_chapters": len(chapters),
+        "results": results
+    }
 
 
 @router.put("/api/manga/series/migrate/{project_id:path}")
