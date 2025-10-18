@@ -166,6 +166,24 @@
       document.getElementById('pageTitle').textContent = `Page ${pg.page_number}`;
       const root = document.getElementById('panelsRoot');
       root.innerHTML = '';
+      // Set global selects to the most common values for this page (or sensible defaults)
+      try{
+        const ge = document.getElementById('globalEffect');
+        const gt = document.getElementById('globalTransition');
+        const panels = (pg.panels || []);
+        const effs = panels.map(p => (p && p.effect) ? String(p.effect) : 'zoom_in');
+        const transs = panels.map(p => (p && p.transition) ? String(p.transition) : 'slide_book');
+        const mode = (arr, defVal) => {
+          if(!arr || arr.length === 0) return defVal;
+          const m = new Map();
+          arr.forEach(v => m.set(v, (m.get(v)||0)+1));
+          let best = defVal, cnt = -1;
+          m.forEach((c, v) => { if(c > cnt){ cnt = c; best = v; } });
+          return best;
+        };
+        if(ge) ge.value = mode(effs, 'zoom_in');
+        if(gt) gt.value = mode(transs, 'slide_book');
+      }catch(e){ /* ignore */ }
       (pg.panels||[]).forEach(p=>{
         const card = document.createElement('div');
         card.className = 'card overflow-hidden';
@@ -233,7 +251,7 @@
           const idx = parseInt(btn.getAttribute('data-savecfg'))||1;
           const effSel = root.querySelector(`select[data-eff="${idx}"]`);
           const transSel = root.querySelector(`select[data-trans="${idx}"]`);
-          const eff = effSel?.value || 'none';
+          const eff = effSel?.value || 'zoom_in';
           const trans = transSel?.value || 'slide_book';
           const pn = (pages[currentIndex]||{}).page_number;
           const ok = await savePanelConfig(pn, idx, eff, trans);
@@ -679,7 +697,7 @@
     // Apply global config to ALL pages
     document.getElementById('applyGlobalConfig').addEventListener('click', async (e)=>{
       const btn = e.currentTarget || document.getElementById('applyGlobalConfig');
-      const eff = document.getElementById('globalEffect').value || 'none';
+  const eff = document.getElementById('globalEffect').value || 'zoom_in';
       const trans = document.getElementById('globalTransition').value || 'slide_book';
       if(!pages || pages.length === 0) return;
 

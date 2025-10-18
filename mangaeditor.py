@@ -202,9 +202,16 @@ class EditorDB:
                 c.execute("ALTER TABLE panels ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
             # New visual settings
             if "effect" not in cols:
-                c.execute("ALTER TABLE panels ADD COLUMN effect TEXT NOT NULL DEFAULT 'none'")
+                # Change default to zoom_in so new panels get a zoom-in effect by default
+                c.execute("ALTER TABLE panels ADD COLUMN effect TEXT NOT NULL DEFAULT 'zoom_in'")
             if "transition" not in cols:
                 c.execute("ALTER TABLE panels ADD COLUMN transition TEXT NOT NULL DEFAULT 'slide_book'")
+            # Ensure existing rows default to zoom_in if they were previously 'none' or empty
+            try:
+                c.execute("UPDATE panels SET effect='zoom_in' WHERE effect IS NULL OR effect='' OR lower(effect) IN ('none','no_effect')")
+            except Exception:
+                # Some older DBs may not have the effect column yet at this point; ignore
+                pass
             # If legacy audio_b64 existed before, a separate migration will have copied to audio_url
         except Exception:
             pass
@@ -256,6 +263,13 @@ class EditorDB:
             pass
         
         cls._conn.commit()
+        
+        # Background fix: ensure any existing rows with missing/none effect are migrated to zoom_in
+        try:
+            c.execute("UPDATE panels SET effect='zoom_in' WHERE effect IS NULL OR effect='' OR lower(effect) IN ('none','no_effect')")
+            cls._conn.commit()
+        except Exception:
+            pass
 
     @classmethod
     def save_project_layers(cls, project_id: str, layers_data: List[Dict[str, Any]]) -> None:
@@ -462,8 +476,8 @@ class EditorDB:
         # Store panel_index as 1-based for clearer UX and consistent mapping with UI
         for idx, p in enumerate(panel_paths, start=1):
             c.execute(
-                "INSERT INTO panels(project_id, page_number, panel_index, image_path, narration_text, audio_url, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (project_id, page_number, idx, p, "", None, now, now),
+                "INSERT INTO panels(project_id, page_number, panel_index, image_path, narration_text, audio_url, created_at, updated_at, effect, transition) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (project_id, page_number, idx, p, "", None, now, now, "zoom_in", "slide_book"),
             )
         c.commit()
 
@@ -482,7 +496,7 @@ class EditorDB:
             idx_db = int(r[0])
             # If legacy rows used 0-based, display as 1-based
             display_idx = (idx_db + 1) if idx_db == 0 else idx_db
-            eff = (r[4] if len(r) > 4 else None) or "none"
+            eff = (r[4] if len(r) > 4 else None) or "zoom_in"
             trans = (r[5] if len(r) > 5 else None) or "slide_book"
             out.append({
                 "index": int(display_idx),
@@ -1022,7 +1036,7 @@ class EditorDB:
     @classmethod
     def set_panel_config(cls, project_id: str, page_number: int, panel_index: int, effect: Optional[str], transition: Optional[str]) -> None:
         now = datetime.utcnow().isoformat()
-        eff = (effect or "").strip() or "none"
+        eff = (effect or "").strip() or "zoom_in"
         trans = (transition or "").strip() or "slide_book"
         c = cls.conn()
         cur = c.execute(
@@ -1242,6 +1256,17 @@ async def api_get_project_summary(project_id: str):
         "storySummary": story_summary,
         "seriesId": series_id,
     }
+
+@router.post("/api/migrate/effects/zoom-in")
+async def api_migrate_effects_to_zoom_in():
+    """Force-migrate all existing panels with effect none/empty to zoom_in."""
+    try:
+        c = EditorDB.conn()
+        cur = c.execute("UPDATE panels SET effect='zoom_in' WHERE effect IS NULL OR effect='' OR lower(effect) IN ('none','no_effect')")
+        c.commit()
+        return {"ok": True, "updated": cur.rowcount}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Migration failed: {e}")
 
 
 @router.post("/api/project/{project_id:path}/panels/create")
@@ -2837,7 +2862,7 @@ async def api_update_panel_config(project_id: str, page_number: int, panel_index
     panels = EditorDB.get_panels_for_page(project_id, int(page_number))
     if not panels:
         raise HTTPException(status_code=404, detail="No panels for this page")
-    eff = str(payload.get("effect") or "").strip() or "none"
+    eff = str(payload.get("effect") or "").strip() or "zoom_in"
     trans = str(payload.get("transition") or "").strip() or "slide_book"
     # Clamp panel index
     num = len(panels)
@@ -2859,7 +2884,7 @@ async def api_update_page_config(project_id: str, page_number: int, payload: Dic
     panels = EditorDB.get_panels_for_page(project_id, int(page_number))
     if not panels:
         raise HTTPException(status_code=404, detail="No panels for this page")
-    eff = str(payload.get("effect") or "").strip() or "none"
+    eff = str(payload.get("effect") or "").strip() or "zoom_in"
     trans = str(payload.get("transition") or "").strip() or "slide_book"
     for p in panels:
         idx = int(p.get("index") or 1)

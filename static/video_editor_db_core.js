@@ -295,7 +295,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               pageNumber: pageNumber,
               panelIndex: panelIdx,
               displayName: displayName,
-              effect: panel.effect || 'none',
+              effect: panel.effect || 'zoom_in',
               transition: panel.transition || (panelIdx === 0 ? 'none' : 'slide_book')
           });
 
@@ -2327,7 +2327,7 @@ async function generatePanelTimeline() {
     const pageData = panelsData.find(p => p.page_number === panel.pageNumber);
     if (pageData && pageData.panels && pageData.panels[panel.panelIndex]) {
       const projectPanel = pageData.panels[panel.panelIndex];
-      panel.effect = projectPanel.effect || 'none';
+  panel.effect = projectPanel.effect || 'zoom_in';
       panel.transition = projectPanel.transition || (panel.panelIndex === 0 ? 'none' : 'slide_book');
       DBG(`Updated panel ${panel.pageNumber}-${panel.panelIndex}: effect=${panel.effect}, transition=${panel.transition}`);
     }
@@ -2410,7 +2410,7 @@ async function generatePanelTimeline() {
       layer: 'video-layer',
       filename: panelData.filename,
       displayName: panelData.displayName,
-      effect: panelData.effect || 'none',
+  effect: panelData.effect || 'zoom_in',
       transition: panelData.transition || (index === 0 ? 'none' : 'slide_book')
     };
     
