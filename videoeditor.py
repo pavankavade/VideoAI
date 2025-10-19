@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import uuid
 import threading
@@ -200,8 +201,9 @@ def _headless_render_job(job_id: str, project_id: str) -> None:
         result = run_async_in_thread(record_project_headless(project_id, progress_callback=progress_callback))
         
         if result["status"] == "success":
-            # Register the file for download
-            _register_render_file(job_id, result.get("output_path"))
+            # Register the file for download (include originating project_id so
+            # we can name the file using manga/series metadata)
+            _register_render_file(job_id, result.get("output_path"), project_id)
             
             _publish(job_id, {
                 "stage": "complete",
@@ -229,18 +231,26 @@ def _headless_render_job(job_id: str, project_id: str) -> None:
 
 
 # Store completed render files for download
-_render_files: Dict[str, str] = {}  # job_id -> file_path
+# Map job_id -> {"file_path": <path>, "project_id": <project_id or None>}
+_render_files: Dict[str, Dict[str, Optional[str]]] = {}  # job_id -> dict
 _render_files_lock = threading.Lock()
 
 
-def _register_render_file(job_id: str, file_path: str):
-    """Register a completed render file for download."""
+def _register_render_file(job_id: str, file_path: str, project_id: Optional[str] = None):
+    """Register a completed render file for download.
+
+    Stores both the file path and the originating project id (if available)
+    so the downloader can derive a friendly filename (manga name + chapter).
+    """
     with _render_files_lock:
-        _render_files[job_id] = file_path
+        _render_files[job_id] = {"file_path": file_path, "project_id": project_id}
 
 
-def _get_render_file(job_id: str) -> Optional[str]:
-    """Get the file path for a completed render."""
+def _get_render_file(job_id: str) -> Optional[Dict[str, Optional[str]]]:
+    """Get the registered info for a completed render.
+
+    Returns a dict with keys 'file_path' and 'project_id' or None if not found.
+    """
     with _render_files_lock:
         return _render_files.get(job_id)
 
@@ -248,7 +258,8 @@ def _get_render_file(job_id: str) -> Optional[str]:
 def _cleanup_render_file(job_id: str):
     """Remove render file from disk and registry."""
     with _render_files_lock:
-        file_path = _render_files.pop(job_id, None)
+        entry = _render_files.pop(job_id, None)
+        file_path = entry.get("file_path") if entry else None
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -298,17 +309,77 @@ async def download_render(job_id: str, background_tasks: BackgroundTasks):
     Download a completed render and schedule it for cleanup.
     File is automatically deleted after download.
     """
-    file_path = _get_render_file(job_id)
-    
-    if not file_path:
+    entry = _get_render_file(job_id)
+
+    if not entry:
         raise HTTPException(status_code=404, detail="Render file not found or already downloaded")
-    
-    if not os.path.exists(file_path):
+
+    file_path = entry.get("file_path")
+    project_id = entry.get("project_id")
+
+    if not file_path or not os.path.exists(file_path):
         _cleanup_render_file(job_id)  # Clean up the registry entry
         raise HTTPException(status_code=404, detail="Render file not found on disk")
-    
-    # Get filename for download
+
+    # Determine a friendly filename using manga series name + chapter number
+    # Fallback to project title or original basename if needed
     filename = os.path.basename(file_path)
+    try:
+        # Try to read project info from DB if we have a project_id
+        if project_id:
+            conn = EditorDB.conn()
+            row = conn.execute(
+                "SELECT title, chapter_number, manga_series_id FROM project_details WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            series_name = None
+            chapter_num = None
+            proj_title = None
+            if row:
+                proj_title = row[0]
+                chapter_num = row[1]
+                series_id = row[2]
+                if series_id:
+                    srow = conn.execute("SELECT name FROM manga_series WHERE id=?", (series_id,)).fetchone()
+                    if srow:
+                        series_name = srow[0]
+
+            # Build candidate base name
+            base = None
+            if series_name and chapter_num is not None:
+                # Prefer series name + chapter
+                # Use integer chapter if it looks like one
+                try:
+                    if float(chapter_num).is_integer():
+                        chs = str(int(float(chapter_num)))
+                    else:
+                        chs = str(chapter_num)
+                except Exception:
+                    chs = str(chapter_num)
+                base = f"{series_name}_ch{chs}"
+            elif proj_title and chapter_num is not None:
+                try:
+                    if float(chapter_num).is_integer():
+                        chs = str(int(float(chapter_num)))
+                    else:
+                        chs = str(chapter_num)
+                except Exception:
+                    chs = str(chapter_num)
+                base = f"{proj_title}_ch{chs}"
+            elif proj_title:
+                base = proj_title
+
+            if base:
+                # sanitize base and append original extension
+                name, ext = os.path.splitext(filename)
+                # Replace spaces with underscores and remove problematic chars
+                safe = re.sub(r"[^A-Za-z0-9._\-]", "_", base).strip("_")
+                # Limit length to avoid filesystem issues
+                safe = safe[:120]
+                filename = f"{safe}{ext or '.webm'}"
+    except Exception:
+        # On any DB error, fall back to original filename
+        pass
     
     # Schedule cleanup after response is sent
     background_tasks.add_task(_cleanup_render_file, job_id)
