@@ -7,7 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
 async function loadProjects(){
   const body = document.getElementById('editorDashBody');
   try{
-    const r = await fetch('/editor/api/projects');
+  const r = await fetch('/editor/api/projects?brief=true&limit=100');
     if(!r.ok) throw new Error('Failed to load projects');
     const data = await r.json();
     const projects = data.projects || [];
@@ -25,14 +25,9 @@ async function loadProjects(){
     }
     const rows = [];
     for(const p of projects){
-      let panelsReady = false;
-      try{
-        const sr = await fetch(`/editor/api/project/${encodeURIComponent(p.id)}`);
-        if(sr.ok){
-          const s = await sr.json();
-          panelsReady = !!s.allPanelsReady;
-        }
-      }catch(e){}
+      // `projects` from brief endpoint includes `allPanelsReady` and `pageCount` (fallback to chapters for legacy)
+      const panelsReady = !!p.allPanelsReady;
+      const pageCount = (typeof p.pageCount !== 'undefined') ? p.pageCount : (p.chapters || 0);
       rows.push(`
         <tr class="project-row">
           <td style="padding:20px 24px">
@@ -51,7 +46,7 @@ async function loadProjects(){
           <td style="padding:20px 24px">
             ${panelsReady ? '<span class="status-pill ok">✓ All Ready</span>' : '<span class="status-pill warn">⚠ Missing</span>'}
           </td>
-          <td style="padding:20px 24px;color:#94a3b8;font-size:14px">${new Date(p.createdAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'})}</td>
+                <td style="padding:20px 24px;color:#94a3b8;font-size:14px">${pageCount} page${pageCount !== 1 ? 's' : ''}<br>${new Date(p.createdAt).toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'})}</td>
           <td style="padding:20px 24px">
             <div class="actions">
               <a class="btn" href="/editor/panel-editor/${p.id}" style="background:linear-gradient(135deg,#3b82f6,#2563eb);padding:8px 12px;min-width:auto" title="View Panels">

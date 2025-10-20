@@ -35,7 +35,7 @@ async function loadSeries(){
       return;
     }
     
-    const html = await Promise.all(series.map(s => renderSeriesCard(s)));
+  const html = await Promise.all(series.map(s => renderSeriesCard(s)));
     container.innerHTML = html.join('');
     
     // Bind toggle events
@@ -132,7 +132,7 @@ async function renderSeriesCard(series){
           </div>
           <div style="flex:1">
             <div style="font-size:18px;font-weight:700;color:#e2e8f0">${series.name}</div>
-            <div style="font-size:12px;color:#64748b;margin-top:4px">${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} • Created ${new Date(series.created_at).toLocaleDateString()}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px">${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} • Created ${new Date(series.created_at).toLocaleDateString()}</div>
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -175,22 +175,15 @@ async function renderSeriesCard(series){
 async function loadStandaloneProjects(){
   const body = document.getElementById('editorDashBody');
   try{
-    const r = await fetch('/editor/api/projects');
+    const r = await fetch('/editor/api/projects?brief=true&limit=200');
     if(!r.ok) throw new Error('Failed to load projects');
-    const data = await r.json();
+  const data = await r.json();
+  // DEBUG: expose the brief projects payload so it's visible in the browser console
+  try{ console.log('[dashboard] /editor/api/projects?brief payload', data); }catch(e){}
     const allProjects = data.projects || [];
     
-    // Filter to only standalone projects (no manga_series_id)
-    const projects = [];
-    for(const p of allProjects){
-      // Check if it belongs to a series
-      const pr = await fetch(`/editor/api/project/${p.id}`);
-      if(!pr.ok) continue;
-      const proj = await pr.json();
-      if(!proj.metadata || !proj.metadata.manga_series_id){
-        projects.push(p);
-      }
-    }
+    // Filter to only standalone projects (no manga_series_id) using brief payload's manga_series_id
+    const projects = allProjects.filter(p => !p.manga_series_id);
     
     if(projects.length === 0){
       body.innerHTML = `<tr><td colspan="4" class="empty-state">
@@ -207,14 +200,7 @@ async function loadStandaloneProjects(){
     
     const rows = [];
     for(const p of projects){
-      let panelsReady = false;
-      try{
-        const sr = await fetch(`/editor/api/project/${encodeURIComponent(p.id)}`);
-        if(sr.ok){
-          const s = await sr.json();
-          panelsReady = !!s.allPanelsReady;
-        }
-      }catch(e){}
+      const panelsReady = !!p.allPanelsReady;
       rows.push(`
         <tr class="project-row">
           <td style="padding:20px 24px">
@@ -226,7 +212,7 @@ async function loadStandaloneProjects(){
               </div>
               <div>
                 <div style="font-weight:600;color:#e2e8f0;font-size:15px">${p.title}</div>
-                <div style="font-size:12px;color:#64748b;margin-top:2px">${p.chapters || 0} page${(p.chapters !== 1) ? 's' : ''}</div>
+                <div style="font-size:12px;color:#64748b;margin-top:2px">${(typeof p.pageCount !== 'undefined' ? p.pageCount : (p.chapters || 0))} page${((typeof p.pageCount !== 'undefined' ? p.pageCount : (p.chapters || 0)) !== 1) ? 's' : ''}</div>
               </div>
             </div>
           </td>
@@ -830,9 +816,9 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
     // Check if this chapter already has panels (skip this check if override is enabled)
     if (!override) {
       try {
-        const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}`, {
-          headers: { 'ngrok-skip-browser-warning': 'true' }
-        });
+        const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}?brief=true`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
         
         if (projectResp.ok) {
           const projectData = await projectResp.json();
@@ -884,7 +870,7 @@ async function createAllSeriesPanels(seriesId, seriesName, buttonElement) {
     
     try {
       // Get project details to know how many pages
-      const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}`, {
+      const projectResp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}?brief=true`, {
         headers: { 'ngrok-skip-browser-warning': 'true' }
       });
       
