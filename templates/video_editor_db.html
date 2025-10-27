@@ -37,12 +37,14 @@
           <div class="canvas-wrap">
             <canvas id="editorCanvas"></canvas>
             <div class="preview-overlay" id="previewOverlay">
-              <div class="preview-toolbar">
+              <div class="preview-toolbar" id="previewToolbar">
                 <button class="btn small" id="togglePlay">Play</button>
                 <button class="btn small secondary" id="toggleCrop">Crop: Off</button>
                 <div class="time-readout" id="timeReadout">0:00</div>
                 <input type="range" id="seekSlider" min="0" max="1" value="0" step="0.001" style="width:260px"/>
                 <div class="time-readout" id="totalTimeReadout">/ 0:00</div>
+                <button class="btn small secondary" id="toggleControls" title="Hide/Show Controls (H)">👁️</button>
+                <button class="btn small secondary" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
               </div>
             </div>
           </div>
@@ -345,5 +347,149 @@
       </div>
     </div>
   </div>
+
+  <!-- Fullscreen and Controls Script -->
+  <script>
+    (function() {
+      const canvasWrap = document.querySelector('.canvas-wrap');
+      const previewToolbar = document.getElementById('previewToolbar');
+      const fullscreenBtn = document.getElementById('fullscreenBtn');
+      const toggleControlsBtn = document.getElementById('toggleControls');
+      const togglePlayBtn = document.getElementById('togglePlay');
+      let controlsVisible = true;
+
+      // Fullscreen functionality
+      function enterFullscreen() {
+        if (canvasWrap.requestFullscreen) {
+          canvasWrap.requestFullscreen();
+        } else if (canvasWrap.webkitRequestFullscreen) {
+          canvasWrap.webkitRequestFullscreen();
+        } else if (canvasWrap.mozRequestFullScreen) {
+          canvasWrap.mozRequestFullScreen();
+        } else if (canvasWrap.msRequestFullscreen) {
+          canvasWrap.msRequestFullscreen();
+        }
+      }
+
+      function exitFullscreen() {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+          document.msExitFullscreen();
+        }
+      }
+
+      function isFullscreen() {
+        return !!(document.fullscreenElement || document.webkitFullscreenElement || 
+                  document.mozFullScreenElement || document.msFullscreenElement);
+      }
+
+      function toggleFullscreen() {
+        if (isFullscreen()) {
+          exitFullscreen();
+        } else {
+          enterFullscreen();
+        }
+      }
+
+      // Update fullscreen button icon
+      function updateFullscreenBtn() {
+        if (fullscreenBtn) {
+          fullscreenBtn.textContent = isFullscreen() ? '⛶' : '⛶';
+          fullscreenBtn.title = isFullscreen() ? 'Exit Fullscreen (F)' : 'Fullscreen (F)';
+        }
+      }
+
+      // Toggle controls visibility
+      function toggleControls() {
+        controlsVisible = !controlsVisible;
+        if (previewToolbar) {
+          previewToolbar.style.opacity = controlsVisible ? '1' : '0';
+          previewToolbar.style.pointerEvents = controlsVisible ? 'auto' : 'none';
+          previewToolbar.style.transition = 'opacity 0.3s ease';
+        }
+        if (toggleControlsBtn) {
+          toggleControlsBtn.textContent = controlsVisible ? '👁️' : '👁️‍🗨️';
+          toggleControlsBtn.title = controlsVisible ? 'Hide Controls (H)' : 'Show Controls (H)';
+        }
+        
+        // Hide cursor in fullscreen when controls are hidden
+        if (canvasWrap) {
+          if (isFullscreen() && !controlsVisible) {
+            canvasWrap.classList.add('hide-cursor');
+          } else {
+            canvasWrap.classList.remove('hide-cursor');
+          }
+        }
+      }
+
+      // Auto-hide controls - removed, controls stay hidden once user hides them
+      // They only reappear when H key is pressed again
+
+      // Event listeners
+      if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', toggleFullscreen);
+      }
+
+      if (toggleControlsBtn) {
+        toggleControlsBtn.addEventListener('click', toggleControls);
+      }
+
+      // Listen for fullscreen changes
+      document.addEventListener('fullscreenchange', updateFullscreenBtn);
+      document.addEventListener('webkitfullscreenchange', updateFullscreenBtn);
+      document.addEventListener('mozfullscreenchange', updateFullscreenBtn);
+      document.addEventListener('MSFullscreenChange', updateFullscreenBtn);
+
+      // Keyboard shortcuts
+      document.addEventListener('keydown', (e) => {
+        // Don't trigger if user is typing in an input
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+          return;
+        }
+
+        switch(e.key.toLowerCase()) {
+          case ' ':
+            // Space bar - toggle play/pause
+            e.preventDefault();
+            if (togglePlayBtn) {
+              togglePlayBtn.click();
+            }
+            break;
+          
+          case 'f':
+            // F key - toggle fullscreen
+            e.preventDefault();
+            toggleFullscreen();
+            break;
+          
+          case 'h':
+            // H key - toggle controls visibility
+            e.preventDefault();
+            toggleControls();
+            break;
+          
+          case 'escape':
+            // Escape - exit fullscreen and show controls
+            if (isFullscreen()) {
+              exitFullscreen();
+            }
+            if (!controlsVisible) {
+              toggleControls();
+            }
+            break;
+        }
+      });
+
+      // Initialize
+      updateFullscreenBtn();
+      
+      console.log('[Fullscreen] Controls initialized');
+    })();
+  </script>
 </body>
 </html>

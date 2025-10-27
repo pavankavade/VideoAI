@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -1181,10 +1182,11 @@ def _next_key() -> Optional[str]:
         return k
 
 
-def _load_image_bytes(url_or_path: str) -> Optional[bytes]:
+async def _load_image_bytes(url_or_path: str) -> Optional[bytes]:
     try:
         if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
-            r = requests.get(url_or_path, timeout=30)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.get(url_or_path)
             if r.status_code == 200:
                 return r.content
             return None
@@ -1433,14 +1435,15 @@ async def api_create_panels(project_id: str):
                             "corner_radius": 20,
                         }
                         logger.info(f"[panels/create] Posting page {pn} to PANEL_API_URL (attempt {attempt+1}/{max_retries}): {PANEL_API_URL}")
-                        r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+                        async with httpx.AsyncClient(timeout=600.0) as client:
+                            r = await client.post(PANEL_API_URL, files=files, params=params)
                         break  # Success
-                except (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
                     if attempt < max_retries - 1:
-                        import time
+                        import asyncio
                         wait_time = retry_delay * (2 ** attempt)
                         logger.warning(f"[panels/create] Connection error for page {pn} on attempt {attempt+1}, retrying in {wait_time}s: {str(e)[:100]}")
-                        time.sleep(wait_time)
+                        await asyncio.sleep(wait_time)
                     else:
                         logger.error(f"[panels/create] All {max_retries} attempts failed for page {pn}")
                         continue  # Skip this page and continue with next
@@ -1628,15 +1631,16 @@ async def api_create_panels_single_page(project_id: str, page_number: int):
                         "corner_radius": 20,
                     }
                     logger.info(f"[panels/create/page] Posting page {pn} to PANEL_API_URL (attempt {attempt+1}/{max_retries}): {PANEL_API_URL}")
-                    r = requests.post(PANEL_API_URL, files=files, params=params, timeout=600)
+                    async with httpx.AsyncClient(timeout=600.0) as client:
+                        r = await client.post(PANEL_API_URL, files=files, params=params)
                     break  # Success, exit retry loop
-            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
                 last_exception = e
                 if attempt < max_retries - 1:
-                    import time
+                    import asyncio
                     wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
                     logger.warning(f"[panels/create/page] Connection error on attempt {attempt+1}, retrying in {wait_time}s: {str(e)[:100]}")
-                    time.sleep(wait_time)
+                    await asyncio.sleep(wait_time)
                 else:
                     logger.error(f"[panels/create/page] All {max_retries} attempts failed for page {pn}")
                     raise HTTPException(status_code=502, detail=f"Failed to connect to panel API after {max_retries} attempts: {str(e)[:200]}")
@@ -1812,7 +1816,7 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
             img_url = extract_panel_image(p)
             if not img_url:
                 continue
-            b = _load_image_bytes(img_url)
+            b = await _load_image_bytes(img_url)
             if b:
                 imgs.append(b)
 
@@ -1995,7 +1999,7 @@ async def api_narrate_single_page(project_id: str, page_number: int, payload: Di
             img_url = extract_panel_image(p)
             if not img_url:
                 continue
-            b = _load_image_bytes(img_url)
+            b = await _load_image_bytes(img_url)
             if b:
                 imgs.append(b)
         if not imgs:
@@ -3185,7 +3189,8 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
                 else:
                     tts_headers[tts_key_header] = tts_key
 
-            r = requests.post(TTS_API_URL, data=payload, headers=tts_headers or None, timeout=60)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(TTS_API_URL, data=payload, headers=tts_headers or None)
             if r.status_code != 200:
                 # Log provider response for easier debugging (trim to 2k chars)
                 try:
@@ -3310,7 +3315,8 @@ async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_inde
             else:
                 tts_headers[tts_key_header] = tts_key
 
-        r = requests.post(TTS_API_URL, data=payload, headers=tts_headers or None, timeout=60)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(TTS_API_URL, data=payload, headers=tts_headers or None)
         if r.status_code != 200:
             try:
                 body = r.text
@@ -3516,7 +3522,8 @@ async def fetch_chapter_images(payload: Dict[str, Any]):
         if mangadex_secret:
             headers["Authorization"] = f"Bearer {mangadex_secret}"
         
-        at_home_response = requests.get(at_home_url, headers=headers, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            at_home_response = await client.get(at_home_url, headers=headers)
         
         if at_home_response.status_code != 200:
             raise HTTPException(status_code=404, detail=f"MangaDex chapter not found: {mangadex_chapter_id}")

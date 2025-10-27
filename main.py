@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import asyncio
 import time
 import requests
+import httpx
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -229,8 +230,8 @@ async def mangadex_search(request: Request):
         if mangadex_secret:
             headers["Authorization"] = f"Bearer {mangadex_secret}"
         
-        async with asyncio.timeout(30):
-            response = requests.get(base_url, params=params, headers=headers, timeout=30)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(base_url, params=params, headers=headers)
         
         if response.status_code == 200:
             data = response.json()
@@ -239,34 +240,34 @@ async def mangadex_search(request: Request):
             min_chapters = filters.get("minChapters", 0)
             if min_chapters > 0 and data.get("data"):
                 filtered_manga = []
-                for manga in data["data"]:
-                    manga_id = manga["id"]
-                    # Query chapter count
-                    chapter_params = {
-                        "manga": manga_id,
-                        "translatedLanguage[]": ["en"],
-                        "limit": 1,
-                    }
-                    try:
-                        chapter_response = requests.get(
-                            "https://api.mangadex.org/chapter",
-                            params=chapter_params,
-                            headers=headers,
-                            timeout=10
-                        )
-                        if chapter_response.status_code == 200:
-                            chapter_data = chapter_response.json()
-                            total_chapters = chapter_data.get("total", 0)
-                            # Add chapter count to manga data
-                            manga["chapterCount"] = total_chapters
-                            if total_chapters >= min_chapters:
-                                filtered_manga.append(manga)
-                        else:
-                            # If we can't get chapter count, skip this manga
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    for manga in data["data"]:
+                        manga_id = manga["id"]
+                        # Query chapter count
+                        chapter_params = {
+                            "manga": manga_id,
+                            "translatedLanguage[]": ["en"],
+                            "limit": 1,
+                        }
+                        try:
+                            chapter_response = await client.get(
+                                "https://api.mangadex.org/chapter",
+                                params=chapter_params,
+                                headers=headers
+                            )
+                            if chapter_response.status_code == 200:
+                                chapter_data = chapter_response.json()
+                                total_chapters = chapter_data.get("total", 0)
+                                # Add chapter count to manga data
+                                manga["chapterCount"] = total_chapters
+                                if total_chapters >= min_chapters:
+                                    filtered_manga.append(manga)
+                            else:
+                                # If we can't get chapter count, skip this manga
+                                continue
+                        except Exception:
+                            # If chapter request fails, skip this manga
                             continue
-                    except Exception:
-                        # If chapter request fails, skip this manga
-                        continue
                 
                 data["data"] = filtered_manga
                 data["total"] = len(filtered_manga)
@@ -285,6 +286,12 @@ async def mangadex_search(request: Request):
             content={"error": "Request to MangaDex timed out"},
             status_code=504
         )
+    except httpx.TimeoutException:
+        logger.error("MangaDex API request timed out")
+        return JSONResponse(
+            content={"error": "Request to MangaDex timed out"},
+            status_code=504
+        )
     except Exception as e:
         logger.error(f"Error searching MangaDex: {e}", exc_info=True)
         return JSONResponse(
@@ -298,8 +305,8 @@ async def mangadex_tags():
     try:
         base_url = "https://api.mangadex.org/manga/tag"
         
-        async with asyncio.timeout(10):
-            response = requests.get(base_url, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(base_url)
         
         if response.status_code == 200:
             return JSONResponse(content=response.json())
@@ -335,8 +342,8 @@ async def get_manga_chapters(manga_id: str, limit: int = 100, offset: int = 0, o
         if mangadex_secret:
             headers["Authorization"] = f"Bearer {mangadex_secret}"
         
-        async with asyncio.timeout(30):
-            response = requests.get(base_url, params=params, headers=headers, timeout=30)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(base_url, params=params, headers=headers)
         
         if response.status_code == 200:
             return JSONResponse(content=response.json())
@@ -347,7 +354,7 @@ async def get_manga_chapters(manga_id: str, limit: int = 100, offset: int = 0, o
                 status_code=response.status_code
             )
     
-    except asyncio.TimeoutError:
+    except httpx.TimeoutException:
         return JSONResponse(content={"error": "Request timed out"}, status_code=504)
     except Exception as e:
         logger.error(f"Error fetching manga chapters: {e}", exc_info=True)
@@ -365,8 +372,8 @@ async def get_chapter_pages(chapter_id: str, quality: str = "data"):
         if mangadex_secret:
             headers["Authorization"] = f"Bearer {mangadex_secret}"
         
-        async with asyncio.timeout(10):
-            chapter_response = requests.get(chapter_info_url, headers=headers, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            chapter_response = await client.get(chapter_info_url, headers=headers)
         
         if chapter_response.status_code != 200:
             return JSONResponse(content={"error": "Chapter not found"}, status_code=404)
@@ -377,8 +384,8 @@ async def get_chapter_pages(chapter_id: str, quality: str = "data"):
         # Get At-Home server and page list
         at_home_url = f"https://api.mangadex.org/at-home/server/{chapter_id}"
         
-        async with asyncio.timeout(10):
-            at_home_response = requests.get(at_home_url, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            at_home_response = await client.get(at_home_url)
         
         if at_home_response.status_code == 200:
             at_home_data = at_home_response.json()
@@ -418,7 +425,7 @@ async def get_chapter_pages(chapter_id: str, quality: str = "data"):
                 status_code=at_home_response.status_code
             )
     
-    except asyncio.TimeoutError:
+    except httpx.TimeoutException:
         return JSONResponse(content={"error": "Request timed out"}, status_code=504)
     except Exception as e:
         logger.error(f"Error fetching chapter pages: {e}", exc_info=True)
@@ -447,8 +454,8 @@ async def import_mangadex_series(request: Request):
         if mangadex_secret:
             headers["Authorization"] = f"Bearer {mangadex_secret}"
         
-        async with asyncio.timeout(10):
-            manga_response = requests.get(manga_url, params=params, headers=headers, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            manga_response = await client.get(manga_url, params=params, headers=headers)
         
         if manga_response.status_code != 200:
             return JSONResponse(content={"error": "Manga not found"}, status_code=404)
@@ -489,44 +496,44 @@ async def import_mangadex_series(request: Request):
         max_requests = 10  # Safety limit
         requests_made = 0
         
-        while requests_made < max_requests:
-            chapters_params = {
-                "translatedLanguage[]": "en",
-                "order[chapter]": "asc",  # Ascending order to get all chapters
-                "order[publishAt]": "desc",  # Latest upload first for same chapter
-                "limit": limit,
-                "offset": offset,
-                "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"],
-                "includeExternalUrl": 0
-            }
-            
-            async with asyncio.timeout(10):
-                chapters_response = requests.get(chapters_url, params=chapters_params, headers=headers, timeout=10)
-            
-            requests_made += 1
-            
-            if chapters_response.status_code != 200:
-                logger.error(f"Failed to fetch chapters: {chapters_response.status_code}")
-                return JSONResponse(content={"error": "Failed to fetch chapters"}, status_code=500)
-            
-            chapters_data = chapters_response.json()
-            batch = chapters_data.get("data", [])
-            
-            logger.info(f"Batch {requests_made}: Got {len(batch)} chapters, offset={offset}")
-            
-            if not batch:
-                break
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while requests_made < max_requests:
+                chapters_params = {
+                    "translatedLanguage[]": "en",
+                    "order[chapter]": "asc",  # Ascending order to get all chapters
+                    "order[publishAt]": "desc",  # Latest upload first for same chapter
+                    "limit": limit,
+                    "offset": offset,
+                    "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"],
+                    "includeExternalUrl": 0
+                }
                 
-            all_chapters.extend(batch)
-            
-            # Check if there are more chapters
-            total = chapters_data.get("total", 0)
-            logger.info(f"Total available: {total}, fetched so far: {len(all_chapters)}")
-            
-            if len(all_chapters) >= total:
-                break
+                chapters_response = await client.get(chapters_url, params=chapters_params, headers=headers)
                 
-            offset += limit
+                requests_made += 1
+                
+                if chapters_response.status_code != 200:
+                    logger.error(f"Failed to fetch chapters: {chapters_response.status_code}")
+                    return JSONResponse(content={"error": "Failed to fetch chapters"}, status_code=500)
+                
+                chapters_data = chapters_response.json()
+                batch = chapters_data.get("data", [])
+                
+                logger.info(f"Batch {requests_made}: Got {len(batch)} chapters, offset={offset}")
+                
+                if not batch:
+                    break
+                    
+                all_chapters.extend(batch)
+                
+                # Check if there are more chapters
+                total = chapters_data.get("total", 0)
+                logger.info(f"Total available: {total}, fetched so far: {len(all_chapters)}")
+                
+                if len(all_chapters) >= total:
+                    break
+                    
+                offset += limit
         
         logger.info(f"Fetched {len(all_chapters)} total chapters for manga {manga_id}")
         
@@ -665,6 +672,8 @@ async def import_mangadex_series(request: Request):
             "isUpdate": existing is not None
         })
         
+    except httpx.TimeoutException:
+        return JSONResponse(content={"error": "Request timed out"}, status_code=504)
     except asyncio.TimeoutError:
         return JSONResponse(content={"error": "Request timed out"}, status_code=504)
     except Exception as e:

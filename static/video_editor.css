@@ -225,3 +225,101 @@ body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; bac
   color: #dff3ff;
   min-width: 40px;
 }
+
+/* Fullscreen enhancements */
+.canvas-wrap:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 0;
+}
+
+.canvas-wrap:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 0;
+}
+
+.canvas-wrap:-moz-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 0;
+}
+
+.canvas-wrap:-ms-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 0;
+}
+
+/* Canvas stays centered and fills available space in fullscreen */
+.canvas-wrap:fullscreen #editorCanvas,
+.canvas-wrap:-webkit-full-screen #editorCanvas,
+.canvas-wrap:-moz-full-screen #editorCanvas,
+.canvas-wrap:-ms-fullscreen #editorCanvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Toolbar styling in fullscreen */
+.canvas-wrap:fullscreen .preview-toolbar,
+.canvas-wrap:-webkit-full-screen .preview-toolbar,
+.canvas-wrap:-moz-full-screen .preview-toolbar,
+.canvas-wrap:-ms-fullscreen .preview-toolbar {
+  background: rgba(0,0,0,0.8);
+  backdrop-filter: blur(10px);
+  padding: 12px 16px;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* Smooth transitions for control visibility */
+.preview-toolbar {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+/* Button styling improvements */
+.btn.small {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn.small:hover {
+  transform: scale(1.05);
+  background: rgba(59, 130, 246, 0.9);
+}
+
+.btn.small.secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Cursor hiding in fullscreen when controls are hidden */
+.canvas-wrap:fullscreen.hide-cursor {
+  cursor: none;
+}
+
+.canvas-wrap:-webkit-full-screen.hide-cursor {
+  cursor: none;
+}
