@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TTS Interface</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/ui.build.css?v=1" />
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;background:#020617;position:relative;margin:0;padding:0}
+    body::before{content:'';position:fixed;top:0;left:0;right:0;height:400px;background:radial-gradient(ellipse at top,rgba(59,130,246,0.15),transparent 60%);pointer-events:none;z-index:0}
+    .main-content{position:relative;z-index:1}
+    .btn{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:8px;background:#3b82f6;color:#fff;padding:10px 16px;font-weight:600;cursor:pointer;transition:all 0.2s ease;gap:6px}
+    .btn:hover:not(:disabled){background:#2563eb;transform:translateY(-1px);box-shadow:0 4px 12px rgba(59,130,246,0.3)}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .btn.secondary{background:#1e293b;color:#e5e7eb;border:1px solid #334155}
+    .btn.secondary:hover:not(:disabled){background:#334155;border-color:#475569;box-shadow:0 4px 12px rgba(51,65,85,0.3)}
+    .btn-primary{background:linear-gradient(135deg,#3b82f6,#2563eb);box-shadow:0 2px 8px rgba(59,130,246,0.2)}
+    .btn-primary:hover:not(:disabled){box-shadow:0 4px 16px rgba(59,130,246,0.4)}
+    .card{background:linear-gradient(135deg,rgba(14,26,49,0.6),rgba(11,23,45,0.8));border:1px solid rgba(59,130,246,0.2);border-radius:16px;backdrop-filter:blur(10px);box-shadow:0 4px 24px rgba(0,0,0,0.3)}
+    .card-header{background:linear-gradient(135deg,rgba(30,41,59,0.8),rgba(15,23,42,0.9));border-bottom:1px solid rgba(59,130,246,0.2);border-radius:16px 16px 0 0}
+    .input,.select,.textarea{background:rgba(11,23,45,0.6);border:1px solid rgba(51,65,85,0.8);color:#e6f0ff;border-radius:8px;padding:10px 12px;transition:all 0.2s ease;font-family:inherit}
+    .input:focus,.select:focus,.textarea:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.1);outline:none}
+    .textarea{resize:vertical;width:100%;min-height:150px}
+    .page-title{font-size:32px;font-weight:700;background:linear-gradient(135deg,#e2e8f0,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .input-wrapper{position:relative;margin-bottom:24px}
+    .input-label{font-weight:600;margin-bottom:10px;color:#cbd5e1;font-size:14px;display:block;letter-spacing:0.3px}
+    .audio-player{background:rgba(11,23,45,0.8);border:1px solid rgba(59,130,246,0.3);border-radius:12px;padding:24px;margin-top:24px}
+    .spinner{border:3px solid rgba(59,130,246,0.2);border-top-color:#3b82f6;border-radius:50%;width:20px;height:20px;animation:spin 0.8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .alert{padding:16px 20px;border-radius:10px;margin-bottom:20px;display:flex;align-items:center;gap:12px;font-size:14px}
+    .alert-success{background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);color:#34d399}
+    .alert-error{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);color:#f87171}
+    .alert-info{background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.3);color:#60a5fa}
+  </style>
+</head>
+<body>
+  <div class="main-content">
+    <div class="container mx-auto" style="padding:40px 20px;max-width:900px">
+      <!-- Header Card -->
+      <div class="card card-header flex items-center justify-between" style="padding:32px 40px;margin-bottom:32px;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+        <div>
+          <h1 class="page-title" style="margin-bottom:8px">Text-to-Speech Interface</h1>
+          <p style="color:#94a3b8;font-size:14px;margin:0">Convert text to speech using AI</p>
+        </div>
+        <div class="flex gap-3 items-center" style="flex-shrink:0;margin-left:40px">
+          <a href="/editor/dashboard" class="btn secondary" style="text-decoration:none">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            Back to Dashboard
+          </a>
+        </div>
+      </div>
+
+      <!-- Alert Messages -->
+      <div id="alertContainer"></div>
+
+      <!-- TTS Form Card -->
+      <div class="card" style="padding:32px;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
+        <div class="input-wrapper">
+          <label class="input-label">
+            <div style="display:flex;align-items:center;gap:8px">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+              </svg>
+              Enter Text
+            </div>
+          </label>
+          <textarea 
+            id="ttsText" 
+            class="textarea" 
+            placeholder="Type or paste the text you want to convert to speech..."
+            rows="8"
+          ></textarea>
+          <div style="margin-top:8px;color:#64748b;font-size:13px;display:flex;align-items:center;gap:6px">
+            <svg width="14" height="14" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"/>
+            </svg>
+            Maximum recommended: 5000 characters
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <button id="generateBtn" class="btn btn-primary" style="flex:1">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+            </svg>
+            Generate Speech
+          </button>
+          <button id="clearBtn" class="btn secondary">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+            </svg>
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <!-- Audio Player Card -->
+      <div id="audioPlayerCard" class="card" style="padding:32px;margin-top:24px;box-shadow:0 8px 32px rgba(0,0,0,0.4);display:none">
+        <div style="margin-bottom:20px">
+          <h3 style="color:#e2e8f0;font-size:18px;font-weight:600;margin:0 0 8px 0;display:flex;align-items:center;gap:10px">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+            </svg>
+            Generated Audio
+          </h3>
+          <p style="color:#94a3b8;font-size:13px;margin:0">Play and download your generated speech</p>
+        </div>
+        
+        <div class="audio-player">
+          <audio id="audioPlayer" controls style="width:100%;margin-bottom:16px"></audio>
+          <div style="display:flex;gap:12px">
+            <a id="downloadBtn" class="btn btn-primary" style="text-decoration:none;flex:1" download="speech.mp3">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+              Download Audio
+            </a>
+            <button id="newGenerationBtn" class="btn secondary">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              New Generation
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ttsText = document.getElementById('ttsText');
+    const generateBtn = document.getElementById('generateBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const audioPlayerCard = document.getElementById('audioPlayerCard');
+    const audioPlayer = document.getElementById('audioPlayer');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const newGenerationBtn = document.getElementById('newGenerationBtn');
+    const alertContainer = document.getElementById('alertContainer');
+
+    // Get TTS API URL from environment or use default
+    const TTS_API_URL = '{{ tts_api_url }}' || '';
+
+    function showAlert(message, type = 'info') {
+      const alert = document.createElement('div');
+      alert.className = `alert alert-${type}`;
+      
+      let icon = '';
+      if (type === 'success') {
+        icon = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"/></svg>';
+      } else if (type === 'error') {
+        icon = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"/></svg>';
+      } else {
+        icon = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"/></svg>';
+      }
+      
+      alert.innerHTML = `${icon}<span>${message}</span>`;
+      alertContainer.appendChild(alert);
+      
+      setTimeout(() => {
+        alert.style.transition = 'opacity 0.3s ease';
+        alert.style.opacity = '0';
+        setTimeout(() => alert.remove(), 300);
+      }, 5000);
+    }
+
+    async function generateSpeech() {
+      const text = ttsText.value.trim();
+      
+      if (!text) {
+        showAlert('Please enter some text to convert to speech', 'error');
+        return;
+      }
+
+      if (!TTS_API_URL) {
+        showAlert('TTS API URL is not configured. Please set TTS_API_URL environment variable.', 'error');
+        return;
+      }
+
+      // Disable button and show loading state
+      generateBtn.disabled = true;
+      const originalHTML = generateBtn.innerHTML;
+      generateBtn.innerHTML = '<div class="spinner"></div><span>Generating...</span>';
+
+      try {
+        // Create FormData to match the TTS API's expected format
+        const formData = new FormData();
+        formData.append('text', text);
+        formData.append('exaggeration', '0.5');
+        formData.append('cfg_weight', '0.5');
+        formData.append('temperature', '0.8');
+
+        const response = await fetch(TTS_API_URL, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          // Try to get error details from response
+          let errorMessage = `API returned ${response.status}: ${response.statusText}`;
+          try {
+            const errorData = await response.json();
+            console.error('API Error:', errorData);
+            if (errorData.detail) {
+              errorMessage += `\n${JSON.stringify(errorData.detail, null, 2)}`;
+            }
+          } catch (e) {
+            // If response is not JSON, try to get text
+            try {
+              const errorText = await response.text();
+              if (errorText) errorMessage += `\n${errorText}`;
+            } catch (e2) {
+              // Ignore
+            }
+          }
+          throw new Error(errorMessage);
+        }
+
+        // Get the audio blob
+        const blob = await response.blob();
+        const audioUrl = URL.createObjectURL(blob);
+
+        // Set up audio player
+        audioPlayer.src = audioUrl;
+        downloadBtn.href = audioUrl;
+        
+        // Show audio player card
+        audioPlayerCard.style.display = 'block';
+        audioPlayerCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        showAlert('Speech generated successfully!', 'success');
+        
+      } catch (error) {
+        console.error('TTS Error:', error);
+        showAlert(`Failed to generate speech: ${error.message}`, 'error');
+      } finally {
+        // Re-enable button
+        generateBtn.disabled = false;
+        generateBtn.innerHTML = originalHTML;
+      }
+    }
+
+    function clearText() {
+      ttsText.value = '';
+      audioPlayerCard.style.display = 'none';
+      audioPlayer.src = '';
+      downloadBtn.href = '#';
+    }
+
+    function newGeneration() {
+      audioPlayerCard.style.display = 'none';
+      audioPlayer.src = '';
+      downloadBtn.href = '#';
+      ttsText.focus();
+    }
+
+    // Event listeners
+    generateBtn.addEventListener('click', generateSpeech);
+    clearBtn.addEventListener('click', clearText);
+    newGenerationBtn.addEventListener('click', newGeneration);
+
+    // Allow Enter key to generate (Ctrl+Enter)
+    ttsText.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'Enter') {
+        generateSpeech();
+      }
+    });
+
+    // Check if TTS API is configured on load
+    window.addEventListener('DOMContentLoaded', () => {
+      if (!TTS_API_URL) {
+        showAlert('Warning: TTS API URL is not configured. Set TTS_API_URL environment variable.', 'error');
+      }
+    });
+  </script>
+</body>
+</html>

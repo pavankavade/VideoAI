@@ -1288,6 +1288,15 @@ async def editor_dashboard(request: Request):
     )
 
 
+@router.get("/tts", response_class=HTMLResponse)
+async def tts_interface(request: Request):
+    # TTS interface page
+    return templates.TemplateResponse(
+        "tts_interface.html",
+        {"request": request, "tts_api_url": TTS_API_URL},
+    )
+
+
 @router.get("/api/project/{project_id:path}")
 async def api_get_project_summary(project_id: str, brief: bool = False):
     project = EditorDB.get_project(project_id)
