@@ -131,8 +131,13 @@ async function renderSeriesCard(series){
             </svg>
           </div>
           <div style="flex:1">
-            <div style="font-size:18px;font-weight:700;color:#e2e8f0">${series.name}</div>
-          <div style="font-size:12px;color:#64748b;margin-top:4px">${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} • Created ${new Date(series.created_at).toLocaleDateString()}</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="series-name-container" style="font-size:18px;font-weight:700;color:#e2e8f0">${series.name}</div>
+              <button class="btn secondary" style="padding:6px 8px;font-size:13px;min-width:auto" onclick="event.stopPropagation();startSeriesEdit('${series.id}')" title="Edit series name">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 4h7v7M3 21l7-7 9-9-7-7L3 21z"/></svg>
+              </button>
+            </div>
+            <div style="font-size:12px;color:#64748b;margin-top:4px">${chapters.length} chapter${chapters.length !== 1 ? 's' : ''} • Created ${new Date(series.created_at).toLocaleDateString()}</div>
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -462,6 +467,79 @@ function openAddChapter(seriesId, seriesName){
   currentSeriesId = seriesId;
   document.getElementById('chapterSeriesName').textContent = seriesName;
   document.getElementById('addChapterBox').style.display = 'flex';
+}
+
+// Inline series name editing ------------------------------------------------
+function startSeriesEdit(seriesId, oldName){
+  try{
+    const card = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+    if(!card) return;
+    const container = card.querySelector('.series-name-container');
+    if(!container) return;
+    // Determine current name if not provided
+    const currentName = (typeof oldName !== 'undefined' && oldName !== null) ? String(oldName) : (container.textContent || '').trim();
+
+    // Build input + actions
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName || '';
+    input.style.cssText = 'font-size:16px;padding:6px 8px;border-radius:8px;background:rgba(11,23,45,0.6);border:1px solid rgba(51,65,85,0.8);color:#e2e8f0';
+    input.onkeydown = (e)=>{ if(e.key === 'Enter'){ saveSeriesEdit(seriesId, input.value, currentName); } if(e.key === 'Escape'){ cancelSeriesEdit(seriesId, currentName); } };
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn';
+    saveBtn.style.cssText = 'padding:6px 8px;font-size:13px;min-width:auto;margin-left:8px';
+    saveBtn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
+    saveBtn.onclick = (ev)=>{ ev.stopPropagation(); saveSeriesEdit(seriesId, input.value, currentName); };
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn secondary';
+    cancelBtn.style.cssText = 'padding:6px 8px;font-size:13px;min-width:auto;margin-left:6px';
+    cancelBtn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>';
+    cancelBtn.onclick = (ev)=>{ ev.stopPropagation(); cancelSeriesEdit(seriesId, currentName); };
+
+    // Clear container and append controls
+    container.innerHTML = '';
+    container.appendChild(input);
+    container.appendChild(saveBtn);
+    container.appendChild(cancelBtn);
+    input.focus();
+    input.select();
+  }catch(e){ console.error('startSeriesEdit', e); }
+}
+
+function cancelSeriesEdit(seriesId, oldName){
+  // Refresh the series list to restore original rendering
+  loadData();
+}
+
+async function saveSeriesEdit(seriesId, newName, oldName){
+  newName = (String(newName||'')).trim();
+  if(!newName) { alert('Series name cannot be empty'); return; }
+  if(newName === oldName) { cancelSeriesEdit(seriesId, oldName); return; }
+
+  try{
+    const payload = { name: newName, propagate_chapters: true };
+    const r = await fetch(`/editor/api/manga/series/${encodeURIComponent(seriesId)}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      alert('Failed to rename series: ' + (txt || r.status));
+      cancelSeriesEdit(seriesId, oldName);
+      return;
+    }
+
+    // Refresh UI (reload series list)
+    await loadData();
+    showNotification(`Renamed series to "${newName}"`, 'success', 3000);
+  }catch(e){
+    console.error('saveSeriesEdit', e);
+    alert('Error renaming series: ' + e.message);
+    cancelSeriesEdit(seriesId, oldName);
+  }
 }
 
 async function deleteProject(id){

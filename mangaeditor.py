@@ -1096,6 +1096,57 @@ class EditorDB:
         }
 
     @classmethod
+    def rename_manga_series(cls, series_id: str, new_name: str, propagate_chapters: bool = True) -> Dict[str, Any]:
+        """Rename a manga series and optionally update chapter/project titles downstream.
+
+        Behavior:
+        - Update `manga_series.name` and `updated_at`.
+        - If `propagate_chapters` is True, for each project_details row with matching
+          `manga_series_id`, either replace occurrences of the old series name in the
+          chapter title or prefix the chapter title with the new series name.
+        Returns a dict with counts of updated chapters.
+        """
+        conn = cls.conn()
+        # Get old name (if any)
+        row = conn.execute("SELECT name FROM manga_series WHERE id=?", (series_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Series {series_id} not found")
+        old_name = row[0] or ""
+        now = datetime.utcnow().isoformat()
+
+        # Update series name
+        conn.execute("UPDATE manga_series SET name=?, updated_at=? WHERE id=?", (new_name, now, series_id))
+
+        chapters_updated = 0
+        if propagate_chapters:
+            # Fetch chapters tied to this series
+            chapters = conn.execute(
+                "SELECT id, title FROM project_details WHERE manga_series_id=?",
+                (series_id,),
+            ).fetchall()
+
+            for ch in chapters:
+                ch_id = ch[0]
+                title = ch[1] or ""
+                updated = title
+                try:
+                    if old_name and old_name in title:
+                        updated = title.replace(old_name, new_name)
+                    else:
+                        # Don't double-prefix if already contains the new name
+                        if new_name not in title:
+                            updated = f"{new_name} — {title}" if title.strip() else new_name
+                except Exception:
+                    updated = f"{new_name} — {title}" if title.strip() else new_name
+
+                if updated != title:
+                    conn.execute("UPDATE project_details SET title=? WHERE id= ?", (updated, ch_id))
+                    chapters_updated += 1
+
+        conn.commit()
+        return {"ok": True, "series_id": series_id, "new_name": new_name, "chapters_updated": chapters_updated}
+
+    @classmethod
     def set_panel_audio(cls, project_id: str, page_number: int, panel_index: int, audio_url: Optional[str]) -> None:
         now = datetime.utcnow().isoformat()
         c = cls.conn()
@@ -2810,6 +2861,32 @@ async def api_migrate_project_to_series(project_id: str, payload: Dict[str, Any]
     EditorDB.update_chapter_series_info(project_id, series_id, int(chapter_number))
     
     return {"ok": True, "project_id": project_id, "series_id": series_id, "chapter_number": chapter_number}
+
+
+@router.put("/api/manga/series/{series_id}")
+async def api_rename_manga_series(series_id: str, payload: Dict[str, Any]):
+    """Rename a manga series and optionally propagate the change to chapter titles.
+
+    Payload: { name: string, propagate_chapters?: bool }
+    """
+    name = str(payload.get("name") or "").strip()
+    propagate = bool(payload.get("propagate_chapters") if payload.get("propagate_chapters") is not None else True)
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    # Ensure series exists
+    series = EditorDB.get_manga_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Manga series not found")
+
+    try:
+        res = EditorDB.rename_manga_series(series_id, name, propagate_chapters=propagate)
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.exception("Failed to rename series %s", series_id)
+        raise HTTPException(status_code=500, detail=f"Failed to rename series: {e}")
 
 
 @router.delete("/api/manga/series/{series_id}")
