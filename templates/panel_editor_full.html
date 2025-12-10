@@ -81,6 +81,10 @@
             <button id="applyGlobalConfig" class="btn">Apply</button>
           </div>
           <div class="row" style="gap:8px; align-items:center">
+            <div class="row" style="gap:8px; align-items:center; border-right:1px solid #1e293b; padding-right:12px; margin-right:4px">
+               <div id="modelStatus" class="muted" style="font-size:12px">Model: Checking...</div>
+               <button id="loadModelBtn" class="btn secondary" style="display:none">Load Model</button>
+            </div>
             <button id="synthAll" class="btn secondary">Synthesize All</button>
             <div id="synthProgress" class="muted" style="min-width:260px"></div>
             <div id="synthBarWrap" style="flex:1; max-width:420px;display:none">
@@ -192,7 +196,11 @@
           <div class="p-3">
             <div class="flex items-center justify-between mb-2">
               <div class="font-bold">Panel #${p.index}</div>
-              <div class="muted">${p.image? p.image.split('/').pop(): ''}</div>
+              <button class="btn secondary" data-delete="${p.index}" style="padding:4px 8px;background:#ef4444;border-color:#ef4444;color:white;font-size:11px" title="Delete this panel">
+                <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+              </button>
             </div>
             <textarea class="textarea" data-idx="${p.index}" placeholder="Narration for this panel…">${p.text||''}</textarea>
             <div class="row mt-2">
@@ -239,6 +247,31 @@
           if(ok){ btn.textContent = 'Saved'; setTimeout(()=>btn.textContent='Save', 1000); }
         });
       });
+
+      // Wire delete buttons
+      root.querySelectorAll('button[data-delete]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          const idx = parseInt(btn.getAttribute('data-delete'))||1;
+          const pn = (pages[currentIndex]||{}).page_number;
+          if(!confirm(`Delete Panel ${idx}? This will re-number remaining panels.`)) return;
+          
+          try {
+            const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/panel/${encodeURIComponent(pn)}/${encodeURIComponent(idx)}`, {
+              method: 'DELETE',
+              headers: {'ngrok-skip-browser-warning':'true'}
+            });
+            if(r.ok) {
+              await fetchSummary(); // Reload to show updated panel indices
+            } else {
+              alert('Failed to delete panel');
+            }
+          } catch(err) {
+            console.error(err);
+            alert('Error deleting panel: ' + err.message);
+          }
+        });
+      });
+
 
       // Per-panel synth removed; generation is handled by global button
 
@@ -737,6 +770,80 @@
         btn.disabled = false; btn.textContent = original;
       }
     });
+
+
+    // ---------------- Model Management ----------------
+    const modelStatusEl = document.getElementById('modelStatus');
+    const loadModelBtn = document.getElementById('loadModelBtn');
+    let modelCheckInterval = null;
+
+    async function checkModelStatus() {
+      try {
+        const r = await fetch('/api/model/status');
+        if (r.ok) {
+          const status = await r.json();
+          updateModelUI(status);
+        }
+      } catch (e) {
+        console.warn('Failed to check model status', e);
+        if(modelStatusEl) modelStatusEl.textContent = 'Model: Error';
+      }
+    }
+
+    function updateModelUI(status) {
+      if(!modelStatusEl || !loadModelBtn) return;
+      if (status.loading) {
+        modelStatusEl.textContent = 'Model: Loading...';
+        loadModelBtn.style.display = 'none';
+        if (!modelCheckInterval) startPolling(2000);
+      } else if (status.loaded) {
+        modelStatusEl.textContent = `Model: Loaded (${status.device})`;
+        loadModelBtn.style.display = 'none';
+        stopPolling(); 
+      } else {
+        modelStatusEl.textContent = 'Model: Not Loaded';
+        loadModelBtn.style.display = 'inline-block';
+        stopPolling();
+      }
+    }
+
+    function startPolling(ms) {
+      stopPolling();
+      modelCheckInterval = setInterval(checkModelStatus, ms);
+    }
+
+    function stopPolling() {
+      if (modelCheckInterval) {
+        clearInterval(modelCheckInterval);
+        modelCheckInterval = null;
+      }
+    }
+
+    if(loadModelBtn){
+        loadModelBtn.addEventListener('click', async () => {
+          loadModelBtn.disabled = true;
+          loadModelBtn.textContent = 'Loading...';
+          try {
+            const r = await fetch('/api/model/load', { method: 'POST' });
+            const data = await r.json();
+            if (data.status === 'loading' || data.status === 'loaded') {
+              startPolling(2000); 
+            } else {
+              alert('Failed to trigger model load: ' + (data.message || 'Unknown error'));
+              loadModelBtn.disabled = false;
+              loadModelBtn.textContent = 'Load Model';
+            }
+          } catch (e) {
+            console.error(e);
+            alert('Error loading model');
+            loadModelBtn.disabled = false;
+            loadModelBtn.textContent = 'Load Model';
+          }
+        });
+    }
+
+    // Check status on load
+    checkModelStatus();
   </script>
 </body>
 </html>

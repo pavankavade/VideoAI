@@ -12,4 +12,14 @@ imageio-ffmpeg>=0.4.7
 numpy>=1.24.0
 pyngrok>=7.0.0
 playwright==1.48.0
-playwright-stealth==1.0.0
+playwright-stealth>=1.0.6
+
+# ML Dependencies for Local Panel Detection
+transformers==4.49.0
+torch
+torchvision
+accelerate
+einops
+timm>=0.9.16
+pytorch_metric_learning
+shapelygroq

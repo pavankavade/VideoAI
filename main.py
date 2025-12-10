@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from mangaeditor import router as editor_router
 from videoeditor import router as video_router
+from panel_detection import router as panel_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +51,7 @@ app.mount("/manga_projects", StaticFiles(directory=MANGA_DIR), name="manga_proje
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 app.include_router(editor_router)
 app.include_router(video_router)
+app.include_router(panel_router)
 
 @app.middleware("http")
 async def add_coop_coep_headers(request: Request, call_next):

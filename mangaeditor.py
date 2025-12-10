@@ -136,6 +136,7 @@ class EditorDB:
                 image_path TEXT NOT NULL,
                 -- new fields
                 narration_text TEXT NOT NULL DEFAULT '',
+                is_manual INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (project_id, page_number, panel_index),
@@ -159,6 +160,7 @@ class EditorDB:
                         panel_index INTEGER NOT NULL,
                         image_path TEXT NOT NULL,
                         narration_text TEXT NOT NULL DEFAULT '',
+                        is_manual INTEGER DEFAULT 0,
                         created_at TEXT NOT NULL DEFAULT '',
                         updated_at TEXT NOT NULL DEFAULT '',
                         PRIMARY KEY (project_id, page_number, panel_index),
@@ -170,19 +172,21 @@ class EditorDB:
                 old_cols = {row[1] for row in c.execute("PRAGMA table_info(panels_old)").fetchall()}
                 # Build SELECT with defaults for missing columns
                 select_exprs = []
-                for col in ["project_id","page_number","panel_index","image_path","narration_text","created_at","updated_at"]:
+                for col in ["project_id","page_number","panel_index","image_path","narration_text","is_manual","created_at","updated_at"]:
                     if col in old_cols:
                         select_exprs.append(col)
                     else:
                         if col == "narration_text":
                             select_exprs.append("'' AS narration_text")
+                        elif col == "is_manual":
+                            select_exprs.append("0 AS is_manual")
                         elif col in ("created_at","updated_at"):
                             select_exprs.append("'' AS %s" % col)
                         else:
                             # Should not happen, but keep safe default
                             select_exprs.append("'' AS %s" % col)
                 c.execute(
-                    f"INSERT INTO panels(project_id,page_number,panel_index,image_path,narration_text,created_at,updated_at) "
+                    f"INSERT INTO panels(project_id,page_number,panel_index,image_path,narration_text,is_manual,created_at,updated_at) "
                     f"SELECT {', '.join(select_exprs)} FROM panels_old"
                 )
                 c.execute("DROP TABLE panels_old")
@@ -194,6 +198,8 @@ class EditorDB:
             cols = {row[1] for row in c.execute("PRAGMA table_info(panels)").fetchall()}
             if "narration_text" not in cols:
                 c.execute("ALTER TABLE panels ADD COLUMN narration_text TEXT NOT NULL DEFAULT ''")
+            if "is_manual" not in cols:
+                c.execute("ALTER TABLE panels ADD COLUMN is_manual INTEGER DEFAULT 0")
             # New preferred column: audio_url (replace legacy audio_b64 usage)
             if "audio_url" not in cols:
                 c.execute("ALTER TABLE panels ADD COLUMN audio_url TEXT")
@@ -544,10 +550,19 @@ class EditorDB:
 
     @classmethod
     def get_panels_for_page(cls, project_id: str, page_number: int) -> List[Dict[str, Any]]:
-        rows = cls.conn().execute(
-            "SELECT panel_index, image_path, narration_text, audio_url, effect, transition FROM panels WHERE project_id=? AND page_number=? ORDER BY panel_index ASC",
-            (project_id, page_number),
-        ).fetchall()
+        # Check if is_manual column exists (it should after migration)
+        try:
+            rows = cls.conn().execute(
+                "SELECT panel_index, image_path, narration_text, audio_url, effect, transition, is_manual FROM panels WHERE project_id=? AND page_number=? ORDER BY panel_index ASC",
+                (project_id, page_number),
+            ).fetchall()
+        except Exception:
+            # Fallback if column missing (though migration should have run)
+            rows = cls.conn().execute(
+                "SELECT panel_index, image_path, narration_text, audio_url, effect, transition FROM panels WHERE project_id=? AND page_number=? ORDER BY panel_index ASC",
+                (project_id, page_number),
+            ).fetchall()
+
         out: List[Dict[str, Any]] = []
         for r in rows:
             # Skip legacy/erroneous rows that have no image; these were created by older narration code
@@ -559,6 +574,8 @@ class EditorDB:
             display_idx = (idx_db + 1) if idx_db == 0 else idx_db
             eff = (r[4] if len(r) > 4 else None) or "zoom_in"
             trans = (r[5] if len(r) > 5 else None) or "slide_book"
+            is_manual = bool(r[6]) if len(r) > 6 else False
+            
             out.append({
                 "index": int(display_idx),
                 "image": img_path,
@@ -566,6 +583,7 @@ class EditorDB:
                 "audio": r[3],
                 "effect": eff,
                 "transition": trans,
+                "is_manual": is_manual,
             })
         return out
 
@@ -598,32 +616,9 @@ class EditorDB:
             distinct_pages = int(r[0]) if r and r[0] is not None else 0
             return distinct_pages >= page_count
         except Exception:
-            # On error, be conservative and return False
             return False
 
-    @classmethod
-    def upsert_panel_narration(cls, project_id: str, page_number: int, panel_index: int, text: str) -> None:
-        now = datetime.utcnow().isoformat()
-        c = cls.conn()
-        cur = c.execute(
-            "UPDATE panels SET narration_text=?, updated_at=? WHERE project_id=? AND page_number=? AND panel_index=?",
-            (text, now, project_id, page_number, panel_index),
-        )
-        if cur.rowcount == 0:
-            # Migration affordance: if DB stored 0-based, try index-1
-            if panel_index > 0:
-                cur2 = c.execute(
-                    "UPDATE panels SET narration_text=?, updated_at=? WHERE project_id=? AND page_number=? AND panel_index=?",
-                    (text, now, project_id, page_number, panel_index - 1),
-                )
-                if cur2.rowcount > 0:
-                    c.commit()
-                    return
-            c.execute(
-                "INSERT INTO panels(project_id, page_number, panel_index, image_path, narration_text, audio_url, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (project_id, page_number, panel_index, "", text, None, now, now),
-            )
-        c.commit()
+    # FIX ATTEMPT 2 - Restoring get_panel_narrations
 
     @classmethod
     def get_panel_narrations(cls, project_id: str) -> Dict[Tuple[int, int], str]:
@@ -632,6 +627,17 @@ class EditorDB:
             (project_id,),
         ).fetchall()
         return {(int(r[0]), int(r[1])): (r[2] or "") for r in rows}
+
+    @classmethod
+    def upsert_panel_narration(cls, project_id: str, page_number: int, panel_index: int, text: str, is_manual: bool = False) -> None:
+        conn = cls.conn()
+        # We only update existing panels because image_path is required for new ones
+        # and panels should have been created by the panel detection step.
+        conn.execute(
+            "UPDATE panels SET narration_text=?, is_manual=?, updated_at=? WHERE project_id=? AND page_number=? AND panel_index=?",
+            (text, 1 if is_manual else 0, datetime.now().isoformat(), project_id, page_number, panel_index)
+        )
+        conn.commit()
 
     @classmethod
     def set_character_list(cls, project_id: str, markdown: str) -> None:
@@ -1636,6 +1642,77 @@ async def api_create_panels(project_id: str):
 @router.post("/api/project/{project_id:path}/panels/create/page/{page_number}")
 async def api_create_panels_single_page(project_id: str, page_number: int):
     """Create panels for a single page, used for granular progress in the UI."""
+    # Check local model first
+    from panel_detection import model_manager
+    if model_manager.model is not None:
+        logger.info(f"[panels/create/page] Using local MagiV3 model for page {page_number}")
+        try:
+            project = EditorDB.get_project(project_id)
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found")
+            pages = EditorDB.get_pages(project_id)
+            pg = next((p for p in pages if int(p.get("page_number") or 0) == int(page_number)), None)
+            if not pg:
+                raise HTTPException(status_code=404, detail="Page not found")
+
+            project_dir = os.path.join(MANGA_DIR, project_id)
+            os.makedirs(project_dir, exist_ok=True)
+            pn = int(pg["page_number"])
+            img_path = pg["image_path"]
+            
+            # Resolve path (reusing logic)
+            abs_path = img_path
+            if img_path.startswith("/manga_projects/"):
+                abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
+            elif img_path.startswith("manga_projects/"):
+                abs_path = os.path.join(BASE_DIR, img_path)
+            elif img_path.startswith("/uploads/"):
+                abs_path = os.path.join(BASE_DIR, img_path.lstrip("/"))
+            elif img_path.startswith("uploads/"):
+                abs_path = os.path.join(BASE_DIR, img_path)
+            elif not os.path.isabs(abs_path):
+                abs_path = os.path.join(BASE_DIR, abs_path)
+            if not os.path.exists(abs_path):
+                fallback = os.path.join(UPLOADS_DIR, os.path.basename(img_path))
+                if os.path.exists(fallback):
+                    abs_path = fallback
+            
+            if not os.path.exists(abs_path):
+                raise HTTPException(status_code=404, detail=f"File not found: {img_path}")
+
+            # Run prediction
+            image = Image.open(abs_path).convert("RGB")
+            result = model_manager.predict(image)
+            boxes = result["panels"] # list of [x1, y1, x2, y2]
+            
+            page_dir = os.path.join(project_dir, f"page_{pn:03d}")
+            os.makedirs(page_dir, exist_ok=True)
+            panel_paths = []
+            
+            # Handle empty result
+            if not boxes:
+                w, h = image.size
+                boxes = [[0, 0, w, h]]
+                
+            for idx, box in enumerate(boxes):
+                x1, y1, x2, y2 = map(int, box)
+                crop = image.crop((x1, y1, x2, y2))
+                out_name = f"panel_{idx:03d}.png"
+                out_abs = os.path.join(page_dir, out_name)
+                crop.save(out_abs)
+                rel = f"/manga_projects/{project_id}/page_{pn:03d}/{out_name}"
+                panel_paths.append(rel)
+                
+            EditorDB.set_panels_for_page(project_id, pn, panel_paths)
+            created = len(panel_paths)
+            logging.info(f"[panels/create/page] Local model: Page {pn}: saved {created} panels")
+            return {"ok": True, "page_number": pn, "created": created}
+            
+        except Exception as e:
+            logger.error(f"Local model failed: {e}", exc_info=True)
+            # Fall back to external API if local fails
+            pass
+
     if not PANEL_API_URL:
         raise HTTPException(status_code=400, detail="PANEL_API_URL not configured")
     project = EditorDB.get_project(project_id)
@@ -1889,13 +1966,29 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
             raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
 
         contents = _build_page_prompt(pn, imgs, accumulated_text, char_md)
-        try:
-            resp = model.generate_content(contents)
-            txt = resp.text or ""
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Gemini error on page {pn}: {e}")
+        data = None
+        last_error = None
+        
+        for attempt in range(3):
+            try:
+                resp = model.generate_content(contents)
+                txt = resp.text or ""
+                
+                extracted = _extract_json(txt)
+                # Validate structure: must be dict with "panels" list
+                if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                    data = extracted
+                    break
+                else:
+                    logger.warning(f"Page {pn}: Invalid JSON structure on attempt {attempt+1}. Retrying...")
+                    last_error = f"Invalid JSON structure: {str(extracted)[:100]}"
+            except Exception as e:
+                logger.warning(f"Page {pn}: Gemini error on attempt {attempt+1}: {e}")
+                last_error = str(e)
+                
+        if not data:
+            raise HTTPException(status_code=500, detail=f"Gemini error on page {pn} after 3 attempts: {last_error}")
 
-        data = _extract_json(txt)
         # Expect { panels: [ {panel_index, text}, ... ] }
         if isinstance(data, dict) and isinstance(data.get("panels"), list):
             # Aggregate/merge texts into valid panel indices only
@@ -1921,7 +2014,7 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                 combined = " ".join(merged.get(i) or [])
                 # Only update if we actually have text for this panel in this run
                 if combined:
-                    EditorDB.upsert_panel_narration(project_id, pn, i, combined)
+                    EditorDB.upsert_panel_narration(project_id, pn, i, combined, is_manual=False)
                     # Ensure any existing audio URL (if a previous synth created it) remains intact; no change here
                     page_out.append({"panel_index": i, "text": combined})
             # Cleanup any legacy rows without images on this page
@@ -1945,12 +2038,12 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
             if len(panels) == 1:
                 # Put all narration into the first panel
                 combined = (". ".join(segs).strip() + ".") if segs else ""
-                EditorDB.upsert_panel_narration(project_id, pn, 1, combined)
+                EditorDB.upsert_panel_narration(project_id, pn, 1, combined, is_manual=False)
                 page_out.append({"panel_index": 1, "text": combined})
             else:
                 for idx1 in range(1, len(panels) + 1):
                     t = (segs[idx1 - 1] + ".") if (idx1 - 1) < len(segs) else ""
-                    EditorDB.upsert_panel_narration(project_id, pn, idx1, t)
+                    EditorDB.upsert_panel_narration(project_id, pn, idx1, t, is_manual=False)
                     page_out.append({"panel_index": idx1, "text": t})
             # Cleanup any legacy rows without images on this page
             try:
@@ -2221,7 +2314,7 @@ async def api_save_manual_narration(project_id: str, page_number: int, payload: 
             text = panel_item.get("text", "").strip()
             
             if panel_index and text:
-                EditorDB.upsert_panel_narration(project_id, int(page_number), int(panel_index), text)
+                EditorDB.upsert_panel_narration(project_id, int(page_number), int(panel_index), text, is_manual=True)
                 saved_panels.append({"panel_index": int(panel_index), "text": text})
         
         return {"ok": True, "page_number": int(page_number), "panels": saved_panels}
@@ -3081,6 +3174,54 @@ async def api_update_panel_config(project_id: str, page_number: int, panel_index
         idx = 1
     EditorDB.set_panel_config(project_id, int(page_number), idx, eff, trans)
     return {"ok": True, "page_number": int(page_number), "panel_index": idx, "effect": eff, "transition": trans}
+
+
+@router.delete("/api/project/{project_id}/panel/{page_number}/{panel_index}")
+async def api_delete_panel(project_id: str, page_number: int, panel_index: int):
+    """Delete a specific panel and re-index remaining panels on that page."""
+    conn = EditorDB.conn()
+    
+    # Check if panel exists
+    row = conn.execute(
+        "SELECT 1 FROM panels WHERE project_id=? AND page_number=? AND panel_index=?",
+        (project_id, page_number, panel_index)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Panel not found")
+        
+    # Get all panels for this page before deletion
+    rows = conn.execute(
+        "SELECT panel_index, image_path, narration_text, is_manual, audio_url, effect, transition FROM panels WHERE project_id=? AND page_number=? ORDER BY panel_index ASC",
+        (project_id, page_number)
+    ).fetchall()
+    
+    # Filter out the deleted panel
+    remaining = [r for r in rows if int(r[0]) != panel_index]
+    
+    # Delete all panels for this page
+    conn.execute(
+        "DELETE FROM panels WHERE project_id=? AND page_number=?",
+        (project_id, page_number)
+    )
+    
+    # Re-insert with new sequential indices
+    for i, r in enumerate(remaining):
+        new_index = i + 1
+        # r: (panel_index, image_path, narration_text, is_manual, audio_url, effect, transition)
+        conn.execute(
+            """
+            INSERT INTO panels (project_id, page_number, panel_index, image_path, narration_text, is_manual, audio_url, effect, transition, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id, page_number, new_index, 
+                r[1], r[2], r[3], r[4], r[5], r[6], 
+                datetime.now().isoformat(), datetime.now().isoformat()
+            )
+        )
+        
+    conn.commit()
+    return {"status": "ok", "remaining_panels": len(remaining)}
 
 
 @router.put("/api/project/{project_id:path}/page/{page_number}/config")
