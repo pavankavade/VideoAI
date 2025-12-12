@@ -78,6 +78,7 @@
                   <option value="gemini" {% if project.narration_provider == 'gemini' %}selected{% endif %}>Gemini</option>
                   <option value="groq" {% if project.narration_provider == 'groq' %}selected{% endif %}>Groq</option>
                   <option value="azure" {% if project.narration_provider == 'azure' %}selected{% endif %}>Azure OpenAI</option>
+                  <option value="manual_web" {% if project.narration_provider == 'manual_web' %}selected{% endif %}>Manual (Web UI)</option>
               </select>
             </div>
             <div class="row">
@@ -258,7 +259,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
             <h4>Page ${pg.page_number}</h4>
             <div class="row">
-              <button class="btn secondary" data-redo="${i}" title="Retry narration for this page">Retry</button>
+              <button class="btn secondary" data-redo="${i}" title="Generate narration for this page">Narrate</button>
               <button class="btn secondary" data-go="${i}">Go</button>
             </div>
           </div>
@@ -306,11 +307,15 @@
       if(isBusy){
         if(txt) txt.textContent = msg || 'Generating narration…';
         pr?.classList.remove('hidden');
-        bAll.disabled = true; bRedo.disabled = true; bPage.disabled = true;
+        if(bAll) bAll.disabled = true; 
+        if(bRedo) bRedo.disabled = true; 
+        if(bPage) bPage.disabled = true;
         if(typeof pct === 'number' && bar){ bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
       }else{
         pr?.classList.add('hidden');
-        bAll.disabled = false; bRedo.disabled = false; bPage.disabled = false;
+        if(bAll) bAll.disabled = false; 
+        if(bRedo) bRedo.disabled = false; 
+        if(bPage) bPage.disabled = false;
         if(bar){ bar.style.width = '0%'; }
       }
     }
@@ -438,6 +443,11 @@
       }
       if (!storySoFar) storySoFar = '(No previous narration)';
 
+      // Create modal container
+      const modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(5px)';
+      document.body.appendChild(modal);
+
       // Generate Panels HTML
       let panelsHtml = '';
       if (pg.panels && pg.panels.length > 0) {
@@ -446,7 +456,10 @@
            panelsHtml += `
              <div style="flex:0 0 auto;width:200px;">
                <img src="${p.image}?t=${Date.now()}" style="width:100%;height:auto;border-radius:4px;border:1px solid #334155;display:block">
-               <div style="font-size:12px;color:#94a3b8;text-align:center;margin-top:4px;background:#1e293b;padding:2px;border-radius:4px">Panel ${p.panel_index}</div>
+               <div style="display:flex;gap:4px;margin-top:4px">
+                  <div style="flex:1;font-size:12px;color:#94a3b8;text-align:center;background:#1e293b;padding:4px;border-radius:4px">Panel ${p.panel_index}</div>
+                  <button class="btn secondary copy-single-img-btn" data-src="${p.image}" style="padding:2px 8px;font-size:11px">Copy</button>
+               </div>
              </div>
            `;
         });
@@ -455,43 +468,54 @@
         panelsHtml = '<p style="color:#94a3b8;font-style:italic">No panels found for this page.</p>';
       }
       
-      // Create a modal/dialog for blocked content
-      const modal = document.createElement('div');
-      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px';
+      const isManualMode = blockReason === 'MANUAL_MODE';
+      const titleColor = isManualMode ? '#10b981' : '#ef4444';
+      const titleText = isManualMode ? 'Manual Narration Generation (Web UI)' : `⚠️ Content Blocked for Page ${pageNumber}`;
+      const introText = isManualMode 
+          ? 'Use this mode to generate narration using the Gemini Web UI (or any other tool) to bypass API limits.' 
+          : message;
+
       modal.innerHTML = `
         <div class="card" style="max-width:1000px;width:100%;max-height:95vh;overflow:hidden;display:flex;flex-direction:column">
           <div class="card-pad" style="overflow-y:auto;flex:1">
-            <h2 style="color:#ef4444;margin-bottom:16px">⚠️ Content Blocked for Page ${pageNumber}</h2>
-            <p style="margin-bottom:16px;color:#94a3b8">${message}</p>
+            <h2 style="color:${titleColor};margin-bottom:16px">${titleText}</h2>
+            <p style="margin-bottom:16px;color:#94a3b8">${introText}</p>
             
-            <div style="display:grid;grid-template-columns: 1fr 1fr;gap:20px;margin-bottom:20px">
-                <div>
-                    <strong style="display:block;margin-bottom:8px">Story So Far:</strong>
-                    <textarea readonly class="textarea" style="height:150px;font-size:12px;background:#0b1220;color:#cbd5e1">${storySoFar}</textarea>
-                </div>
-                 <div>
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                        <strong>System Prompt:</strong>
-                        <button id="copyPromptBtn" class="btn secondary" style="padding:2px 8px;font-size:11px">Copy</button>
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;margin-bottom:20px">
+                <div style="font-weight:700;color:#cbd5e1;margin-bottom:12px">Step 1: Copy Context & Prompt</div>
+                <div style="display:grid;grid-template-columns: 1fr 1fr;gap:20px;">
+                    <div>
+                        <strong style="display:block;margin-bottom:8px;font-size:12px">Story So Far (Context):</strong>
+                        <textarea readonly class="textarea" style="height:100px;font-size:11px;background:#0b1220;color:#cbd5e1">${storySoFar}</textarea>
                     </div>
-                    <textarea readonly class="textarea" style="height:150px;font-family:monospace;font-size:12px;background:#0b1220;color:#cbd5e1">${prompt}</textarea>
+                     <div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                            <strong style="font-size:12px">Prompt to Copy:</strong>
+                            <button id="copyPromptBtn" class="btn primary" style="padding:2px 12px;font-size:11px">📋 Copy Full Prompt</button>
+                        </div>
+                        <textarea readonly class="textarea" style="height:100px;font-family:monospace;font-size:11px;background:#0b1220;color:#cbd5e1">${prompt}</textarea>
+                    </div>
                 </div>
             </div>
 
-            <div style="margin-bottom:20px">
-                <strong style="display:block;margin-bottom:8px">Current Panels:</strong>
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;margin-bottom:20px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <div style="font-weight:700;color:#cbd5e1">Step 2: Copy Images</div>
+                </div>
+                <p style="font-size:12px;color:#94a3b8;margin-bottom:12px">Copy each image and paste into Gemini.</p>
                 ${panelsHtml}
             </div>
             
-            <div style="margin-bottom:16px;background:#1e293b;padding:16px;border-radius:8px">
-              <strong style="display:block;margin-bottom:8px;color:#fff">Manual Narration Entry:</strong>
-              <p style="color:#94a3b8;margin:4px 0 12px 0;font-size:14px">Paste JSON format from AI or enter line-by-line. <strong>Panel count: ${panelCount}</strong></p>
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;margin-bottom:16px">
+              <div style="font-weight:700;color:#cbd5e1;margin-bottom:12px">Step 3: Paste Result</div>
+              <strong style="display:block;margin-bottom:8px;color:#fff;font-size:12px">Manual Narration Entry:</strong>
+              <p style="color:#94a3b8;margin:4px 0 12px 0;font-size:12px">Paste JSON format from AI or enter line-by-line. <strong>Panel count: ${panelCount}</strong></p>
               <div style="margin-bottom:12px">
-                <label style="display:inline-flex;align-items:center;gap:8px;color:#cbd5e1;font-size:14px;margin-right:16px">
+                <label style="display:inline-flex;align-items:center;gap:8px;color:#cbd5e1;font-size:13px;margin-right:16px">
                   <input type="radio" name="narrationFormat" value="json" checked style="margin:0">
                   JSON Format
                 </label>
-                <label style="display:inline-flex;align-items:center;gap:8px;color:#cbd5e1;font-size:14px">
+                <label style="display:inline-flex;align-items:center;gap:8px;color:#cbd5e1;font-size:13px">
                   <input type="radio" name="narrationFormat" value="lines" style="margin:0">
                   Line-by-line
                 </label>
@@ -508,12 +532,12 @@
 
 OR Line-by-line (auto-numbered 1, 2, 3...):
 Panel 1 narration
-Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;background:#0f172a;border:1px solid #334155"></textarea>
+Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;background:#0b1220;border:1px solid #334155"></textarea>
             </div>
             
             <div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px">
               <button id="cancelBlockedBtn" class="btn secondary">Cancel</button>
-              <button id="saveManualNarrationBtn" class="btn primary">Save Manual Narration</button>
+              <button id="saveManualNarrationBtn" class="btn primary">Save Narration</button>
             </div>
           </div>
         </div>
@@ -521,43 +545,91 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
       
       document.body.appendChild(modal);
       
-      // Copy prompt button
       modal.querySelector('#copyPromptBtn').addEventListener('click', () => {
         navigator.clipboard.writeText(prompt).then(() => {
-          alert('Prompt copied to clipboard!');
+          const btn = modal.querySelector('#copyPromptBtn');
+          const original = btn.textContent;
+          btn.textContent = '✅ Copied!';
+          setTimeout(() => btn.textContent = original, 2000);
         }).catch(err => {
           console.error('Failed to copy:', err);
           alert('Failed to copy prompt');
         });
       });
-      
-      // Cancel button
+
+      // Copy single image buttons
+      // Use standard Promise based image loading + canvas
+      modal.querySelectorAll('.copy-single-img-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+             const originalText = btn.textContent;
+             const src = btn.getAttribute('data-src');
+             btn.disabled = true;
+             btn.textContent = '...';
+             try {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.src = src;
+                await new Promise((resolve, reject) => { 
+                    img.onload = resolve; 
+                    img.onerror = reject;
+                });
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                
+                canvas.toBlob(async (blob) => {
+                    if(!blob) {
+                        alert('Failed to create image blob');
+                        btn.disabled = false;
+                        btn.textContent = originalText;
+                        return;
+                    }
+                    try {
+                        const item = new ClipboardItem({ 'image/png': blob });
+                        await navigator.clipboard.write([item]);
+                        btn.textContent = 'Copied!';
+                        setTimeout(() => {
+                            btn.disabled = false;
+                            btn.textContent = originalText;
+                        }, 1500);
+                    } catch(err2) {
+                        console.error('Clipboard write failed:', err2);
+                        alert('Clipboard write failed: ' + err2.message);
+                        btn.disabled = false;
+                        btn.textContent = originalText;
+                    }
+                }, 'image/png');
+                
+             } catch(e) {
+                console.error('Copy failed:', e);
+                alert('Copy failed: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = originalText;
+             }
+        });
+      });
+
       modal.querySelector('#cancelBlockedBtn').addEventListener('click', () => {
         document.body.removeChild(modal);
       });
-      
-      // Save manual narration button
+
       modal.querySelector('#saveManualNarrationBtn').addEventListener('click', async () => {
-        const manualText = modal.querySelector('#manualNarrationInput').value.trim();
+        const input = modal.querySelector('#manualNarrationInput');
+        const manualText = input.value.trim();
         if (!manualText) {
-          alert('Please enter narration text');
+          alert('Please enter narration text or JSON.');
           return;
         }
-        
-        const pg = pages[pageIdx];
-        const panelCount = (pg.panels || []).length;
+
+        const format = modal.querySelector('input[name="narrationFormat"]:checked').value;
         let panelsData = [];
         
-        // Check which format is selected
-        const formatRadio = modal.querySelector('input[name="narrationFormat"]:checked');
-        const format = formatRadio ? formatRadio.value : 'json';
-        
         if (format === 'json') {
-          // Try to parse as JSON first
           try {
             const parsed = JSON.parse(manualText);
-            
-            // Check if it has the expected structure
             if (parsed.panels && Array.isArray(parsed.panels)) {
               panelsData = parsed.panels.map(p => ({
                 panel_index: parseInt(p.panel_index) || 0,
@@ -567,11 +639,10 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
               throw new Error('JSON must have a "panels" array');
             }
           } catch (e) {
-            alert('Invalid JSON format. Please check the structure:\n{\n  "panels": [\n    {"panel_index": 1, "text": "..."},\n    {"panel_index": 2, "text": "..."}\n  ]\n}\n\nError: ' + e.message);
+            alert('Invalid JSON format. Please check the structure.\nError: ' + e.message);
             return;
           }
         } else {
-          // Line-by-line format
           const lines = manualText.split('\n').filter(l => l.trim());
           for (let i = 0; i < Math.min(lines.length, panelCount); i++) {
             panelsData.push({
@@ -586,7 +657,6 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
           return;
         }
         
-        // Validate panel indices
         const maxIndex = Math.max(...panelsData.map(p => p.panel_index));
         if (maxIndex > panelCount) {
           if (!confirm(`Warning: You have panel_index ${maxIndex} but only ${panelCount} panels exist. Continue anyway?`)) {
@@ -594,7 +664,6 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
           }
         }
         
-        // Save to backend
         try {
           const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${pageNumber}/manual`, {
             method: 'POST',
@@ -602,13 +671,19 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
             body: JSON.stringify({ panels: panelsData })
           });
           
-          if (!resp.ok) {
-            throw new Error('Failed to save manual narration');
-          }
+          if (!resp.ok) throw new Error('Failed to save manual narration');
           
           document.body.removeChild(modal);
           await fetchSummary();
-          alert(`Manual narration saved for page ${pageNumber}! (${panelsData.length} panels updated)`);
+          
+          // Auto-advance
+          const nextPageIndex = currentPageIndex + 1;
+          if (nextPageIndex < pages.length) {
+             await narrateSinglePage(nextPageIndex);
+          } else {
+             alert(`All pages completed!`);
+          }
+          
         } catch (err) {
           console.error(err);
           alert('Failed to save manual narration: ' + err.message);

@@ -1608,7 +1608,7 @@ async def api_migrate_effects_to_zoom_in():
 @router.post("/api/project/{project_id:path}/settings/provider")
 async def api_set_project_provider(project_id: str, payload: Dict[str, str]):
     provider = payload.get("provider", "gemini").lower()
-    if provider not in ("gemini", "groq"):
+    if provider not in ("gemini", "groq", "azure", "manual_web"):
         raise HTTPException(status_code=400, detail="Invalid provider")
         
     EditorDB.conn().execute(
@@ -2553,7 +2553,38 @@ async def api_narrate_single_page(project_id: str, page_number: int, payload: Di
         provider = str(project.get("narration_provider") or "gemini")
         txt = ""
 
-        if provider == "groq":
+        if provider == "manual_web":
+            # Just generate the prompt and "block" it so the UI shows the manual entry modal
+            sys_instructions = (
+                "You are a manga narration assistant. For the given page, write a cohesive, flowing micro‑narrative that spans the panels in order. "
+                "Produce one vivid, short sentence per panel, but ensure each sentence connects naturally to the next so it reads like a continuous story, not a list. "
+                "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
+                "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
+                "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
+                "CRITICAL: Keep narration EXTREMELY CONCISE. Maximum 50 words (approx 300 characters) per panel. "
+                "OUTPUT FORMAT: STRICT VALID JSON ONLY. No markdown. No formatting. "
+                "Structure: {\"panels\": [{\"panel_index\": 1, \"text\": \"...\"}]}"
+            )
+            if context_txt:
+                sys_instructions += "\nContext so far (previous pages):\n" + context_txt
+            if char_md:
+                sys_instructions += (
+                    "\nKnown characters (markdown) — use names sparingly for smooth narration; after the first mention, prefer pronouns or first names only (avoid surnames):\n"
+                    + char_md
+                )
+            
+            # Raise "blocked" error to trigger UI
+            raise HTTPException(
+                status_code=400, 
+                detail={
+                    "error": "blocked", 
+                    "block_reason": "MANUAL_MODE", 
+                    "message": "Manual Web UI Mode: Copy prompt and images to Gemini/ChatGPT",
+                    "prompt": sys_instructions
+                }
+            )
+
+        elif provider == "groq":
              # Groq model restriction: max 5 images
              if len(imgs) > 5:
                  logger.warning(f"Page {page_number} has {len(imgs)} panels. Groq supports max 5. Truncating to first 5.")
