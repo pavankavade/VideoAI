@@ -22,4 +22,6 @@ accelerate
 einops
 timm>=0.9.16
 pytorch_metric_learning
-shapelygroq
+shapely
+groq
+openai

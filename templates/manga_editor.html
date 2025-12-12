@@ -72,6 +72,14 @@
               <div style="font-weight:700">Narration</div>
               <div class="status">Generate a sentence per panel, sequentially by page.</div>
             </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:12px;color:#94a3b8">Provider:</span>
+              <select id="narratorProvider" class="select" style="padding:4px 8px;font-size:12px;width:auto">
+                  <option value="gemini" {% if project.narration_provider == 'gemini' %}selected{% endif %}>Gemini</option>
+                  <option value="groq" {% if project.narration_provider == 'groq' %}selected{% endif %}>Groq</option>
+                  <option value="azure" {% if project.narration_provider == 'azure' %}selected{% endif %}>Azure OpenAI</option>
+              </select>
+            </div>
             <div class="row">
               <button id="btnNarrateSequential" class="btn">Create Narration (All)</button>
               <button id="btnContinueNarration" class="btn" style="background:#10b981">Continue Narration</button>
@@ -250,13 +258,14 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
             <h4>Page ${pg.page_number}</h4>
             <div class="row">
+              <button class="btn secondary" data-redo="${i}" title="Retry narration for this page">Retry</button>
               <button class="btn secondary" data-go="${i}">Go</button>
             </div>
           </div>
           <div class="panels">
             ${(pg.panels||[]).map(p => `
               <div class="panel">
-                ${p.image ? `<img src="${p.image}" alt="panel"/>` : `<div style='height:140px;display:flex;align-items:center;justify-content:center;color:#94a3b8'>No image</div>`}
+                ${p.image ? `<img src="${p.image}?t=${Date.now()}" alt="panel"/>` : `<div style='height:140px;display:flex;align-items:center;justify-content:center;color:#94a3b8'>No image</div>`}
                 <div class="meta">#${p.index} ${p.text ? ('– ' + p.text) : ''}</div>
               </div>
             `).join('')}
@@ -269,6 +278,20 @@
         btn.addEventListener('click', ()=>{
           currentPageIndex = parseInt(btn.getAttribute('data-go'))||0;
           document.getElementById('btnNarratePage').scrollIntoView({behavior:'smooth', block:'center'});
+        });
+      });
+      
+      root.querySelectorAll('button[data-redo]').forEach(btn=>{
+        btn.addEventListener('click', async (e)=>{
+          const idx = parseInt(btn.getAttribute('data-redo'))||0;
+          // No confirmation needed per user request
+          
+          btn.disabled = true;
+          const origText = btn.textContent;
+          btn.textContent = '...';
+          await narrateSinglePage(idx);
+          btn.disabled = false;
+          btn.textContent = origText;
         });
       });
     }
@@ -422,7 +445,7 @@
         pg.panels.forEach(p => {
            panelsHtml += `
              <div style="flex:0 0 auto;width:200px;">
-               <img src="${p.image}" style="width:100%;height:auto;border-radius:4px;border:1px solid #334155;display:block">
+               <img src="${p.image}?t=${Date.now()}" style="width:100%;height:auto;border-radius:4px;border:1px solid #334155;display:block">
                <div style="font-size:12px;color:#94a3b8;text-align:center;margin-top:4px;background:#1e293b;padding:2px;border-radius:4px">Panel ${p.panel_index}</div>
              </div>
            `;
@@ -616,17 +639,28 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
       narrateAll(true, false);
     });
 
-    document.getElementById('btnNarratePage').addEventListener('click', async ()=>{
-      if(!pages.length){ alert('No pages loaded'); return; }
-      const pg = pages[currentPageIndex] || pages[0];
+    async function narrateSinglePage(idx) {
+      if(!pages.length || !pages[idx]){ alert('Page not found'); return; }
+      const pg = pages[idx];
       const characterList = document.getElementById('characterMd').value || '';
+      
+      // Build context from previous pages
+      let context = '';
+      for(let i=0; i<idx; i++){
+        const prevPg = pages[i];
+        if(prevPg.panels && prevPg.panels.length > 0){
+             const ctxSeg = prevPg.panels.map(it => `[${it.panel_index}] ${it.text||''}`.trim()).join('; ');
+             context += `\nPage ${prevPg.page_number}: ${ctxSeg}`;
+        }
+      }
+
       setNarrationBusy(true, `Generating narration for page ${pg.page_number}…`, 0);
       
       try {
         const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${encodeURIComponent(pg.page_number)}`, { 
           method:'POST', 
           headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, 
-          body: JSON.stringify({ characterList }) 
+          body: JSON.stringify({ characterList, context }) 
         });
         
         if(!r.ok){ 
@@ -647,6 +681,11 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
         setNarrationBusy(false);
         alert('Narration failed: ' + (e.message || 'Unknown error'));
       }
+    }
+
+    document.getElementById('btnNarratePage').addEventListener('click', async ()=>{
+      if(!pages.length){ alert('No pages loaded'); return; }
+      await narrateSinglePage(currentPageIndex);
     });
 
     document.getElementById('btnSaveCharacters').addEventListener('click', async ()=>{
@@ -751,6 +790,31 @@ Panel 2 narration' style="min-height:200px;font-family:monospace;font-size:14px;
     });
 
     fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
+
+    fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
+    
+    // Provider Switcher Logic
+    const narratorProviderSelect = document.getElementById('narratorProvider');
+    if (narratorProviderSelect) {
+        narratorProviderSelect.addEventListener('change', async (e) => {
+            const newProvider = e.target.value;
+            try {
+                const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/settings/provider`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true'},
+                    body: JSON.stringify({ provider: newProvider })
+                });
+                if (!r.ok) { throw new Error('Failed to update provider'); }
+                // Optional: flash success
+                console.log('Provider switched to', newProvider);
+            } catch (err) {
+                console.error(err);
+                alert('Failed to switch provider: ' + err.message);
+                // Revert
+                // window.location.reload(); 
+            }
+        });
+    }
 
     // Check for manual entry request from dashboard
     window.addEventListener('DOMContentLoaded', async () => {

@@ -150,6 +150,13 @@ async function renderSeriesCard(series) {
           <button class="btn" onclick="event.stopPropagation();generateAllNarrations('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#f59e0b;border-color:#f59e0b;min-width:auto" title="Generate narrations for all chapters (auto-updates character list & summary)">
             <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
           </button>
+          <div style="display:flex;align-items:center;padding:0 4px;margin-right:2px">
+            <select id="series-provider-${series.id}" onclick="event.stopPropagation()" style="background:rgba(11,23,45,0.6);color:#cbd5e1;border:1px solid rgba(51,65,85,0.8);border-radius:8px;font-size:12px;padding:6px;max-width:80px;cursor:pointer">
+              <option value="gemini">Gemini</option>
+              <option value="groq">Groq</option>
+              <option value="azure">Azure</option>
+            </select>
+          </div>
           <button class="btn" onclick="event.stopPropagation();synthesizeSeries('${series.id}', '${series.name}', this)" style="padding:10px 12px;background:#22c55e;border-color:#22c55e;min-width:auto" title="Synthesize audio for all chapters in this series">
             <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>
           </button>
@@ -370,7 +377,11 @@ function bindCreateStandaloneProject() {
     const r = await fetch('/editor/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, files: filenames })
+      body: JSON.stringify({
+        title,
+        files: filenames,
+        narration_provider: document.getElementById('cpProvider').value
+      })
     });
     if (!r.ok) { alert('Create failed'); return; }
 
@@ -453,7 +464,12 @@ function bindAddChapter() {
     const r = await fetch(`/editor/api/manga/series/${currentSeriesId}/chapters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chapter_number: chapterNum, title, files: filenames })
+      body: JSON.stringify({
+        chapter_number: chapterNum,
+        title,
+        files: filenames,
+        narration_provider: document.getElementById('chapterProvider').value
+      })
     });
     if (!r.ok) {
       const err = await r.text();
@@ -1138,7 +1154,11 @@ async function generateAllNarrations(seriesId, seriesName, buttonElement) {
   const skipErrorCheckbox = document.getElementById(`skip-error-${seriesId}`);
   const skipError = skipErrorCheckbox ? skipErrorCheckbox.checked : true;
 
-  console.log(`Generate All Narrations - Override: ${override}, Skip Error: ${skipError}`);
+  // Check provider selection
+  const providerSelect = document.getElementById(`series-provider-${seriesId}`);
+  const provider = providerSelect ? providerSelect.value : "gemini";
+
+  console.log(`Generate All Narrations - Override: ${override}, Skip Error: ${skipError}, Provider: ${provider}`);
 
   // First, get the narration status to show preview
   let needNarrations = [];
@@ -1254,7 +1274,7 @@ async function generateAllNarrations(seriesId, seriesName, buttonElement) {
           'Content-Type': 'application/json',
           'ngrok-skip-browser-warning': 'true'
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({ narration_provider: provider })
       });
 
       if (!response.ok) {

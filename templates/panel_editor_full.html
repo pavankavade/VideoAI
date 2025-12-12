@@ -41,6 +41,7 @@
               <button id="nextPage" class="btn secondary">Next</button>
             </div>
             <div class="row">
+              <button id="createPanelsBtn" class="btn secondary" style="margin-right:8px">Create Panels</button>
               <a id="backToEditor" class="btn secondary">Back</a>
               <a id="openVideoEditor" class="btn">Open Video Editor</a>
             </div>
@@ -192,7 +193,7 @@
         const card = document.createElement('div');
         card.className = 'card overflow-hidden';
         card.innerHTML = `
-          ${p.image?`<img class="w-full h-[220px] object-cover" src="${p.image}" alt="panel">`:`<div class='h-[220px] flex items-center justify-center text-slate-400'>No image</div>`}
+          ${p.image?`<img class="w-full h-[220px] object-cover" src="${p.image}?t=${Date.now()}" alt="panel">`:`<div class='h-[220px] flex items-center justify-center text-slate-400'>No image</div>`}
           <div class="p-3">
             <div class="flex items-center justify-between mb-2">
               <div class="font-bold">Panel #${p.index}</div>
@@ -362,6 +363,40 @@
     });
     document.getElementById('openVideoEditor').addEventListener('click', ()=>{
       window.location.href = `/editor/video-editor/${encodeURIComponent(project.id)}`;
+    });
+
+    // Create Panels for current page
+    document.getElementById('createPanelsBtn').addEventListener('click', async (e)=>{
+        const btn = e.currentTarget;
+        const pg = pages[currentIndex];
+        if(!pg) return;
+        
+        if(!confirm(`Re-create panels for Page ${pg.page_number}? This will OVERWRITE existing panels and any narration/audio.`)) return;
+        
+        const orig = btn.textContent;
+        btn.textContent = 'Creating...';
+        btn.disabled = true;
+        
+        try{
+            const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/panels/create/page/${encodeURIComponent(pg.page_number)}`, {
+                method: 'POST',
+                headers: {'ngrok-skip-browser-warning':'true'}
+            });
+            if(r.ok){
+                const data = await r.json();
+                alert(`Created ${data.created || 0} panels.`);
+                await fetchSummary(); // Refresh UI
+            }else{
+                console.error(r);
+                alert('Failed to create panels');
+            }
+        }catch(err){
+            console.error(err);
+            alert('Error creating panels: ' + err.message);
+        }finally{
+            btn.textContent = orig;
+            btn.disabled = false;
+        }
     });
     
     // Delete selected pages
