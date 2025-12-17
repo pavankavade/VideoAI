@@ -6,6 +6,13 @@ import sqlite3
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+import math
+import shutil
+import base64
+import asyncio # Added for async operations
+import tempfile # Added for _number_images
+from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
 
 import requests
 import httpx
@@ -32,6 +39,11 @@ except ImportError as e:
     logging.warning(f"Failed to import AzureOpenAI: {e}")
     AzureOpenAI = None
 
+try:
+    from gemini_automator import GeminiAutomator # Import our new automatorTuple
+except ImportError:
+    GeminiAutomator = None
+
 
 # Paths and templates
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +61,58 @@ TTS_API_URL = os.environ.get("TTS_API_URL", "").strip()
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/editor", tags=["manga-editor"])
 logger = logging.getLogger("mangaeditor")
+
+
+# --- Global Helper for Numbering Images ---
+def _number_images(paths: List[str]) -> List[str]:
+    temp_paths = []
+    tmp_dir = os.path.join(tempfile.gettempdir(), "videoai_numbered")
+    os.makedirs(tmp_dir, exist_ok=True)
+    
+    for idx, p in enumerate(paths, start=1):
+        try:
+            # Resolve path logic
+            real_path = p
+            if p.startswith("/manga_projects/"):
+                 real_path = os.path.join(BASE_DIR, p.lstrip("/"))
+            elif p.startswith("manga_projects/"):
+                 real_path = os.path.join(BASE_DIR, p)
+            elif p.startswith("/uploads/"):
+                 real_path = os.path.join(BASE_DIR, p.lstrip("/"))
+            elif p.startswith("uploads/"):
+                 real_path = os.path.join(BASE_DIR, p)
+            elif not os.path.isabs(p):
+                 real_path = os.path.join(BASE_DIR, p)
+            
+            # Fallback if file doesn't exist at resolved path but exists at original
+            if not os.path.exists(real_path) and os.path.exists(p):
+                real_path = p
+
+            with Image.open(real_path) as img:
+                img = img.convert("RGBA")
+                d = ImageDraw.Draw(img)
+                
+                # Draw a big number
+                text = str(idx)
+                try:
+                    font = ImageFont.truetype("arial.ttf", 60)
+                except Exception:
+                    font = ImageFont.load_default()
+                
+                # Corner radius background
+                x, y = 10, 10
+                bbox = d.textbbox((x, y), text, font=font)
+                d.rectangle((bbox[0]-5, bbox[1]-5, bbox[2]+5, bbox[3]+5), fill="red", outline="white", width=2)
+                d.text((x, y), text, fill="white", font=font)
+                
+                dst = os.path.join(tmp_dir, f"temp_{os.path.basename(real_path)}")
+                img.save(dst, format="PNG")
+                temp_paths.append(dst)
+        except Exception as e:
+            logger.error(f"Failed to number image {p}: {e}")
+            temp_paths.append(p) # Fallback to original
+    return temp_paths
+# ------------------------------------------
 
 
 # ---------------------------- SQLite helpers ----------------------------
@@ -334,7 +398,7 @@ class EditorDB:
         mangadex_chapter_url: Optional[str] = None,
         chapter_pages_count: int = 0,
         has_images: int = 0,
-        narration_provider: str = "gemini", 
+        narration_provider: str = "manual_web", 
     ) -> Dict[str, Any]:
         # Support both old and new signatures
         if title and not name:
@@ -439,6 +503,12 @@ class EditorDB:
         agg_rows = conn.execute(agg_sql, project_ids).fetchall() if project_ids else []
         distinct_map = {r[0]: int(r[1]) for r in agg_rows}
 
+        # Checks for has_narration
+        # We can check if ANY panel has narration for these projects
+        narr_sql = f"SELECT project_id, COUNT(*) FROM panel_narrations WHERE project_id IN ({placeholders}) GROUP BY project_id"
+        narr_rows = conn.execute(narr_sql, project_ids).fetchall() if project_ids else []
+        narr_map = {r[0]: int(r[1]) for r in narr_rows}
+
         out: List[Dict[str, Any]] = []
         for r in rows:
             pid = r[0]
@@ -450,6 +520,7 @@ class EditorDB:
 
             distinct_pages = distinct_map.get(pid, 0)
             all_panels_ready = (page_count > 0) and (distinct_pages >= page_count)
+            has_narration = narr_map.get(pid, 0) > 0 # True if any panel has narration
 
             # Parse metadata JSON to expose manga_series_id when present
             try:
@@ -466,6 +537,7 @@ class EditorDB:
                 "pageCount": int(page_count),
                 "has_images": bool(r[6]),
                 "allPanelsReady": bool(all_panels_ready),
+                "has_narration": bool(has_narration),
                 "manga_series_id": series_id,
             })
 
@@ -631,12 +703,31 @@ class EditorDB:
         return out
 
     @classmethod
+    def get_series_projects(cls, series_id: str) -> List[Dict[str, Any]]:
+        """Get all projects for a series, sorted by chapter number"""
+        rows = cls.conn().execute(
+            "SELECT id, title, chapter_number, pages_json FROM project_details WHERE manga_series_id=? ORDER BY chapter_number ASC",
+            (series_id,)
+        ).fetchall()
+        
+        out = []
+        for r in rows:
+            out.append({
+                "id": r[0],
+                "title": r[1],
+                "chapter_number": r[2],
+                # Parse pages to check if empty/needs timeline
+                "pages_json": r[3]
+            })
+        return out
+
+    @classmethod
     def all_pages_have_panels(cls, project_id: str) -> bool:
         """Return True if every page listed for the project has at least one panel recorded in the panels table.
 
         This is implemented with a small SQL query that counts distinct page_number entries in `panels`
         for the project and compares against the number of pages in the project's pages_json. This
-        avoids loading full panel rows (and any heavy processing) when callers only need a yes/no
+        avoid`s loading full panel rows (and any heavy processing) when callers only need a yes/no
         about whether panels exist for all pages.
         """
         try:
@@ -681,6 +772,19 @@ class EditorDB:
             (text, 1 if is_manual else 0, datetime.now().isoformat(), project_id, page_number, panel_index)
         )
         conn.commit()
+
+    @classmethod
+    def save_manual_narration(cls, project_id: str, page_number: int, panels_data: List[Dict[str, Any]]) -> None:
+        """
+        Saves manually provided narrations for a page.
+        panels_data is a list of dicts, each with 'panel_index' and 'text'.
+        """
+        for panel_item in panels_data:
+            panel_index = panel_item.get("panel_index")
+            text = panel_item.get("text", "").strip()
+            
+            if panel_index is not None:
+                cls.upsert_panel_narration(project_id, page_number, int(panel_index), text, is_manual=True)
 
     @classmethod
     def set_character_list(cls, project_id: str, markdown: str) -> None:
@@ -1381,7 +1485,7 @@ def _force_truncate(data: Dict) -> Dict:
 def _build_page_prompt(page_number: int, panel_images: List[bytes], accumulated_context: str, user_characters: str) -> List[Any]:
     sys_instructions = (
         "You are a manga narration assistant. For the given page, write a cohesive, flowing micro‑narrative that spans the panels in order. "
-        "Produce one vivid, short sentence per panel, but ensure each sentence connects naturally to the next so it reads like a continuous story, not a list. "
+        "Produce one vivid, short sentence per panel. Each sentence must briefly capture the visual action or key detail of that specific panel to ground the viewer, while seamlessly connecting to the next to maintain a continuous narrative flow. "
         "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
         "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
         "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
@@ -1608,7 +1712,7 @@ async def api_migrate_effects_to_zoom_in():
 @router.post("/api/project/{project_id:path}/settings/provider")
 async def api_set_project_provider(project_id: str, payload: Dict[str, str]):
     provider = payload.get("provider", "gemini").lower()
-    if provider not in ("gemini", "groq", "azure", "manual_web"):
+    if provider not in ("gemini", "groq", "azure", "manual_web", "auto_web"):
         raise HTTPException(status_code=400, detail="Invalid provider")
         
     EditorDB.conn().execute(
@@ -2131,271 +2235,356 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
     accumulated_text = previous_context
     results: List[Dict[str, Any]] = []
 
-    for pg in pages:
-        pn = int(pg.get("page_number") or 0)
-        if pn < start_page or pn > end_page:
-            continue
-        panels = EditorDB.get_panels_for_page(project_id, pn)
-        # Load images for this page's panels in their order
-        imgs: List[bytes] = []
-        for p in panels:
-            img_url = extract_panel_image(p)
-            if not img_url:
+    first_page_processed = False # Track if we are on the first processed page to force new tab
+
+    from gemini_automator import GeminiAutomator
+    # Use context manager for session
+    # We must run the SYNC automator in a separate thread to avoid blocking the async loop.
+    # Crucially, we must use the SAME thread for all Playwright calls in this session.
+    # Therefore, we use a single-worker ThreadPoolExecutor.
+    from concurrent.futures import ThreadPoolExecutor
+    
+    automator = GeminiAutomator() 
+    automator_instance = automator
+    executor = ThreadPoolExecutor(max_workers=1)
+    
+    # Helper to run blocking automator methods in our dedicated thread
+    async def run_sync(func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
+
+    try:
+        # Start session in the thread
+        await run_sync(automator.start_session, new_tab=True)
+    except Exception as e:
+        logger.error(f"Failed to start Gemini session: {e}")
+        executor.shutdown(wait=False)
+        raise HTTPException(status_code=500, detail=f"Failed to start automation session: {e}")
+
+    try:
+        for pg in pages:
+            pn = int(pg.get("page_number") or 0)
+            if pn < start_page or pn > end_page:
                 continue
-            b = await _load_image_bytes(img_url)
+            panels = EditorDB.get_panels_for_page(project_id, pn)
+            # Load images
+            imgs: List[bytes] = []
+            for p in panels:
+                img_url = extract_panel_image(p)
+                if not img_url:
+                    continue
+                b = await _load_image_bytes(img_url)
             if b:
                 imgs.append(b)
 
-        if not imgs:
-            # skip pages with no panels
-            continue
-
-        if not imgs:
-            # skip pages with no panels
-            continue
-
-        # Determine provider
-        provider_override = str(payload.get("narration_provider") or "").strip()
-        if provider_override:
-             EditorDB.set_project_provider(project_id, provider_override)
-             provider = provider_override
-             project["narration_provider"] = provider_override # Update local dict
-        else:
-             provider = str(project.get("narration_provider") or "gemini")
-        
-        # --- GROQ ---
-        if provider == "groq":
-            # Groq model restriction: max 5 images
-            if len(imgs) > 5:
-                logger.warning(f"Page {pg.get('page_number')} has {len(imgs)} panels. Groq limit 5. Truncating.")
-                imgs = imgs[:5]
-            
-            client = _groq_client()
-            if not client:
-                logging.error("Groq client init failed")
+            if not imgs:
                 continue
 
-            messages = _build_page_prompt_groq(pn, imgs, accumulated_text, char_md, third_person=True)
-            data = None
-            last_error = None
+            data = None 
+            txt = "" 
+
+            provider_override = str(payload.get("narration_provider") or "").strip()
+            if provider_override:
+                 EditorDB.set_project_provider(project_id, provider_override)
+                 provider = provider_override
+                 project["narration_provider"] = provider_override 
+            else:
+                 provider = str(project.get("narration_provider") or "gemini")
             
-            for attempt in range(3):
-                try:
-                    completion = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct", # Using vision model
-                        messages=messages,
-                        temperature=0.7,
-                        max_tokens=1024,
-                        response_format={"type": "json_object"}
+            # --- MANUAL WEB (Automation) ---
+            if provider == "manual_web":
+                processed_images = _number_images([p["path"] for p in [{"path": extract_panel_image(p)} for p in panels] if p["path"]])
+                
+                sys_instructions = (
+                    "You are a manga narration assistant. For the given page, write a cohesive, flowing micro‑narrative that spans the panels in order. "
+                    "Produce one vivid, short sentence per panel. Each sentence must briefly capture the visual action or key detail of that specific panel to ground the viewer, while seamlessly connecting to the next to maintain a continuous narrative flow. "
+                    "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
+                    "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
+                    "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
+                    "CRITICAL: Keep narration EXTREMELY CONCISE. Maximum 50 words (approx 300 characters) per panel. "
+                    "OUTPUT FORMAT: STRICT VALID JSON ONLY. No markdown. No formatting. "
+                    f"Structure: {{\"panels\": [{{\"panel_index\": 1, \"text\": \"...\"}} ... up to {len(panels)}]}}"
+                )
+                if accumulated_text:
+                    sys_instructions += "\nContext so far (previous pages):\n" + accumulated_text
+                if char_md:
+                    sys_instructions += (
+                        "\nKnown characters (markdown) — use names sparingly for smooth narration; after the first mention, prefer pronouns or first names only (avoid surnames):\n"
+                        + char_md
                     )
-                    txt = completion.choices[0].message.content or ""
+                
+                try:
+                    # Run content gen in the dedicated thread
+                    resp_text = await run_sync(automator.generate_content, sys_instructions, processed_images, new_tab=False)
+                    txt = resp_text
+                    
+                    first_page_processed = True
+                    
+                    # Parse JSON
+                    try:
+                        import re
+                        json_match = re.search(r"(\{[\s\S]*\})", resp_text)
+                        if json_match:
+                            cleaned_text = json_match.group(1)
+                            data = json.loads(cleaned_text)
+                        else:
+                            cleaned_text = resp_text.strip()
+                            if cleaned_text.startswith("JSON"):
+                                 cleaned_text = cleaned_text[4:].strip()
+                            data = json.loads(cleaned_text)
+                    except Exception as e:
+                        logger.error(f"Failed to parse Manual Web JSON: {e} | Text: {resp_text[:100]}...")
+                        pass
+
+                except Exception as e:
+                    logger.error(f"Manual Web Automation Error on page {pn}: {e}")
+            
+            # --- GROQ ---
+            elif provider == "groq":
+                # Groq model restriction: max 5 images
+                if len(imgs) > 5:
+                    logger.warning(f"Page {pg.get('page_number')} has {len(imgs)} panels. Groq limit 5. Truncating.")
+                    imgs = imgs[:5]
+                
+                client = _groq_client()
+                if not client:
+                    logging.error("Groq client init failed")
+                    continue
+
+                messages = _build_page_prompt_groq(pn, imgs, accumulated_text, char_md, third_person=True)
+                data = None
+                last_error = None
+                
+                for attempt in range(3):
+                    try:
+                        completion = client.chat.completions.create(
+                            model="meta-llama/llama-4-scout-17b-16e-instruct", # Using vision model
+                            messages=messages,
+                            temperature=0.7,
+                            max_tokens=1024,
+                            response_format={"type": "json_object"}
+                        )
+                        txt = completion.choices[0].message.content or ""
+                        try:
+                            extracted = json.loads(txt)
+                            if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                                if _validate_narration_length(extracted):
+                                    data = extracted
+                                    break
+                                else:
+                                    last_error = "Narration too long"
+                                    continue
+                        except json.JSONDecodeError:
+                            # try lenient extraction
+                            extracted = _extract_json(txt)
+                            if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                                if _validate_narration_length(extracted):
+                                    data = extracted
+                                    break
+                                else:
+                                    last_error = "Narration too long"
+                                    continue
+                    except Exception as e:
+                         logger.warning(f"Groq error page {pn} attempt {attempt}: {e}")
+                         last_error = str(e)
+                
+                if not data:
+                    # If we're here, we failed
+                     raise HTTPException(status_code=500, detail=f"Groq failed: {last_error}")
+
+            # --- AZURE ---
+            elif provider == "azure":
+                if len(imgs) > 5:
+                    # Truncate
+                    imgs = imgs[:5]
+
+                client = _azure_client()
+                if not client:
+                    raise HTTPException(status_code=400, detail="Azure OpenAI keys not configured")
+
+                messages = _build_page_prompt_groq(pn, imgs, accumulated_text, char_md)
+                data = None
+                # Azure Sequential Single Attempt
+                try:
+                    # O1 Adaptation: Merge System -> User
+                    raw_msgs = messages
+                    msgs_to_send = []
+                    sys_c = ""
+                    for m in raw_msgs:
+                         if m['role'] == 'system':
+                             sys_c += m['content'] + "\n\n"
+                         else:
+                             if m['role'] == 'user' and sys_c:
+                                 if isinstance(m['content'], str):
+                                     m['content'] = sys_c + m['content']
+                                 elif isinstance(m['content'], list):
+                                     for part in m['content']:
+                                         if part.get('type') == 'text':
+                                             part['text'] = sys_c + part['text']
+                                             break
+                                 sys_c = ""
+                             msgs_to_send.append(m)
+
+                    # DEBUG: Log payload stats
+                    img_sizes = [len(b) for b in imgs]
+                    logger.info(f"Azure Sequential Payload: Page {pn}, {len(msgs_to_send)} messages. Images: {len(imgs)}, Sizes: {img_sizes}")
+
+                    completion = client.chat.completions.create(
+                        model="gpt-5-nano",
+                        messages=msgs_to_send,
+                        max_completion_tokens=25000,
+                        response_format = {"type": "json_object"}
+                    )
+                    # DEBUG LOGGING
+                    choice = completion.choices[0]
+                    logger.info(f"Azure Sequential Raw Output: finish_reason={choice.finish_reason}, content={choice.message.content}")
+
+                    txt = choice.message.content or ""
+                    extracted = None
                     try:
                         extracted = json.loads(txt)
-                        if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
-                            if _validate_narration_length(extracted):
-                                data = extracted
-                                break
-                            else:
-                                last_error = "Narration too long"
-                                continue
                     except json.JSONDecodeError:
-                        # try lenient extraction
                         extracted = _extract_json(txt)
-                        if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
-                            if _validate_narration_length(extracted):
-                                data = extracted
-                                break
-                            else:
-                                last_error = "Narration too long"
-                                continue
-                except Exception as e:
-                     logger.warning(f"Groq error page {pn} attempt {attempt}: {e}")
-                     last_error = str(e)
-            
-            if not data:
-                # If we're here, we failed
-                 raise HTTPException(status_code=500, detail=f"Groq failed: {last_error}")
-
-        # --- AZURE ---
-        elif provider == "azure":
-            if len(imgs) > 5:
-                # Truncate
-                imgs = imgs[:5]
-
-            client = _azure_client()
-            if not client:
-                raise HTTPException(status_code=400, detail="Azure OpenAI keys not configured")
-
-            messages = _build_page_prompt_groq(pn, imgs, accumulated_text, char_md)
-            data = None
-            # Azure Sequential Single Attempt
-            try:
-                # O1 Adaptation: Merge System -> User
-                raw_msgs = messages
-                msgs_to_send = []
-                sys_c = ""
-                for m in raw_msgs:
-                     if m['role'] == 'system':
-                         sys_c += m['content'] + "\n\n"
-                     else:
-                         if m['role'] == 'user' and sys_c:
-                             if isinstance(m['content'], str):
-                                 m['content'] = sys_c + m['content']
-                             elif isinstance(m['content'], list):
-                                 for part in m['content']:
-                                     if part.get('type') == 'text':
-                                         part['text'] = sys_c + part['text']
-                                         break
-                             sys_c = ""
-                         msgs_to_send.append(m)
-
-                # DEBUG: Log payload stats
-                img_sizes = [len(b) for b in imgs]
-                logger.info(f"Azure Sequential Payload: Page {pn}, {len(msgs_to_send)} messages. Images: {len(imgs)}, Sizes: {img_sizes}")
-
-                completion = client.chat.completions.create(
-                    model="gpt-5-nano",
-                    messages=msgs_to_send,
-                    max_completion_tokens=25000,
-                    response_format = {"type": "json_object"}
-                )
-                # DEBUG LOGGING
-                choice = completion.choices[0]
-                logger.info(f"Azure Sequential Raw Output: finish_reason={choice.finish_reason}, content={choice.message.content}")
-
-                txt = choice.message.content or ""
-                extracted = None
-                try:
-                    extracted = json.loads(txt)
-                except json.JSONDecodeError:
-                    extracted = _extract_json(txt)
-                
-                if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
-                    if _validate_narration_length(extracted):
-                        data = extracted
+                    
+                    if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                        if _validate_narration_length(extracted):
+                            data = extracted
+                        else:
+                            logger.warning(f"Azure Sequential: Output too long. Truncating immediately.")
+                            data = _force_truncate(extracted)
                     else:
-                        logger.warning(f"Azure Sequential: Output too long. Truncating immediately.")
-                        data = _force_truncate(extracted)
-                else:
-                    logger.error(f"Azure Sequential: Invalid JSON for page {pn}")
-                    continue
-            except Exception as e:
-                logger.error(f"Global Narration Azure error page {pn}: {e}")
-                continue
-
-        # --- GEMINI ---
-        else:
-            if genai is None:
-                 raise HTTPException(status_code=400, detail="Gemini lib not installed")
-            
-            contents = _build_page_prompt(pn, imgs, accumulated_text, char_md)
-            model = _gemini_client()
-            if not model:
-                 raise HTTPException(status_code=500, detail="Gemini client init failed")
-            
-            data = None
-            last_error = None
-
-            for attempt in range(3):
-                try:
-                     resp = model.generate_content(contents)
-                     txt = resp.text
-                     try:
-                        extracted = json.loads(txt)
-                        if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
-                             # VALIDATE LENGTH
-                            if _validate_narration_length(extracted):
-                                data = extracted
-                                break
-                            else:
-                                last_error = "Narration too long (retry)"
-                                logging.warning(f"Gemini page {pn} attempt {attempt}: {last_error}")
-                                continue
-                     except json.JSONDecodeError:
-                        extracted = _extract_json(txt)
-                        if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
-                             # VALIDATE LENGTH
-                            if _validate_narration_length(extracted):
-                                data = extracted
-                                break
-                            else:
-                                last_error = "Narration too long (retry)"
-                                logging.warning(f"Gemini page {pn} attempt {attempt}: {last_error}")
-                                continue
+                        logger.error(f"Azure Sequential: Invalid JSON for page {pn}")
+                        continue
                 except Exception as e:
-                    logger.warning(f"Gemini error page {pn} attempt {attempt}: {e}")
-                    last_error = str(e)
-            
-            if not data:
-                raise HTTPException(status_code=500, detail=f"Gemini failed: {last_error}")
+                    logger.error(f"Global Narration Azure error page {pn}: {e}")
+                    continue
 
-        # Expect { panels: [ {panel_index, text}, ... ] }
-        if isinstance(data, dict) and isinstance(data.get("panels"), list):
-            # Aggregate/merge texts into valid panel indices only
-            num_panels = len(panels)
-            if num_panels <= 0:
-                continue
-            merged: Dict[int, List[str]] = {i: [] for i in range(1, num_panels + 1)}
-            for item in data["panels"]:
-                try:
-                    idx = int(item.get("panel_index"))
-                except Exception:
-                    idx = 1
-                if idx <= 0:
-                    idx = 1
-                # If model produced more indices than available panels, route extras to panel 1
-                if idx > num_panels:
-                    idx = 1
-                text = str(item.get("text") or "").strip()
-                if text:
-                    merged[idx].append(text)
-            page_out: List[Dict[str, Any]] = []
-            for i in range(1, num_panels + 1):
-                combined = " ".join(merged.get(i) or [])
-                # Only update if we actually have text for this panel in this run
-                if combined:
-                    EditorDB.upsert_panel_narration(project_id, pn, i, combined, is_manual=False)
-                    # Ensure any existing audio URL (if a previous synth created it) remains intact; no change here
-                    page_out.append({"panel_index": i, "text": combined})
-            # Cleanup any legacy rows without images on this page
-            try:
-                EditorDB.conn().execute(
-                    "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
-                    (project_id, pn),
-                )
-                EditorDB.conn().commit()
-            except Exception:
-                pass
-            # Append to accumulated context
-            accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
-            results.append({"page_number": pn, "panels": page_out})
-        else:
-            # Fallback: treat as a single blob, assign in order
-            # Split into sentences roughly equal to panel count
-            text_blob = txt.strip()
-            segs = [s.strip() for s in text_blob.split(".") if s.strip()]
-            page_out = []
-            if len(panels) == 1:
-                # Put all narration into the first panel
-                combined = (". ".join(segs).strip() + ".") if segs else ""
-                EditorDB.upsert_panel_narration(project_id, pn, 1, combined, is_manual=False)
-                page_out.append({"panel_index": 1, "text": combined})
+            # --- GEMINI ---
             else:
-                for idx1 in range(1, len(panels) + 1):
-                    t = (segs[idx1 - 1] + ".") if (idx1 - 1) < len(segs) else ""
-                    EditorDB.upsert_panel_narration(project_id, pn, idx1, t, is_manual=False)
-                    page_out.append({"panel_index": idx1, "text": t})
-            # Cleanup any legacy rows without images on this page
-            try:
-                EditorDB.conn().execute(
-                    "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
-                    (project_id, pn),
-                )
-                EditorDB.conn().commit()
-            except Exception:
-                pass
-            accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
-            results.append({"page_number": pn, "panels": page_out})
+                if genai is None:
+                     raise HTTPException(status_code=400, detail="Gemini lib not installed")
+                
+                contents = _build_page_prompt(pn, imgs, accumulated_text, char_md)
+                model = _gemini_client()
+                if not model:
+                     raise HTTPException(status_code=500, detail="Gemini client init failed")
+                
+                data = None
+                last_error = None
+
+                for attempt in range(3):
+                    try:
+                         resp = model.generate_content(contents)
+                         txt = resp.text
+                         try:
+                            extracted = json.loads(txt)
+                            if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                                 # VALIDATE LENGTH
+                                if _validate_narration_length(extracted):
+                                    data = extracted
+                                    break
+                                else:
+                                    last_error = "Narration too long (retry)"
+                                    logging.warning(f"Gemini page {pn} attempt {attempt}: {last_error}")
+                                    continue
+                         except json.JSONDecodeError:
+                            extracted = _extract_json(txt)
+                            if isinstance(extracted, dict) and isinstance(extracted.get("panels"), list):
+                                 # VALIDATE LENGTH
+                                if _validate_narration_length(extracted):
+                                    data = extracted
+                                    break
+                                else:
+                                    last_error = "Narration too long (retry)"
+                                    logging.warning(f"Gemini page {pn} attempt {attempt}: {last_error}")
+                                    continue
+                    except Exception as e:
+                        logger.warning(f"Gemini error page {pn} attempt {attempt}: {e}")
+                        last_error = str(e)
+                
+                if not data:
+                    raise HTTPException(status_code=500, detail=f"Gemini failed: {last_error}")
+
+            # Expect { panels: [ {panel_index, text}, ... ] }
+            if isinstance(data, dict) and isinstance(data.get("panels"), list):
+                # Aggregate/merge texts into valid panel indices only
+                num_panels = len(panels)
+                if num_panels <= 0:
+                    continue
+                merged: Dict[int, List[str]] = {i: [] for i in range(1, num_panels + 1)}
+                for item in data["panels"]:
+                    try:
+                        idx = int(item.get("panel_index"))
+                    except Exception:
+                        idx = 1
+                    if idx <= 0:
+                        idx = 1
+                    # If model produced more indices than available panels, route extras to panel 1
+                    if idx > num_panels:
+                        idx = 1
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        merged[idx].append(text)
+                page_out: List[Dict[str, Any]] = []
+                for i in range(1, num_panels + 1):
+                    combined = " ".join(merged.get(i) or [])
+                    # Only update if we actually have text for this panel in this run
+                    if combined:
+                        EditorDB.upsert_panel_narration(project_id, pn, i, combined, is_manual=False)
+                        # Ensure any existing audio URL (if a previous synth created it) remains intact; no change here
+                        page_out.append({"panel_index": i, "text": combined})
+                # Cleanup any legacy rows without images on this page
+                try:
+                    EditorDB.conn().execute(
+                        "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
+                        (project_id, pn),
+                    )
+                    EditorDB.conn().commit()
+                except Exception:
+                    pass
+                # Append to accumulated context
+                accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
+                results.append({"page_number": pn, "panels": page_out})
+            else:
+                # Fallback: treat as a single blob, assign in order
+                # Split into sentences roughly equal to panel count
+                text_blob = txt.strip()
+                segs = [s.strip() for s in text_blob.split(".") if s.strip()]
+                page_out = []
+                if len(panels) == 1:
+                    # Put all narration into the first panel
+                    combined = (". ".join(segs).strip() + ".") if segs else ""
+                    EditorDB.upsert_panel_narration(project_id, pn, 1, combined, is_manual=False)
+                    page_out.append({"panel_index": 1, "text": combined})
+                else:
+                    for idx1 in range(1, len(panels) + 1):
+                        t = (segs[idx1 - 1] + ".") if (idx1 - 1) < len(segs) else ""
+                        EditorDB.upsert_panel_narration(project_id, pn, idx1, t, is_manual=False)
+                        page_out.append({"panel_index": idx1, "text": t})
+                # Cleanup any legacy rows without images on this page
+                try:
+                    EditorDB.conn().execute(
+                        "DELETE FROM panels WHERE project_id=? AND page_number=? AND (image_path IS NULL OR image_path='')",
+                        (project_id, pn),
+                    )
+                    EditorDB.conn().commit()
+                except Exception:
+                    pass
+                accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
+                results.append({"page_number": pn, "panels": page_out})
+
+    except Exception as e:
+        logger.error(f"Sequential narration wrapper failed: {e}")
+        raise e
+    finally:
+        # Ensure session closed
+        try:
+             # Run close in the thread too
+             await run_sync(automator_instance.close_session)
+        except:
+             pass
+        # Shutdown executor
+        executor.shutdown(wait=False)
 
     # Auto-update character list from narrations (best-effort)
     updated_character_list = ""
@@ -2557,7 +2746,7 @@ async def api_narrate_single_page(project_id: str, page_number: int, payload: Di
             # Just generate the prompt and "block" it so the UI shows the manual entry modal
             sys_instructions = (
                 "You are a manga narration assistant. For the given page, write a cohesive, flowing micro‑narrative that spans the panels in order. "
-                "Produce one vivid, short sentence per panel, but ensure each sentence connects naturally to the next so it reads like a continuous story, not a list. "
+                "Produce one vivid, short sentence per panel. Each sentence must briefly capture the visual action or key detail of that specific panel to ground the viewer, while seamlessly connecting to the next to maintain a continuous narrative flow. "
                 "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
                 "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
                 "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
@@ -2746,9 +2935,7 @@ async def api_narrate_single_page(project_id: str, page_number: int, payload: Di
             
             if not data:
                 # If txt implies we got something but validation failed, we might still process it narrowly?
-                # But user asked for retry. If all retries fail, we raise error or fall through?
-                # Code below expects data. 
-                # If we raise HTTPException here, we stop.
+                # But user asked for retry. If all retries fail, we stop.
                 # If we continue with data=None, the code below 2647 handles logic.
                 if not txt:
                      raise HTTPException(status_code=500, detail=f"Gemini failed: {last_error}")
@@ -2837,7 +3024,7 @@ async def api_save_manual_narration(project_id: str, page_number: int, payload: 
             panel_index = panel_item.get("panel_index")
             text = panel_item.get("text", "").strip()
             
-            if panel_index and text:
+            if panel_index is not None:
                 EditorDB.upsert_panel_narration(project_id, int(page_number), int(panel_index), text, is_manual=True)
                 saved_panels.append({"panel_index": int(panel_index), "text": text})
         
@@ -3007,8 +3194,9 @@ async def api_set_characters(project_id: str, payload: Dict[str, Any]):
 
 @router.post("/api/project/{project_id:path}/characters/update")
 async def api_update_characters_from_narrations(project_id: str):
-    if genai is None or not _GEMINI_KEYS:
-        raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+    # Check provider
+    project = EditorDB.get_project(project_id)
+    provider = project.get("narration_provider", "gemini")
 
     # Aggregate narrations
     narr = EditorDB.get_panel_narrations(project_id)
@@ -3021,21 +3209,153 @@ async def api_update_characters_from_narrations(project_id: str):
         items.append(f"Page {pg} Panel {idx}: {text}")
     corpus = "\n".join(items)
 
-    model = _gemini_client()
-    if model is None:
-        raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
-
     prompt = (
         "Extract a character list from the following manga panel narrations. "
         "Return a concise Markdown document listing characters with their names and visual appearance cues. "
         "If a character appears multiple times, merge details."
         "\n\nNarrations:\n" + corpus
     )
-    try:
-        resp = model.generate_content(prompt)
-        md = resp.text or ""
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+
+    md = ""
+    
+    if provider == "manual_web":
+        # Enhanced Manual Web Logic: Batch processing (max 10 images) + Page Images + Iterative Updates
+        
+        # 1. Gather all PAGE images (visual context)
+        all_pages = EditorDB.get_pages(project_id)
+        page_image_paths = []
+        
+        # Base dir logic - already available as MANGA_DIR (global) or resolved similar to other funcs
+        # We'll use a robust resolution strategy
+        BASE_DIR = os.getcwd()
+        if 'MANGA_DIR' in globals():
+             BASE_DIR = MANGA_DIR
+        elif 'MANGA_BASE_DIR' in globals():
+             BASE_DIR = MANGA_BASE_DIR
+        else:
+             BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manga_projects")
+
+        for pg in all_pages:
+             # pages_json usually stores relative path like "project_id/page.png" or absolute
+             raw_path = pg.get('image_path')
+             if not raw_path: continue
+             
+             # Resolve path
+             if os.path.isabs(raw_path) and os.path.exists(raw_path):
+                 page_image_paths.append(raw_path)
+             else:
+                 # Try relative to BASE_DIR
+                 rel = raw_path
+                 if rel.startswith('/') or rel.startswith('\\'): rel = rel[1:]
+                 full = os.path.join(BASE_DIR, rel)
+                 if os.path.exists(full):
+                     page_image_paths.append(full)
+                 else:
+                     logger.warning(f"Could not find image for page {pg.get('page_number')}: {raw_path}")
+
+        if not page_image_paths:
+             logger.warning("No page images found, falling back to panels...")
+             # Fallback logic could go here, but let's assume if there are pages there are images.
+             # If strictly no page images, we might have a problem.
+             pass
+
+        # 2. Existing Character List (Start state)
+        current_character_list = EditorDB.get_character_list(project_id) or ""
+        
+        # 3. Batch Processing Loop
+        BATCH_SIZE = 10
+        total_pages = len(page_image_paths)
+        
+        from gemini_automator import GeminiAutomator
+        # We'll use a single automator instance? 
+        # Ideally yes, but depends if it keeps state. 
+        # The prompt will re-inject state every time, so it's fine if it's stateless or stateful.
+        
+        try:
+            automator = GeminiAutomator()
+            
+            # If no images, we can't do visual update, just text.
+            if not page_image_paths:
+                # Text-only update (fallback)
+                prompt = (
+                    "Extract a character list from the following manga panel narrations.\n"
+                    "Return a concise Markdown document listing characters with their names and visual appearance cues.\n"
+                    "Narrations:\n" + corpus
+                )
+                md = await asyncio.to_thread(automator.generate_content, prompt, [])
+                current_character_list = md
+            
+            else:
+                # Batched Visual Update
+                for i in range(0, total_pages, BATCH_SIZE):
+                    batch_images = page_image_paths[i : i + BATCH_SIZE]
+                    batch_idx = (i // BATCH_SIZE) + 1
+                    total_batches = (total_pages + BATCH_SIZE - 1) // BATCH_SIZE
+                    
+                    logger.info(f"Processing Character Update Batch {batch_idx}/{total_batches} ({len(batch_images)} images)")
+                    
+                    # Watermark this batch
+                    watermarked_batch = _number_images(batch_images)
+                    
+                    # Construct Iterative Prompt
+                    prompt = (
+                        f"You are a manga character design assistant. Batch {batch_idx} of {total_batches}.\n"
+                        "Your task is to MAINTAIN and UPDATE the Character List for a manga series based on visual references.\n\n"
+                        "INPUTS:\n"
+                        "1. **Existing Character List**: The current known state of characters.\n"
+                        "2. **Visual References**: Attached images (Manga Pages) marked with Red Page Numbers.\n"
+                        "3. **Narrations**: Recent text narrations for context.\n\n"
+                        "TASK:\n"
+                        "1. Analyze the attached images for characters.\n"
+                        "2. UPDATE the 'Existing Character List':\n"
+                        "   - INSERT new characters found in this batch.\n"
+                        "   - REFINE visual descriptions of existing characters with new details visible here.\n"
+                        "   - MERGE duplicates.\n"
+                        "   - Do NOT omit characters just because they don't appear in this specific batch (keep the history).\n\n"
+                        "OUTPUT FORMAT: Return ONLY the complete, updated Markdown Character List. No conversational text.\n\n"
+                    )
+                    
+                    if current_character_list:
+                        prompt += f"=== EXISTING CHARACTER LIST ===\n{current_character_list}\n\n"
+                    else:
+                        prompt += "(No existing character list - Start Fresh)\n\n"
+                    
+                    # We can probably omit the HUGE narration corpus if it's too big, 
+                    # or just include it every time. Let's include it as it's text.
+                    # Maybe truncate if massive? For now keep it.
+                    prompt += f"=== NARRATIONS CONTEXT ===\n{corpus[:20000]} ... (truncated if long)" 
+                    
+                    # Run Automation
+                    updated_md = await asyncio.to_thread(automator.generate_content, prompt, watermarked_batch)
+                    
+                    # Update our state
+                    if updated_md and len(updated_md) > 10: # Simple validation
+                        current_character_list = updated_md
+                        # Optional: Save intermediate result to DB?
+                        EditorDB.set_character_list(project_id, current_character_list)
+                    
+                    # Slight delay to be nice
+                    await asyncio.sleep(2)
+            
+            md = current_character_list
+
+        except Exception as e:
+            logger.error(f"Gemini Web automation failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Gemini Web automation failed: {e}")
+    else:
+        # Use Official SDK
+        if genai is None or not _GEMINI_KEYS:
+            raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+
+        model = _gemini_client()
+        if model is None:
+            raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
+        
+        try:
+            resp = model.generate_content(prompt)
+            md = resp.text or ""
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
 
     EditorDB.set_character_list(project_id, md)
     return {"ok": True, "markdown": md}
@@ -3072,8 +3392,9 @@ async def api_set_story(project_id: str, payload: Dict[str, Any]):
 @router.post("/api/project/{project_id:path}/story/generate")
 async def api_generate_story_summary(project_id: str):
     """Generate a story summary for the CURRENT chapter from all panel narrations using Gemini AI."""
-    if genai is None or not _GEMINI_KEYS:
-        raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+    # Check provider
+    project = EditorDB.get_project(project_id)
+    provider = project.get("narration_provider", "gemini")
 
     # Aggregate narrations
     narr = EditorDB.get_panel_narrations(project_id)
@@ -3086,10 +3407,6 @@ async def api_generate_story_summary(project_id: str):
         items.append(f"Page {pg} Panel {idx}: {text}")
     corpus = "\n".join(items)
 
-    model = _gemini_client()
-    if model is None:
-        raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
-
     prompt = (
         "Based on the following manga panel narrations, generate a cohesive story summary. "
         "The summary should capture the main plot points, character developments, and key events in a flowing narrative. "
@@ -3097,11 +3414,32 @@ async def api_generate_story_summary(project_id: str):
         "Keep it engaging and in past tense. Limit to 3-5 paragraphs.\n\n"
         "Panel Narrations:\n" + corpus
     )
-    try:
-        resp = model.generate_content(prompt)
-        summary = resp.text or ""
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
+    
+    summary = ""
+    
+    if provider == "manual_web":
+        # Use Gemini Web Automation
+        from gemini_automator import GeminiAutomator
+        try:
+            automator = GeminiAutomator()
+            # Run in thread
+            summary = await asyncio.to_thread(automator.generate_content, prompt, [])
+        except Exception as e:
+            logger.error(f"Gemini Web automation failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Gemini Web automation failed: {e}")
+    else:
+        if genai is None or not _GEMINI_KEYS:
+            raise HTTPException(status_code=400, detail="Gemini not configured. Set GOOGLE_API_KEYS.")
+
+        model = _gemini_client()
+        if model is None:
+            raise HTTPException(status_code=500, detail="Failed to initialize Gemini client")
+
+        try:
+            resp = model.generate_content(prompt)
+            summary = resp.text or ""
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Gemini error: {e}")
 
     # Save to CURRENT summary field
     EditorDB.set_story_summary_current(project_id, summary)
@@ -3278,10 +3616,46 @@ async def api_get_narration_status(series_id: str, override: bool = False):
             else:
                 chapters_needing_narrations.append(chapter_info)
     
+    # Sort all_chapters to be consistent (by chapter number)
+    all_chapters_enriched = []
+    
+    # We already have chapter info gathered in chapters_with_narrations and chapters_needing_narrations
+    # but that's split. Let's rebuild a unified list or just use what we have.
+    # The 'chapters' (from get_series_chapters) has raw data. We need to attach 'has_narration'.
+    
+    conn = EditorDB.conn()
+    for row in chapters:
+        pid = row["id"]
+        # Check has_narration
+        c_narrs = conn.execute("SELECT count(*) FROM panel_narrations WHERE project_id=?", (pid,)).fetchone()[0]
+        has_narration = (c_narrs > 0)
+        
+        # Check has_audio (check if any panel has audio)
+        # We consider "has_audio" true if at least one panel has audio, or maybe all?
+        # For the UI "Audio Ready" badge, usually implies partial or full audio. 
+        # Let's check if ANY panel has audio for now, or match narration count?
+        # A simple check: count panels with non-empty audio_url or audio_b64
+        c_audio = conn.execute("SELECT count(*) FROM panels WHERE project_id=? AND (audio_url IS NOT NULL AND audio_url != '')", (pid,)).fetchone()[0]
+        has_audio = (c_audio > 0)
+
+        all_chapters_enriched.append({
+            "project_id": pid,
+            "chapter_number": row["chapter_number"],
+            "title": row["title"],
+            "page_count": row.get("page_count") or row.get("chapter_pages_count") or 0,
+            "created_at": row["created_at"],
+            "has_narration": has_narration,
+            "has_audio": has_audio,
+            "has_panels": True 
+        })
+        
+    all_chapters_enriched.sort(key=lambda x: x["chapter_number"])
+
     return {
         "series_id": series_id,
         "series_name": series.get("name"),
         "total_chapters": len(chapters),
+        "all_chapters": all_chapters_enriched, 
         "chapters_with_narrations": chapters_with_narrations,
         "chapters_needing_narrations": chapters_needing_narrations,
         "chapters_without_panels": chapters_without_panels,
@@ -3429,14 +3803,6 @@ async def api_narrate_all_series_chapters_execute(series_id: str, payload: Dict[
             })
     
     return {
-        "ok": True,
-        "series_id": series_id,
-        "series_name": series.get("name"),
-        "processed": success_count,
-        "failed": failed_count,
-        "skipped": len(chapters) - len(chapters_to_process),
-        "total_chapters": len(chapters),
-        "results": results
     }
 
 
@@ -3869,13 +4235,14 @@ async def api_reorder_pages(project_id: str, payload: Dict[str, Any]):
 
 # ---------------------------- TTS synthesis (DB-backed) ----------------------------
 @router.post("/api/project/{project_id:path}/tts/synthesize/page/{page_number}")
-async def api_tts_synthesize_page(project_id: str, page_number: int):
-    """Synthesize TTS for all panels on a page using narration_text stored in DB.
-    Saves audio files under /manga_projects/{project_id}/tts and updates panel audio URLs in DB.
-    Returns per-panel results so the UI can update progress without sending text.
+async def api_tts_synthesize_page(project_id: str, page_number: int, payload: Dict[str, Any] = Body(default={})):
+    """Synthesize TTS for all panels on a page.
+    Payload: { overwrite: bool }
     """
     if not TTS_API_URL:
         raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
+
+    overwrite = bool(payload.get("overwrite", False))
 
     proj = EditorDB.get_project(project_id)
     if not proj:
@@ -3898,19 +4265,31 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
             idx = int(p.get("index") or 1)
         except Exception:
             idx = 1
+        
+        # Check if audio already exists
+        existing_audio = p.get("audio") or p.get("audio_url")
+        if existing_audio and not overwrite:
+            results.append({
+                "panel_index": idx,
+                "text": p.get("text", ""),
+                "audio_url": existing_audio,
+                "status": "skipped_exists"
+            })
+            continue
+
         text = str(p.get("text") or "").strip()
         if not text:
             # Nothing to synthesize; keep existing audio if any
             results.append({
                 "panel_index": idx,
                 "text": "",
-                "audio_url": None,
-                "status": "skipped"
+                "audio_url": existing_audio,
+                "status": "skipped_empty"
             })
             continue
 
         try:
-            payload = {
+            tts_payload = {
                 "text": text,
                 "exaggeration": "0.5",
                 "cfg_weight": "0.5",
@@ -3928,7 +4307,7 @@ async def api_tts_synthesize_page(project_id: str, page_number: int):
                     tts_headers[tts_key_header] = tts_key
 
             async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(TTS_API_URL, data=payload, headers=tts_headers or None)
+                r = await client.post(TTS_API_URL, data=tts_payload, headers=tts_headers or None)
             if r.status_code != 200:
                 # Log provider response for easier debugging (trim to 2k chars)
                 try:
@@ -4091,9 +4470,9 @@ async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_inde
 
 
 @router.post("/api/project/{project_id:path}/tts/synthesize/all")
-async def api_tts_synthesize_all(project_id: str):
-    """Synthesize TTS for all pages in the project sequentially. Returns a summary.
-    Note: The UI can also call the page endpoint in a loop to show per-page progress.
+async def api_tts_synthesize_all(project_id: str, payload: Dict[str, Any] = Body(default={})):
+    """Synthesize TTS for all pages in the project sequentially.
+    Payload: { overwrite: bool }
     """
     if not TTS_API_URL:
         raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
@@ -4105,13 +4484,16 @@ async def api_tts_synthesize_all(project_id: str):
     pages = EditorDB.get_pages(project_id)
     if not pages:
         raise HTTPException(status_code=400, detail="Project has no pages")
+    
+    # We pass the same payload (overwrite flag) to the page endpoint
+    pass_payload = payload or {}
 
     total_created = 0
     page_summaries: List[Dict[str, Any]] = []
     for pg in pages:
         pn = int(pg.get("page_number") or 0)
         try:
-            res = await api_tts_synthesize_page(project_id, pn)  # reuse logic
+            res = await api_tts_synthesize_page(project_id, pn, payload=pass_payload)
             total_created += int(res.get("created", 0))
             page_summaries.append({"page_number": pn, **res})
         except HTTPException as e:
@@ -4354,3 +4736,142 @@ async def fetch_chapter_images(payload: Dict[str, Any]):
 
 
 
+
+
+# --- Automation Endpoints ---
+
+@router.get("/api/project/{project_id:path}/story")
+async def api_get_story_summary(project_id: str):
+    """Get the current story summary."""
+    summary = EditorDB.get_story_summary(project_id) or ""
+    return {"summary": summary}
+    
+@router.post("/api/auth/gemini-web")
+async def api_auth_gemini_web():
+    """
+    Triggers the login mode for Gemini Web automation.
+    Launches a browser window for the user to log in.
+    """
+    try:
+        # Use sync Playwright via asyncio.to_thread to avoid Windows loop issues
+        if GeminiAutomator is None:
+             # Ensure import worked or try lazily?
+             from gemini_automator import GeminiAutomator as GA
+             automator = GA()
+        else:
+             automator = GeminiAutomator()
+             
+        # Run in a separate thread so we don't block API and bypass asyncio loop conflicts
+        await asyncio.to_thread(automator.login_mode)
+        return {"ok": True, "message": "Login window closed. Session saved."}
+    except Exception as e:
+        print(f"Login failed: {e}")
+        # If import failed
+        if "GeminiAutomator" in str(e) or "name 'GeminiAutomator' is not defined" in str(e):
+             from gemini_automator import GeminiAutomator
+             await asyncio.to_thread(GeminiAutomator().login_mode)
+             return {"ok": True}
+             
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/project/{project_id:path}/narrate/page/{page_number}/auto-web")
+async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[str, Any]):
+    """
+    Automates the "Manual" workflow using Playwright.
+    """
+    # Ensure module is imported
+    from gemini_automator import GeminiAutomator
+
+    # 1. Fetch Panels/Images
+    panels = EditorDB.get_panels_for_page(project_id, page_number)
+    if not panels:
+        raise HTTPException(status_code=404, detail="No panels found for this page")
+        
+    image_paths = []
+    
+    # Need generic base dir logic matching global MANGA_BASE_DIR
+    # We will assume global is available or redefine valid logic
+    # MANGA_DIR is already defined globally
+        
+    for p in panels:
+        # Resolve URL to local path
+        rel_path = p.get('image', '').replace('/manga_projects/', '')
+        if '?' in rel_path:
+            rel_path = rel_path.split('?')[0]
+            
+        full_path = Path(MANGA_DIR) / rel_path
+        if full_path.exists():
+            image_paths.append(str(full_path.absolute()))
+        else:
+            # Try absolute match if it was stored differently
+            pass
+            
+    if not image_paths:
+         raise HTTPException(status_code=400, detail="Could not locate image files on disk")
+
+    final_image_paths = _number_images(image_paths)
+
+    # 2. Build Prompt (Matching manual_web logic in api_narrate_single_page)
+    context = payload.get('context', '')
+    character_list = payload.get('characterList', '')
+    
+    panel_count = len(image_paths)
+    
+    prompt = (
+        f"You are a manga narration assistant. This message contains exactly {panel_count} images representing a single page of manga. "
+        f"Each image has a visible Red Number (1, 2, 3...) in the top-left corner. This number corresponds to the 'panel_index'. "
+        f"IGNORE all previous chat history, images, and panels. Focus ONLY on the {panel_count} images attached to THIS prompt. "
+        "Write a cohesive, flowing micro‑narrative that spans these panels in order. "
+        "Produce one vivid, short sentence per panel. Each sentence must briefly capture the visual action or key detail of that specific panel to ground the viewer, while seamlessly connecting to the next to maintain a continuous narrative flow. "
+        "Avoid list formatting, numbering, or using the word 'panel'. Do not start every sentence with a proper name. "
+        "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
+        "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
+        "CRITICAL: Keep narration EXTREMELY CONCISE. Maximum 50 words (approx 300 characters) per panel. "
+        "OUTPUT FORMAT: STRICT VALID JSON ONLY. No markdown. No formatting. "
+        f"Structure: {{\"panels\": [{{\"panel_index\": 1, \"text\": \"...\"}} ... up to {panel_count}]}}"
+    )
+    if context:
+        prompt += "\nContext so far (previous pages):\n" + context
+    if character_list:
+        prompt += (
+            "\nKnown characters (markdown) — use names sparingly for smooth narration; after the first mention, prefer pronouns or first names only (avoid surnames):\n"
+            + character_list
+        )
+
+    # 3. Call Automator
+    try:
+        automator = GeminiAutomator()
+        # Use sync Playwright via asyncio.to_thread to avoid Windows loop issues
+        # Use the NUMBERED images
+        response_text = await asyncio.to_thread(automator.generate_content, prompt, final_image_paths)
+        logger.info(f"Automator response: {response_text[:100]}...")
+    except Exception as e:
+        logger.error(f"Automation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Automation failed: {str(e)}")
+
+    # 4. Parse Response (Robust extraction)
+    clean_text = response_text.strip()
+    
+    # Try to find the JSON object boundaries
+    start_idx = clean_text.find('{')
+    end_idx = clean_text.rfind('}')
+    
+    if start_idx != -1 and end_idx != -1:
+        clean_text = clean_text[start_idx : end_idx + 1]
+    else:
+        # Fallback cleanup
+        clean_text = clean_text.replace("```json", "").replace("```", "").replace("JSON", "").strip()
+    
+    try:
+        data = json.loads(clean_text)
+        new_panels = data.get("panels", [])
+        
+        # 5. Save Results
+        if new_panels:
+             EditorDB.save_manual_narration(project_id, page_number, new_panels)
+             return {"ok": True, "panels": new_panels}
+        else:
+             raise ValueError("No 'panels' key in response")
+             
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse JSON response: {e}. raw: {clean_text[:50]}...")

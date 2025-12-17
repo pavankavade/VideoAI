@@ -92,3 +92,7 @@ renders/
 data/mangaeditor.db
 \NUL
 NUL
+
+# Browser data
+browser_data/
+browserdata

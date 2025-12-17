@@ -398,3 +398,231 @@ async def download_render(job_id: str, background_tasks: BackgroundTasks):
 async def headless_test_page(request: Request):
     """Diagnostic page for testing headless rendering."""
     return templates.TemplateResponse("headless_test.html", {"request": request})
+
+
+# ==================== Series Rendering ====================
+
+# Store series render jobs: job_id -> { status, progress, current_chapter, total_chapters, etc }
+_series_jobs: Dict[str, Dict[str, Any]] = {}
+_series_jobs_lock = threading.Lock()
+
+async def _series_render_worker(job_id: str, series_id: str, skip_error: bool, override_plan: bool):
+    """Background worker for rendering a full series sequentially.
+    
+    NOTE: This must be a sync function (def, not async def) so FastAPI runs it in a threadpool.
+    This allows us to use ensure_proactor logic safely for the subprocess-heavy Playwright code
+    without messing up the main event loop.
+    """
+    def _run_worker_logic(): 
+        # Defines the logic but run it synchronously via run_async_in_thread only for the async parts
+        # actually, since we are in a thread, we can mostly just run synchronous code
+        # BUT record_project_headless is async.
+        # So we use run_async_in_thread to call record_project_headless.
+        pass
+
+    try:
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "running"
+        
+        # Sync DB call is fine here
+        projects = EditorDB.get_series_projects(series_id)
+        total = len(projects)
+        
+        with _series_jobs_lock:
+            _series_jobs[job_id]["total_chapters"] = total
+            _series_jobs[job_id]["log"].append(f"Found {total} chapters for series {series_id}")
+
+        for i, proj in enumerate(projects):
+            chapter_num = proj["chapter_number"]
+            pid = proj["id"]
+            title = proj["title"]
+            
+            with _series_jobs_lock:
+                _series_jobs[job_id]["current_index"] = i + 1
+                _series_jobs[job_id]["current_chapter"] = f"Chapter {chapter_num}"
+                _series_jobs[job_id]["log"].append(f"Starting render for Chapter {chapter_num} ({title})...")
+            
+            error_occurred = False
+            try:
+                # Callback logic
+                def specific_progress(data: Dict[str, Any]):
+                    pass 
+                
+                # Execute the async recording task in a dedicated thread-safe loop with Proactor policy
+                # run_async_in_thread handles creating a fresh loop with correct policy on Windows
+                try:
+                    res = run_async_in_thread(
+                        record_project_headless(
+                            pid, 
+                            progress_callback=specific_progress,
+                            auto_generate_timeline=override_plan
+                        )
+                    )
+                except RuntimeError as re:
+                     # Fallback: if run_async_in_thread fails (e.g. nested loops issues), 
+                     # we might be cleaner to just call it invalid.
+                     # But it should work if _series_render_worker is run in a threadpool.
+                     raise re
+
+                if res["status"] != "success":
+                    raise Exception(res.get("error", "Unknown error"))
+                
+                # Check outcome
+                output_path = res.get("output_path")
+                with _series_jobs_lock:
+                    _series_jobs[job_id]["log"].append(f"Chapter {chapter_num} complete: {os.path.basename(str(output_path))}")
+                    _series_jobs[job_id]["completed_chapters"].append(pid)
+                    
+            except Exception as e:
+                error_occurred = True
+                msg = f"Error rendering Chapter {chapter_num}: {e}"
+                print(msg)
+                with _series_jobs_lock:
+                    _series_jobs[job_id]["log"].append(msg)
+                    _series_jobs[job_id]["failed_chapters"].append(pid)
+                
+                if not skip_error:
+                    raise e # Stop the series render
+
+            # Sleep synchronously
+            time.sleep(1)
+
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "complete"
+            _series_jobs[job_id]["log"].append("Series render finished.")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Series render job {job_id} failed: {e}")
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "error"
+            _series_jobs[job_id]["error"] = str(e)
+            _series_jobs[job_id]["log"].append(f"Job failed: {e}")
+
+
+def _series_render_worker_wrapper(job_id: str, series_id: str, skip_error: bool, override_plan: bool):
+    """Wrapper to be compatible with BackgroundTasks which accepts sync functions for threadpool execution."""
+    # We rename the async implementation above (conceptually) or simply replace it.
+    # To avoid confusion, I will implement this as the actual function body replacement.
+    pass
+
+# Actual replacement function:
+def _series_render_worker_sync(job_id: str, series_id: str, skip_error: bool, override_plan: bool):
+    """Background worker for rendering a full series sequentially (Sync version)."""
+    try:
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "running"
+        
+        projects = EditorDB.get_series_projects(series_id)
+        total = len(projects)
+        
+        with _series_jobs_lock:
+            _series_jobs[job_id]["total_chapters"] = total
+            _series_jobs[job_id]["log"].append(f"Found {total} chapters for series {series_id}")
+
+        for i, proj in enumerate(projects):
+            chapter_num = proj["chapter_number"]
+            pid = proj["id"]
+            title = proj["title"]
+            
+            with _series_jobs_lock:
+                _series_jobs[job_id]["current_index"] = i + 1
+                _series_jobs[job_id]["current_chapter"] = f"Chapter {chapter_num}"
+                _series_jobs[job_id]["log"].append(f"Starting render for Chapter {chapter_num} ({title})...")
+            
+            error_occurred = False
+            try:
+                def specific_progress(data: Dict[str, Any]):
+                    pass 
+                
+                # Critical: Use run_async_in_thread to ensure Proactor loop on Windows
+                res = run_async_in_thread(
+                    record_project_headless(
+                        pid, 
+                        progress_callback=specific_progress,
+                        auto_generate_timeline=override_plan
+                    )
+                )
+                
+                if res["status"] != "success":
+                    raise Exception(res.get("error", "Unknown error"))
+                
+                output_path = res.get("output_path")
+                with _series_jobs_lock:
+                    _series_jobs[job_id]["log"].append(f"Chapter {chapter_num} complete: {os.path.basename(str(output_path))}")
+                    _series_jobs[job_id]["completed_chapters"].append(pid)
+                    
+            except Exception as e:
+                error_occurred = True
+                msg = f"Error rendering Chapter {chapter_num}: {e}"
+                print(msg)
+                with _series_jobs_lock:
+                    _series_jobs[job_id]["log"].append(msg)
+                    _series_jobs[job_id]["failed_chapters"].append(pid)
+                
+                if not skip_error:
+                    raise e 
+
+            time.sleep(1)
+
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "complete"
+            _series_jobs[job_id]["log"].append("Series render finished.")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Series render job {job_id} failed: {e}")
+        with _series_jobs_lock:
+            _series_jobs[job_id]["status"] = "error"
+            _series_jobs[job_id]["error"] = str(e)
+            _series_jobs[job_id]["log"].append(f"Job failed: {e}")
+
+
+
+@router.post("/api/series/{series_id}/render")
+async def render_series_headless(series_id: str, request: Request, background_tasks: BackgroundTasks):
+    """
+    Start a background job to render all chapters in a series.
+    Payload: { "skip_error": bool, "override_plan": bool }
+    """
+    try:
+        payload = await request.json()
+    except:
+        payload = {}
+        
+    skip_error = payload.get("skip_error", False)
+    override_plan = payload.get("override_plan", False)
+    
+    job_id = f"series_{series_id}_{uuid.uuid4().hex[:6]}"
+    
+    with _series_jobs_lock:
+        _series_jobs[job_id] = {
+            "series_id": series_id,
+            "status": "pending",
+            "log": [],
+            "completed_chapters": [],
+            "failed_chapters": [],
+            "total_chapters": 0,
+            "current_chapter": "",
+            "current_index": 0,
+            "created_at": time.time()
+        }
+
+    # Start the worker (using the sync version which FastAPI runs in a thread)
+    background_tasks.add_task(_series_render_worker_sync, job_id, series_id, skip_error, override_plan)
+    
+    return {"job_id": job_id}
+
+
+@router.get("/api/series/render/status/{job_id}")
+async def get_series_render_status(job_id: str):
+    """Get status of a series render job."""
+    with _series_jobs_lock:
+        job = _series_jobs.get(job_id)
+        
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    return job

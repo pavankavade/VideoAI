@@ -45,7 +45,7 @@
     .input-wrapper{position:relative}
     .input-label{font-weight:600;margin-bottom:10px;color:#cbd5e1;font-size:14px;display:block;letter-spacing:0.3px}
   </style>
-  <script src="/static/manga_editor_dashboard_new.js?v=2.5"></script>
+  <!-- script src="/static/manga_editor_dashboard_new.js?v=2.5"></script -->
   <script>
     // Optional: allow visiting /editor/dashboard?old=1 to go back
   </script>
@@ -87,6 +87,10 @@
           <button class="btn secondary" id="btnAddStandaloneProject">
             <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             Standalone Project
+          </button>
+          <button class="btn secondary" id="btnBatchNarration">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+            Batch Narration
           </button>
         </div>
       </div>
@@ -231,6 +235,7 @@
               <label class="input-label">Narration Provider</label>
               <select id="chapterProvider" class="select w-full" style="font-size:15px;padding:12px 16px;height:auto;background:rgba(11,23,45,0.6);color:#e2e8f0;border:1px solid rgba(51,65,85,0.8)">
                 <option value="gemini">Gemini (Google)</option>
+                <option value="manual_web">Manual Web (Gemini Automation)</option>
                 <option value="groq">Groq (Llama)</option>
                 <option value="azure">Azure OpenAI</option>
               </select>
@@ -290,6 +295,7 @@
               <label class="input-label">Narration Provider</label>
               <select id="cpProvider" class="select w-full" style="font-size:15px;padding:12px 16px;height:auto;background:rgba(11,23,45,0.6);color:#e2e8f0;border:1px solid rgba(51,65,85,0.8)">
                 <option value="gemini">Gemini (Google)</option>
+                <option value="manual_web">Manual Web (Gemini Automation)</option>
                 <option value="groq">Groq (Llama)</option>
               </select>
             </div>
@@ -320,6 +326,67 @@
         </div>
       </div>
     </div>
+
+    <!-- Generic Batch Selection Modal -->
+    <div id="batchProcessModal" class="modal-overlay hidden fixed inset-0 items-center justify-center z-50" style="background:rgba(0,0,0,0.75)">
+      <div class="modal-card w-[600px] max-w-[95%]" style="border-radius:24px;padding:0;overflow:hidden;display:flex;flex-direction:column;max-height:85vh">
+        <div style="background:linear-gradient(135deg,rgba(30,41,59,0.95),rgba(15,23,42,0.98));padding:24px 32px;border-bottom:1px solid rgba(59,130,246,0.2);flex-shrink:0">
+          <div class="flex items-center justify-between">
+            <h3 id="batchModalTitle" style="font-size:20px;font-weight:700;color:#e2e8f0;margin:0">Batch Processing</h3>
+            <button class="btn secondary" id="closeBatchProcess" style="border-radius:10px;padding:8px;min-width:auto">
+              <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div style="margin-top:16px;display:flex;gap:16px;align-items:center">
+             <div style="flex:1">
+               <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">Checking "Override" forces re-generation even if data exists</label>
+               <label style="display:flex;align-items:center;gap:8px;color:#cbd5e1;font-size:14px;cursor:pointer">
+                 <input type="checkbox" id="batchOverride" style="width:16px;height:16px">
+                 Override Existing Data
+               </label>
+             </div>
+             <div style="width:200px">
+               <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:4px">Provider</label>
+               <select id="batchProvider" class="select w-full" style="font-size:13px;padding:8px 12px;background:rgba(15,23,42,0.6);color:#e2e8f0;border:1px solid rgba(51,65,85,0.8)">
+                 <option value="gemini">Gemini</option>
+                 <option value="manual_web">Manual Web (Auto)</option>
+                 <option value="groq">Groq</option>
+                 <option value="azure">Azure</option>
+               </select>
+             </div>
+          </div>
+        </div>
+        
+        <div style="padding:0;overflow-y:auto;flex:1;background:rgba(15,23,42,0.4)">
+           <div style="padding:16px 24px;border-bottom:1px solid rgba(59,130,246,0.1);display:flex;justify-content:space-between;align-items:center;background:rgba(15,23,42,0.6);position:sticky;top:0;z-index:10">
+             <div style="font-size:13px;color:#94a3b8" id="batchCountDisplay">0 items</div>
+             <button id="batchSelectAll" class="btn secondary" style="padding:4px 12px;font-size:12px;min-width:auto">Select All</button>
+           </div>
+           <div id="batchList" style="padding:16px 24px;display:flex;flex-direction:column;gap:8px">
+             <!-- Dynamic Items -->
+           </div>
+        </div>
+
+        <div style="background:rgba(15,23,42,0.9);padding:20px 32px;border-top:1px solid rgba(59,130,246,0.1);display:flex;gap:12px;justify-content:flex-end;flex-shrink:0">
+          <button class="btn secondary" id="cancelBatchProcess" style="padding:12px 24px">Cancel</button>
+          <button class="btn btn-primary" id="startBatchProcess" style="padding:12px 28px;background:linear-gradient(135deg,#3b82f6,#2563eb)">
+             Start Batch
+          </button>
+        </div>
+      </div>
+    </div>
+  <div id="loadingModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:9999;align-items:center;justify-content:center;flex-direction:column;backdrop-filter:blur(5px)">
+    <div style="font-size:48px;margin-bottom:24px;animation:spin 1s linear infinite">⏳</div>
+    <div id="loadingStatus" style="color:#e2e8f0;font-size:18px;font-weight:600;margin-bottom:16px">Initializing...</div>
+    <div style="width:300px;height:4px;background:rgba(255,255,255,0.1);border-radius:2px;overflow:hidden">
+      <div id="loadingProgress" style="width:0%;height:100%;background:#3b82f6;transition:width 0.3s ease;box-shadow:0 0 10px rgba(59,130,246,0.5)"></div>
+    </div>
+    <div id="loadingProgressText" style="color:#94a3b8;font-size:12px;margin-top:8px">0%</div>
   </div>
+
+  </div>
+    
+  <!-- script src="/static/video_editor_db_core.js?v=2"></script -->
+  <script src="/static/manga_editor_dashboard_new.js?v=4"></script>
 </body>
 </html>

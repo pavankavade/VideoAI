@@ -57,7 +57,8 @@ class HeadlessRecorder:
         fps: int = 30,
         audio_bitrate: str = "128k",
         video_bitrate: str = "5M",
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        auto_generate_timeline: bool = False
     ) -> Dict[str, Any]:
         """
         Record a project using headless browser.
@@ -138,28 +139,147 @@ class HeadlessRecorder:
                 
                 report_progress("assets_loading", "Loading assets...", elapsed=time.time() - start_time, remaining=None)
                 
-                # Wait for assets to load
-                await asyncio.sleep(3)
+                # Wait for values to be populated
+                try:
+                    await page.wait_for_function('() => window.videoEditorLoaded === true', timeout=60000)
+                    logger.info("[Headless] Editor fully loaded (window.videoEditorLoaded=true)")
+                except Exception:
+                    logger.warning("[Headless] Timeout waiting for videoEditorLoaded, proceeding anyway...")
+                    await asyncio.sleep(5)
+
                 
+                # Auto-generate timeline if requested
+                if auto_generate_timeline:
+                    logger.info("[Headless] Auto-generating timeline...")
+                    report_progress("generating_timeline", "Auto-generating timeline...", elapsed=time.time() - start_time, remaining=None)
+                    
+                    await page.evaluate("""
+                        async () => {
+                            console.log('[Headless] Triggering auto-generation sequence...');
+                            
+                            // 1. Verify we have assets
+                            if (!window.panels || window.panels.length === 0) {
+                                console.warn('[Headless] No panels found in window.panels!');
+                            }
+                            if (!window.audios || window.audios.length === 0) {
+                                console.warn('[Headless] No audios found in window.audios!');
+                            }
+
+                            // 2. Generate Timeline
+                            if (typeof generatePanelTimeline === 'function') {
+                                try {
+                                    console.log('[Headless] Calling generatePanelTimeline()...');
+                                    await generatePanelTimeline();
+                                    console.log('[Headless] generatePanelTimeline returned.');
+                                    
+                                    // Verify result
+                                    const allClips = typeof flattenLayersToTimeline === 'function' ? flattenLayersToTimeline() : [];
+                                    const hasContent = allClips.some(c => !c._isBackground);
+                                    
+                                    if (!hasContent) {
+                                        console.error('[Headless] Timeline appears empty after generation!');
+                                        // Attempt one retry just in case
+                                        console.log('[Headless] Retrying generation...');
+                                        await new Promise(r => setTimeout(r, 1000));
+                                        await generatePanelTimeline();
+                                        
+                                        const retryClips = typeof flattenLayersToTimeline === 'function' ? flattenLayersToTimeline() : [];
+                                        if (retryClips.some(c => !c._isBackground)) {
+                                             console.log('[Headless] Retry successful!');
+                                        } else {
+                                             throw new Error('Timeline generation failed to produce any clips.');
+                                        }
+                                    } else {
+                                        console.log(`[Headless] Timeline generated with ${allClips.length} clips.`);
+                                    }
+                                } catch (e) {
+                                    console.error('[Headless] Error generating timeline:', e);
+                                    throw e;
+                                }
+                            } else {
+                                console.error('[Headless] generatePanelTimeline function not found');
+                            }
+                            
+                            // 3. Save Project
+                            console.log('[Headless] Saving project...');
+                            if (typeof saveProject === 'function') {
+                                try {
+                                    await saveProject(true); // force save
+                                    console.log('[Headless] Project saved');
+                                } catch (e) {
+                                    console.error('[Headless] Error saving project:', e);
+                                    throw e;
+                                }
+                            }
+                        }
+                    """)
+                    
+                    # Give it a moment to update DOM and state
+                    await asyncio.sleep(2)
+
+                
+                # Get the actual timeline duration if not specified
                 # Get the actual timeline duration if not specified
                 if duration is None:
                     try:
-                        duration = await page.evaluate("""
-                            () => {
-                                if (typeof getCanvasTotalDuration === 'function') {
-                                    return getCanvasTotalDuration();
-                                }
-                                return 30; // fallback to 30 seconds
-                            }
-                        """)
+                         # Try computeTotalDuration first, then fallback
+                        duration = await page.evaluate("() => typeof computeTotalDuration === 'function' ? computeTotalDuration() : (typeof getCanvasTotalDuration === 'function' ? getCanvasTotalDuration() : 0)")
                         logger.info(f"[Headless] Detected duration: {duration}s")
-                        report_progress("duration_detected", f"Video duration: {duration:.1f}s", 
-                                      elapsed=time.time() - start_time, 
-                                      remaining=duration + 10,  # Rough estimate: duration + overhead
-                                      total_duration=duration)
                     except Exception as e:
                         logger.warning(f"[Headless] Could not detect duration: {e}")
-                        duration = 30
+                        duration = 0
+
+                    
+                    # Safe fallback: If duration is 0 (and we didn't just generate it), try generating it now!
+                    # This handles the case where user forgot to check "Force re-generate" but the project has no timeline.
+                    if (duration is None or duration <= 0.1) and not auto_generate_timeline:
+                        logger.warning("[Headless] Duration is 0s! Timeline seems empty. Attempting auto-generation fallback...")
+                        try:
+                            # Re-run the generation logic
+                            await page.evaluate("""
+                                async () => {
+                                    console.log('[Headless] Fallback: Auto-generating timeline because duration was 0...');
+                                    
+                                    // 1. Fallback for project data
+                                    if (!window.projectData && typeof refreshProjectData === 'function') {
+                                        await refreshProjectData();
+                                    }
+                                    
+                                    // 2. Generate
+                                    if (typeof generatePanelTimeline === 'function') {
+                                        await generatePanelTimeline();
+                                        
+                                        // Verify
+                                        const allClips = typeof flattenLayersToTimeline === 'function' ? flattenLayersToTimeline() : [];
+                                        if (allClips.some(c => !c._isBackground)) {
+                                            console.log('[Headless] Fallback generation successful!');
+                                        } else {
+                                            console.error('[Headless] Fallback generation result still empty.');
+                                        }
+                                    } else {
+                                         console.error('[Headless] generatePanelTimeline not found for fallback.');
+                                    }
+                                    
+                                    // 3. Save
+                                     if (typeof saveProject === 'function') await saveProject(true);
+                                }
+                            """)
+                            # give it a sec
+                            await asyncio.sleep(2)
+                            # Re-check duration
+                            duration = await page.evaluate("() => typeof computeTotalDuration === 'function' ? computeTotalDuration() : 0")
+                            logger.info(f"[Headless] New duration after fallback: {duration}s")
+                        except Exception as e:
+                            logger.error(f"[Headless] Fallback generation failed: {e}")
+                    
+                    # Updates progress
+                    if duration:
+                         report_progress("duration_detected", f"Video duration: {duration:.1f}s", 
+                                      elapsed=time.time() - start_time, 
+                                      remaining=duration + 10,
+                                      total_duration=duration)
+                    else:
+                        duration = 2 # Default fallback if really empty
                 
                 # Initialize canvas recording with audio capture
                 logger.info("[Headless] Setting up canvas recording with audio...")

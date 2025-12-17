@@ -87,6 +87,7 @@
                <button id="loadModelBtn" class="btn secondary" style="display:none">Load Model</button>
             </div>
             <button id="synthAll" class="btn secondary">Synthesize All</button>
+            <button id="synthAllOverwrite" class="btn secondary" style="background:#ea580c;border-color:#ea580c;color:white" title="Re-synthesize EVERYTHING, overwriting existing audio">Synthesize All (Overwrite)</button>
             <div id="synthProgress" class="muted" style="min-width:260px"></div>
             <div id="synthBarWrap" style="flex:1; max-width:420px;display:none">
               <div style="height:8px;background:#1e293b;border-radius:6px;overflow:hidden">
@@ -608,26 +609,52 @@
       alert('Saved');
     });
 
-    // Global: synthesize audio for pages that are missing audio
-    document.getElementById('synthAll').addEventListener('click', async (e)=>{
-      const btn = e.currentTarget;
-      // Determine pages that have at least one panel missing audio
-      const pagesToProcess = (pages || []).filter(pg => {
-        const panels = pg.panels || [];
-        return panels.some(p => !p.audio);
-      });
+    // Unified Global Synthesis Function
+    async function runGlobalSynthesis(forceOverwrite = false) {
+      if(!pages || pages.length === 0) {
+        alert('No pages to synthesize.');
+        return;
+      }
+
+      let pagesToProcess = [];
+      if (forceOverwrite) {
+        // Process ALL pages that have panels
+        pagesToProcess = pages.filter(pg => (pg.panels || []).length > 0);
+      } else {
+        // Filter pages that have at least one panel missing audio
+        pagesToProcess = pages.filter(pg => {
+          const panels = pg.panels || [];
+          return panels.some(p => !p.audio);
+        });
+      }
 
       if(!pagesToProcess || pagesToProcess.length === 0){
-        alert('All pages already have audio — nothing to synthesize.');
+        alert(forceOverwrite 
+          ? 'No pages found with panels to synthesize.' 
+          : 'All pages already have audio — nothing to synthesize.');
         return;
       }
 
       // Show which pages will be processed and confirm with the user
       const pageNums = pagesToProcess.map(p => p.page_number).sort((a,b)=>a-b);
-      const confirmMsg = `This will synthesize audio for ${pageNums.length} page(s): ${pageNums.join(', ')}\n\nProceed?`;
+      const confirmMsg = forceOverwrite
+        ? `This will RE-SYNTHESIZE audio for ${pageNums.length} page(s): ${pageNums.join(', ')}\n\nExisting audio (for these pages) will be OVERWRITTEN. Proceed?`
+        : `This will synthesize audio for ${pageNums.length} page(s): ${pageNums.join(', ')}\n\nProceed?`;
+      
       if(!confirm(confirmMsg)) return;
 
-      btn.disabled = true; const original = btn.textContent; btn.textContent = 'Synthesizing…';
+      const btnId = forceOverwrite ? 'synthAllOverwrite' : 'synthAll';
+      const btn = document.getElementById(btnId);
+      const original = btn.textContent;
+      
+      // Disable both buttons during processing
+      const btnNormal = document.getElementById('synthAll');
+      const btnOverwrite = document.getElementById('synthAllOverwrite');
+      if(btnNormal) btnNormal.disabled = true;
+      if(btnOverwrite) btnOverwrite.disabled = true;
+
+      btn.textContent = 'Synthesizing…';
+      
       const progressEl = document.getElementById('synthProgress');
       const barWrap = document.getElementById('synthBarWrap');
       const bar = document.getElementById('synthBar');
@@ -676,10 +703,16 @@
         progressEl.textContent = 'Error during synthesis';
         alert('Failed to synthesize.');
       }finally{
-        btn.disabled = false; btn.textContent = original;
+        if(btnNormal) btnNormal.disabled = false;
+        if(btnOverwrite) btnOverwrite.disabled = false;
+        btn.textContent = original;
         setTimeout(()=>{ barWrap.style.display='none'; progressEl.textContent=''; bar.style.width='0%'; }, 1500);
       }
-    });
+    }
+
+    // Wiring Global Synth Buttons
+    document.getElementById('synthAll').addEventListener('click', () => runGlobalSynthesis(false));
+    document.getElementById('synthAllOverwrite').addEventListener('click', () => runGlobalSynthesis(true));
 
     fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
 
@@ -702,8 +735,13 @@
     function renderAudioFor(panelIndex, audioVal){
       const slot = document.querySelector(`.audio-slot[data-audio="${panelIndex}"]`);
       if(!slot) return;
-      const src = audioSrcFromValue(audioVal);
+      let src = audioSrcFromValue(audioVal);
       if(!src){ slot.innerHTML = ''; return; }
+      // Add cache buster for local/server paths to ensure we hear the latest synth
+      if(src.startsWith('/') || src.startsWith('http')) {
+        const sep = src.includes('?') ? '&' : '?';
+        src += `${sep}t=${Date.now()}`;
+      }
       slot.innerHTML = `<audio controls preload="metadata" src="${src}"></audio>`;
     }
 

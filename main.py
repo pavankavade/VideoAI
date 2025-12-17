@@ -1,3 +1,11 @@
+import sys
+import asyncio
+
+# Fix for Playwright on Windows (NotImplementedError in asyncio)
+# Must be set before any other asyncio usage or other imports that might init asyncio
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import os
 import io
 import json
@@ -5,10 +13,11 @@ import logging
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
-import asyncio
 import time
+
 import requests
 import httpx
+
 
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -758,6 +767,7 @@ if __name__ == "__main__":
             logger.exception("Failed to start ngrok tunnel; continuing without public URL")
 
     logger.info(f"Starting Uvicorn on {host}:{port} reload={reload_flag}")
+    # Removed loop="asyncio" to allow WindowsProactorEventLoopPolicy to work correctly
     uvicorn.run("main:app", host=host, port=port, reload=reload_flag)
 
 

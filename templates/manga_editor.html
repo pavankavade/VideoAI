@@ -75,15 +75,26 @@
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:12px;color:#94a3b8">Provider:</span>
               <select id="narratorProvider" class="select" style="padding:4px 8px;font-size:12px;width:auto">
+                  <option value="manual_web" {% if project.narration_provider == 'manual_web' or not project.narration_provider %}selected{% endif %}>Manual (Web UI)</option>
                   <option value="gemini" {% if project.narration_provider == 'gemini' %}selected{% endif %}>Gemini</option>
                   <option value="groq" {% if project.narration_provider == 'groq' %}selected{% endif %}>Groq</option>
                   <option value="azure" {% if project.narration_provider == 'azure' %}selected{% endif %}>Azure OpenAI</option>
-                  <option value="manual_web" {% if project.narration_provider == 'manual_web' %}selected{% endif %}>Manual (Web UI)</option>
               </select>
             </div>
             <div class="row">
-              <button id="btnNarrateSequential" class="btn">Create Narration (All)</button>
-              <button id="btnContinueNarration" class="btn" style="background:#10b981">Continue Narration</button>
+              <hr style="border-color:#334155;margin:12px 0">
+        <label>Automated Narration (Gemini Web)</label>
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <button id="btnAutoNarrateAll" class="btn primary" style="flex:1;background:linear-gradient(45deg, #4f46e5, #ec4899);border:none">🤖 Auto Narrate All (Overwrite)</button>
+          <button id="btnAutoNarrateContinue" class="btn secondary" style="flex:1">Running Man Icon Continue</button>
+        </div>
+        <div class="row" style="gap:8px;align-items:center">
+            <select id="startPageSelect" class="input" style="width:auto;flex:1">
+                <option value="">Start Page...</option>
+            </select>
+            <button id="btnAutoNarrateFromPage" class="btn secondary" style="flex:2">Overwrite from Page</button>
+        </div>
+              <button id="btnContinueNarration" class="btn" style="background:#10b981; display:none">Continue Narration</button>
               <button id="btnRedoNarration" class="btn secondary" title="Overwrite existing narration">Redo Narration</button>
               <button id="btnNarratePage" class="btn secondary">Narrate Current Page</button>
             </div>
@@ -140,6 +151,7 @@
             <div class="status">✨ Auto-generated after narration completion. Manual editing optional.</div>
             <div class="row">
               <button id="btnSaveStory" class="btn secondary">Save Manual Edits</button>
+              <button id="btnRunPostProcessing" class="btn" title="Update Characters + Fetch Previous + Generate Summary">Run All Post-Processing</button>
               <button id="btnGenerateStory" class="btn secondary">Re-generate Summary</button>
             </div>
           </div>
@@ -252,6 +264,19 @@
     function renderPages(){
       const root = document.getElementById('pagesRoot');
       root.innerHTML = '';
+      
+      // Populate start page dropdown
+      const sel = document.getElementById('startPageSelect');
+      const currentSel = sel.value;
+      sel.innerHTML = '';
+      pages.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.page_number;
+          opt.textContent = `Page ${p.page_number}`;
+          sel.appendChild(opt);
+      });
+      if(currentSel) sel.value = currentSel;
+
       pages.forEach((pg, i)=>{
         const div = document.createElement('div');
         div.className = 'page';
@@ -320,11 +345,16 @@
       }
     }
 
-    async function narrateAll(redo=false, skipExisting=false){
+    async function narrateAll(redo=false, skipExisting=false, autoResolve=false, startPageNum=null){
       const mdEl = document.getElementById('characterMd');
       const characterList = mdEl.value || '';
       // Only pages that have panels
       let pagesWithPanels = (pages||[]).filter(pg => (pg.panels||[]).length > 0);
+      
+      // Filter by start page if provided
+      if (startPageNum !== null) {
+          pagesWithPanels = pagesWithPanels.filter(pg => pg.page_number >= startPageNum);
+      }
       
       // If skipExisting, filter out pages that already have narration
       if (skipExisting) {
@@ -361,7 +391,34 @@
             // Check if it's a blocked content error
             const errorData = await resp.json().catch(() => null);
             if (errorData && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.error === 'blocked') {
-              // Show blocked content UI
+              
+              if (autoResolve) {
+                 // AUTO-RESOLVE: Call the automation endpoint directly
+                 console.log(`Auto-resolving page ${pg.page_number} via Gemini Web automation...`);
+                 setNarrationBusy(true, `${label} (Auto-Narrating via Gemini Web)`, (i/total)*100);
+                 
+                 const autoResp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${pg.page_number}/auto-web`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true'},
+                    body: JSON.stringify({ context: accumulated, characterList })
+                 });
+                 
+                 if (!autoResp.ok) {
+                    const err = await autoResp.json().catch(()=>({}));
+                    throw new Error(err.detail || `Auto-narration failed for page ${pg.page_number}`);
+                 }
+                 
+                 const autoData = await autoResp.json();
+                 const items = (autoData && Array.isArray(autoData.panels)) ? autoData.panels : [];
+                 const ctxSeg = items.map(it => `[${it.panel_index}] ${it.text||''}`.trim()).join('; ');
+                 accumulated += `\nPage ${pg.page_number}: ${ctxSeg}`;
+                 
+                 // Wait a bit to be nice to the browser/rate limits
+                 await new Promise(r => setTimeout(r, 2000));
+                 continue; // Proceed to next page
+              }
+              
+              // Show blocked content UI if not auto-resolving
               setNarrationBusy(false);
               await showBlockedContentUI(pg.page_number, errorData.detail);
               return; // Stop the batch narration
@@ -404,18 +461,29 @@
       setNarrationBusy(false);
       
       // Show completion message with prompt to update character list
+      // Show completion message with prompt to update character list
       let completionMsg = '';
       if(redo) {
-        completionMsg = 'Narration updated and story summary generated!\n\nDon\'t forget to update the Character List if needed.';
+        completionMsg = 'Narration updated!';
       } else if(skipExisting) {
-        completionMsg = 'Continued narration complete and story summary generated!\n\nDon\'t forget to update the Character List if needed.';
+        completionMsg = 'Continued narration complete!';
       } else {
-        completionMsg = 'Narration complete and story summary generated!\n\nDon\'t forget to update the Character List manually.';
+        completionMsg = 'Narration complete!';
       }
+      
+      if (autoResolve) {
+          setNarrationBusy(true, 'Running post-processing (Characters, Summary)...', 100);
+          await runPostProcessing(true); // Silent mode
+          setNarrationBusy(false);
+          completionMsg += '\n\n✅ Auto-updated Characters\n✅ Fetched Previous Story\n✅ Generated Current Summary';
+      } else {
+          completionMsg += '\n\nDon\'t forget to update the Character List manually.';
+      }
+      
       alert(completionMsg);
     }
 
-    async function showBlockedContentUI(pageNumber, errorDetail) {
+    async function showBlockedContentUI(pageNumber, errorDetail, autoRun=false) {
       const prompt = errorDetail.prompt || 'Could not extract prompt';
       const message = errorDetail.message || 'Content was blocked';
       const blockReason = errorDetail.block_reason || 'UNKNOWN';
@@ -507,7 +575,13 @@
             </div>
             
             <div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;margin-bottom:16px">
-              <div style="font-weight:700;color:#cbd5e1;margin-bottom:12px">Step 3: Paste Result</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                 <div style="font-weight:700;color:#cbd5e1">Step 3: Paste Result</div>
+                 <div style="display:flex;gap:10px;align-items:center">
+                    <button id="setupLoginBtn" class="btn secondary" style="font-size:11px;padding:2px 8px">🔑 Setup Login</button>
+                    <button id="autoNarrateBtn" class="btn primary" style="font-size:11px;background:linear-gradient(45deg, #4f46e5, #ec4899);border:none">🤖 Auto-Narrate (Beta)</button>
+                 </div>
+              </div>
               <strong style="display:block;margin-bottom:8px;color:#fff;font-size:12px">Manual Narration Entry:</strong>
               <p style="color:#94a3b8;margin:4px 0 12px 0;font-size:12px">Paste JSON format from AI or enter line-by-line. <strong>Panel count: ${panelCount}</strong></p>
               <div style="margin-bottom:12px">
@@ -545,6 +619,81 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
       
       document.body.appendChild(modal);
       
+      // -- Automation Handlers --
+      
+      const setupLoginBtn = modal.querySelector('#setupLoginBtn');
+      setupLoginBtn.addEventListener('click', async () => {
+          setupLoginBtn.disabled = true;
+          setupLoginBtn.textContent = 'Opening browser...';
+          try {
+             const r = await fetch('/editor/api/auth/gemini-web', { method: 'POST', headers: {'ngrok-skip-browser-warning':'true'} });
+             if(!r.ok) throw new Error('Failed to launch login window');
+             alert('A browser window has opened.\n\n1. Log in to Gemini.\n2. Waiting for you to close the browser window to continue...');
+          } catch(e) {
+             alert('Error: ' + e.message);
+          } finally {
+             setupLoginBtn.disabled = false;
+             setupLoginBtn.textContent = '🔑 Setup Login';
+          }
+      });
+
+      const autoNarrateBtn = modal.querySelector('#autoNarrateBtn');
+      autoNarrateBtn.addEventListener('click', async () => {
+          autoNarrateBtn.disabled = true;
+          autoNarrateBtn.textContent = '🤖 Running... (See terminal)';
+          const originalInputPlaceholder = modal.querySelector('#manualNarrationInput').placeholder;
+          modal.querySelector('#manualNarrationInput').placeholder = "Automation running... please wait.\n\nThis may take 30-60 seconds depending on Gemini speed.";
+          
+          try {
+             const context = storySoFar;
+             const characterList = document.getElementById('characterMd').value || '';
+             
+             const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/narrate/page/${pageNumber}/auto-web`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true'},
+                body: JSON.stringify({ context, characterList })
+             });
+             
+             if(!r.ok) {
+                const err = await r.json().catch(()=>({}));
+                throw new Error(err.detail || 'Automation failed');
+             }
+             
+             const data = await r.json();
+             // Success! The backend already saved it.
+             // We can close the modal and auto-advance.
+             
+             document.body.removeChild(modal);
+             await fetchSummary();
+             
+             // Auto-advance
+             const nextPageIndex = currentPageIndex + 1;
+             if (nextPageIndex < pages.length) {
+                 await narrateSinglePage(nextPageIndex);
+             } else {
+                 alert('All pages completed via Auto-Narrate!');
+                 // Generate Story Summary at the end
+                 // This matches the user request for parity
+                 try {
+                    await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+                    // Refresh again to show summary
+                    await fetchSummary();
+                    alert('Story Summary generated successfully!');
+                 } catch(e) {
+                    console.error('Summary gen failed', e);
+                 }
+             }
+             
+          } catch(e) {
+             alert('Auto-Narrate Failed:\n' + e.message + '\n\nPlease try manual copy-paste.');
+             autoNarrateBtn.disabled = false;
+             autoNarrateBtn.textContent = '🤖 Auto-Narrate (Beta)';
+             modal.querySelector('#manualNarrationInput').placeholder = originalInputPlaceholder;
+          }
+      });
+      
+      // -- End Automation Handlers --
+
       modal.querySelector('#copyPromptBtn').addEventListener('click', () => {
         navigator.clipboard.writeText(prompt).then(() => {
           const btn = modal.querySelector('#copyPromptBtn');
@@ -682,6 +831,12 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
              await narrateSinglePage(nextPageIndex);
           } else {
              alert(`All pages completed!`);
+             // Generate Story Summary at the end for Manual Save too
+             try {
+                await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+                await fetchSummary();
+                alert('Story Summary generated successfully!');
+             } catch(e) { console.error(e); }
           }
           
         } catch (err) {
@@ -691,30 +846,73 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
       });
     }
 
-    document.getElementById('btnCreatePanels').addEventListener('click', async ()=>{
-      if(!confirm('Create panels for all pages now?')) return;
-      await createPanelsWithProgress();
-    });
+    const btnCreatePanels = document.getElementById('btnCreatePanels');
+    if(btnCreatePanels) {
+        btnCreatePanels.addEventListener('click', async ()=>{
+            if(!confirm('Create panels for all pages now?')) return;
+            await createPanelsWithProgress();
+        });
+    }
 
-    document.getElementById('btnOpenViewer').addEventListener('click', ()=>{
-      // Open the new full-page panel editor
-      window.location.href = `/editor/panel-editor/${encodeURIComponent(projectId)}`;
-    });
+    const btnOpenViewer = document.getElementById('btnOpenViewer');
+    if(btnOpenViewer) {
+        btnOpenViewer.addEventListener('click', ()=>{
+             // Open the new full-page panel editor
+            window.location.href = `/editor/panel-editor/${encodeURIComponent(projectId)}`;
+        });
+    }
 
-    document.getElementById('btnNarrateSequential').addEventListener('click', async ()=>{
-      narrateAll(false, false);
-    });
+    const btnNarrateSequential = document.getElementById('btnNarrateSequential');
+    if(btnNarrateSequential) {
+        btnNarrateSequential.addEventListener('click', async ()=>{
+             narrateAll(false, false, false);
+        });
+    }
 
-    document.getElementById('btnContinueNarration').addEventListener('click', async ()=>{
-      narrateAll(false, true);
-    });
+    const btnAutoNarrateAll = document.getElementById('btnAutoNarrateAll');
+    if(btnAutoNarrateAll) {
+        btnAutoNarrateAll.addEventListener('click', async ()=>{
+            if(!confirm('Start fully automated narration for ALL pages (OVERWRITE)? Ensure you have the Chrome window open and logged in.')) return;
+            narrateAll(true, false, true); // Overwrite=True, Skip=False, AutoResolve=True
+        });
+    }
 
-    document.getElementById('btnRedoNarration').addEventListener('click', async ()=>{
-      if(!confirm('This will overwrite existing panel narrations. Continue?')) return;
-      narrateAll(true, false);
-    });
+    const btnAutoNarrateContinue = document.getElementById('btnAutoNarrateContinue');
+    if(btnAutoNarrateContinue) {
+        btnAutoNarrateContinue.addEventListener('click', async ()=>{
+            if(!confirm('Continue automated narration for remaining pages? Ensure you have the Chrome window open and logged in.')) return;
+            narrateAll(false, true, true); // Overwrite=False, Skip=True, AutoResolve=True
+        });
+    }
 
-    async function narrateSinglePage(idx) {
+    const btnAutoNarrateFromPage = document.getElementById('btnAutoNarrateFromPage');
+    if(btnAutoNarrateFromPage) {
+        btnAutoNarrateFromPage.addEventListener('click', async ()=>{
+            const sel = document.getElementById('startPageSelect');
+            const pageNum = parseInt(sel.value);
+            if(!pageNum) { alert('Please select a start page'); return; }
+            
+            if(!confirm(`Start automated narration (OVERWRITE) from Page ${pageNum}? Ensure you have the Chrome window open and logged in.`)) return;
+            narrateAll(true, false, true, pageNum); // Overwrite=True, Skip=False, AutoResolve=True, StartPage=pageNum
+        });
+    }
+
+    const btnContinueNarration = document.getElementById('btnContinueNarration');
+    if(btnContinueNarration) {
+        btnContinueNarration.addEventListener('click', async ()=>{
+            narrateAll(false, true, false);
+        });
+    }
+
+    const btnRedoNarration = document.getElementById('btnRedoNarration');
+    if(btnRedoNarration) {
+        btnRedoNarration.addEventListener('click', async ()=>{
+            if(!confirm('This will overwrite existing panel narrations. Continue?')) return;
+            narrateAll(true, false);
+        });
+    }
+
+    async function narrateSinglePage(idx, autoRun=false) {
       if(!pages.length || !pages[idx]){ alert('Page not found'); return; }
       const pg = pages[idx];
       const characterList = document.getElementById('characterMd').value || '';
@@ -742,7 +940,7 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
           const errorData = await r.json().catch(() => null);
           if (errorData && errorData.detail && typeof errorData.detail === 'object' && errorData.detail.error === 'blocked') {
             setNarrationBusy(false);
-            await showBlockedContentUI(pg.page_number, errorData.detail);
+            await showBlockedContentUI(pg.page_number, errorData.detail, autoRun);
             return;
           }
           setNarrationBusy(false); 
@@ -790,79 +988,152 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
       }
     });
 
-    document.getElementById('btnAutoCharacters').addEventListener('click', async ()=>{
-      const btn = document.getElementById('btnAutoCharacters');
-      const origText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Updating...';
-      try {
-        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { 
-          method:'POST', 
-          headers:{'ngrok-skip-browser-warning':'true'} 
-        });
-        if(!r.ok){ 
-          const errData = await r.json().catch(() => ({}));
-          alert('Auto update failed: ' + (errData.detail || 'Unknown error')); 
-          return; 
+    // -- Reusable Post-Processing Functions --
+
+    async function autoUpdateCharacters(silent=false) {
+       const btn = document.getElementById('btnAutoCharacters');
+       const origText = btn.textContent;
+       if(!silent) {
+           btn.disabled = true;
+           btn.textContent = 'Updating...';
+       } else {
+           // If silent (auto-run), update the main status text or just console
+           console.log('Auto-updating characters...');
+       }
+       
+       try {
+         const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/characters/update`, { 
+           method:'POST', headers:{'ngrok-skip-browser-warning':'true'} 
+         });
+         if(!r.ok){ 
+           const errData = await r.json().catch(() => ({}));
+           throw new Error(errData.detail || 'Unknown error'); 
+         }
+         const d = await r.json();
+         document.getElementById('characterMd').value = d.markdown || '';
+         console.log('Characters updated');
+         
+         if(!silent) {
+            btn.textContent = '✅ Updated!';
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       } catch(e) {
+         console.error('Character auto-update error:', e);
+         if(!silent) {
+            btn.textContent = '❌ Failed';
+            alert('Failed to auto-update character list: ' + e.message);
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       }
+    }
+
+    async function fetchPreviousStory(silent=false) {
+       const btn = document.getElementById('btnFetchPrevious');
+       const origText = btn.textContent;
+       if(!silent) {
+           btn.disabled = true;
+           btn.textContent = 'Fetching...';
+       }
+       try {
+         const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/fetch-previous`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+         if(!r.ok){
+           const errData = await r.json().catch(() => ({}));
+           throw new Error(errData.detail || 'Failed to fetch previous summaries');
+         }
+         const d = await r.json();
+         document.getElementById('storySummaryPrevious').value = d.summary || '';
+         console.log('Previous story fetched');
+         
+         if(!silent) {
+            btn.textContent = '✅ Fetched!';
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       } catch(e) {
+         if(!silent) {
+            btn.textContent = '❌ Failed';
+            alert(e.message);
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       }
+    }
+
+    async function generateCurrentSummary(silent=false) {
+       const btn = document.getElementById('btnGenerateStory');
+       const origText = btn.textContent;
+       if(!silent) {
+          btn.disabled = true;
+          btn.textContent = 'Generating...';
+       }
+       try {
+         const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+         if(!r.ok) throw new Error('Story generation failed');
+         const d = await r.json();
+         document.getElementById('storySummaryCurrent').value = d.summary || '';
+         console.log('Current summary generated');
+         
+         if(!silent) {
+            btn.textContent = '✅ Generated!';
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       } catch(e) {
+         if(!silent) {
+            btn.textContent = '❌ Failed';
+            alert('Story generation failed');
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+         }
+       }
+    }
+
+    async function runPostProcessing(silent=false) {
+        console.log('Starting post-processing...');
+        const btn = document.getElementById('btnRunPostProcessing');
+        const origText = btn ? btn.textContent : '';
+        
+        if(btn && !silent) {
+            btn.disabled = true;
+            btn.textContent = 'Running 1/3: Characters...';
         }
-        const d = await r.json();
-        document.getElementById('characterMd').value = d.markdown || '';
-        alert('Character list auto-updated from narrations!');
-      } catch(e) {
-        console.error('Character auto-update error:', e);
-        alert('Failed to auto-update character list: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
-    });
+        
+        await autoUpdateCharacters(silent);
+        
+        if(btn && !silent) btn.textContent = 'Running 2/3: Prev Story...';
+        await fetchPreviousStory(silent);
+        
+        if(btn && !silent) btn.textContent = 'Running 3/3: Summary...';
+        await generateCurrentSummary(silent);
+        
+        if(btn && !silent) {
+            btn.textContent = '✅ All Done!';
+            setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 2000);
+        } else if (!silent) {
+            alert('All post-processing tasks completed!');
+        }
+    }
 
-    document.getElementById('btnSaveStory').addEventListener('click', async ()=>{
-      const summary = document.getElementById('storySummaryCurrent').value || '';
-      const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story`, { method:'PUT', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'}, body: JSON.stringify({ summary }) });
-      if(!r.ok){ alert('Save failed'); return; }
-      alert('Current chapter summary saved');
-    });
+    // -- Event Listeners --
 
-    document.getElementById('btnGenerateStory').addEventListener('click', async ()=>{
-      if(!confirm('Generate a story summary for THIS CHAPTER from all panel narrations? This may take a moment.')) return;
-      const btn = document.getElementById('btnGenerateStory');
-      const origText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Generating...';
-      try {
-        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/generate`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
-        if(!r.ok){ alert('Story generation failed'); return; }
-        const d = await r.json();
-        document.getElementById('storySummaryCurrent').value = d.summary || '';
-        alert('Current chapter summary generated');
-      } finally {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
+    document.getElementById('btnAutoCharacters').addEventListener('click', async ()=>{
+      await autoUpdateCharacters(false);
     });
 
     document.getElementById('btnFetchPrevious').addEventListener('click', async ()=>{
       if(!confirm('Fetch and combine all previous chapters\' summaries into the "Story So Far" section?')) return;
-      const btn = document.getElementById('btnFetchPrevious');
-      const origText = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Fetching...';
-      try {
-        const r = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/story/fetch-previous`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
-        if(!r.ok){
-          const errData = await r.json().catch(() => ({}));
-          alert(errData.detail || 'Failed to fetch previous summaries');
-          return;
-        }
-        const d = await r.json();
-        document.getElementById('storySummaryPrevious').value = d.summary || '';
-        alert(d.message || 'Previous chapters\' summaries fetched successfully');
-      } finally {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
+      await fetchPreviousStory(false);
     });
+
+    document.getElementById('btnGenerateStory').addEventListener('click', async ()=>{
+        if(!confirm('Generate a story summary for THIS CHAPTER from all panel narrations? This may take a moment.')) return;
+        await generateCurrentSummary(false);
+    });
+    
+    // Add listener for new manual button if it exists
+    const btnRunPost = document.getElementById('btnRunPostProcessing');
+    if(btnRunPost) {
+        btnRunPost.addEventListener('click', async () => {
+            if(!confirm('Run all post-processing tasks (Update Characters, Fetch Previous, Generate Summary)?')) return;
+            await runPostProcessing(false);
+        });
+    }
 
     fetchSummary().catch(err=>{ console.error(err); alert('Failed to load project'); });
 
