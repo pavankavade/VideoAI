@@ -768,27 +768,21 @@
 
     // Synthesize a single panel via backend and return the audio URL (or null)
     async function synthPanel(projectId, pageNumber, panelIndex){
-      // The server currently exposes a per-page synth endpoint. Call it and extract
-      // the audio for the requested panel index instead of calling a non-existing
-      // per-panel route (which returned 405).
-      const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/page/${encodeURIComponent(pageNumber)}`, {
+      // Use the dedicated single-panel endpoint which forces regeneration (no overwrite flag needed)
+      const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/page/${encodeURIComponent(pageNumber)}/panel/${encodeURIComponent(panelIndex)}`, {
         method: 'POST', headers: {'ngrok-skip-browser-warning':'true'}
       });
       if(!resp.ok){
-        console.warn('Page synth failed when synthesizing single panel', pageNumber, panelIndex, resp.status);
+        console.warn('Panel synth failed', pageNumber, panelIndex, resp.status);
         return null;
       }
       const data = await resp.json().catch(()=>null);
       if(!data) return null;
-      // Response shape used elsewhere: { panels: [{ panel_index, audio_url }, ...] }
-      if(Array.isArray(data.panels)){
-        const item = data.panels.find(it => parseInt(it.panel_index)===parseInt(panelIndex));
-        if(item && item.audio_url) return item.audio_url;
+      
+      // Response shape: { ok: true, page_number: ..., panel: { panel_index, audio_url, ... } }
+      if(data.panel && data.panel.audio_url) {
+        return data.panel.audio_url;
       }
-      // Some backends may return a single object for the panel
-      if(data.panel && parseInt(data.panel.panel_index)===parseInt(panelIndex) && data.panel.audio_url) return data.panel.audio_url;
-      // Or maybe return { panel_index: X, audio_url: '...' }
-      if(parseInt(data.panel_index)===parseInt(panelIndex) && data.audio_url) return data.audio_url;
       return null;
     }
 

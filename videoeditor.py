@@ -5,7 +5,7 @@ import time
 import uuid
 import threading
 import asyncio
-from typing import Any, Dict, Deque, Optional
+from typing import Any, Dict, Deque, Optional, List
 from collections import deque
 
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
@@ -508,13 +508,19 @@ def _series_render_worker_wrapper(job_id: str, series_id: str, skip_error: bool,
     pass
 
 # Actual replacement function:
-def _series_render_worker_sync(job_id: str, series_id: str, skip_error: bool, override_plan: bool):
+def _series_render_worker_sync(job_id: str, series_id: str, skip_error: bool, override_plan: bool, chapter_ids: Optional[List[str]] = None):
     """Background worker for rendering a full series sequentially (Sync version)."""
     try:
         with _series_jobs_lock:
             _series_jobs[job_id]["status"] = "running"
         
         projects = EditorDB.get_series_projects(series_id)
+
+        # Filter if specific chapters requested
+        if chapter_ids and len(chapter_ids) > 0:
+            allowed_ids = set(chapter_ids)
+            projects = [p for p in projects if p["id"] in allowed_ids]
+
         total = len(projects)
         
         with _series_jobs_lock:
@@ -585,7 +591,8 @@ def _series_render_worker_sync(job_id: str, series_id: str, skip_error: bool, ov
 async def render_series_headless(series_id: str, request: Request, background_tasks: BackgroundTasks):
     """
     Start a background job to render all chapters in a series.
-    Payload: { "skip_error": bool, "override_plan": bool }
+    Start a background job to render all chapters in a series.
+    Payload: { "skip_error": bool, "override_plan": bool, "chapter_ids": [str] }
     """
     try:
         payload = await request.json()
@@ -594,6 +601,7 @@ async def render_series_headless(series_id: str, request: Request, background_ta
         
     skip_error = payload.get("skip_error", False)
     override_plan = payload.get("override_plan", False)
+    chapter_ids = payload.get("chapter_ids", None)
     
     job_id = f"series_{series_id}_{uuid.uuid4().hex[:6]}"
     
@@ -611,7 +619,7 @@ async def render_series_headless(series_id: str, request: Request, background_ta
         }
 
     # Start the worker (using the sync version which FastAPI runs in a thread)
-    background_tasks.add_task(_series_render_worker_sync, job_id, series_id, skip_error, override_plan)
+    background_tasks.add_task(_series_render_worker_sync, job_id, series_id, skip_error, override_plan, chapter_ids)
     
     return {"job_id": job_id}
 

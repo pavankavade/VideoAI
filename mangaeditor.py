@@ -2231,7 +2231,10 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                 # Use accumulated character list from previous chapters if current one is empty
                 char_md = prev_chars
 
-    # Accumulated narrative context (plain text)
+    # Accumulated narrative context (list of strings, one per page)
+    current_chapter_contexts: List[str] = []
+    
+    # Initial accumulator for the first iteration
     accumulated_text = previous_context
     results: List[Dict[str, Any]] = []
 
@@ -2302,7 +2305,7 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                     "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
                     "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
                     "CRITICAL: Keep narration EXTREMELY CONCISE. Maximum 50 words (approx 300 characters) per panel. "
-                    "OUTPUT FORMAT: STRICT VALID JSON ONLY. No markdown. No formatting. "
+                    "OUTPUT FORMAT: STRICT VALID JSON ONLY. Do NOT use markdown code blocks like ```json. Just return the raw JSON string. "
                     f"Structure: {{\"panels\": [{{\"panel_index\": 1, \"text\": \"...\"}} ... up to {len(panels)}]}}"
                 )
                 if accumulated_text:
@@ -2313,31 +2316,58 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                         + char_md
                     )
                 
-                try:
-                    # Run content gen in the dedicated thread
-                    resp_text = await run_sync(automator.generate_content, sys_instructions, processed_images, new_tab=False)
-                    txt = resp_text
-                    
-                    first_page_processed = True
-                    
-                    # Parse JSON
+                # Retry loop for reliability
+                for attempt in range(2):
                     try:
-                        import re
-                        json_match = re.search(r"(\{[\s\S]*\})", resp_text)
-                        if json_match:
-                            cleaned_text = json_match.group(1)
-                            data = json.loads(cleaned_text)
-                        else:
-                            cleaned_text = resp_text.strip()
-                            if cleaned_text.startswith("JSON"):
-                                 cleaned_text = cleaned_text[4:].strip()
-                            data = json.loads(cleaned_text)
-                    except Exception as e:
-                        logger.error(f"Failed to parse Manual Web JSON: {e} | Text: {resp_text[:100]}...")
-                        pass
+                        # Run content gen in the dedicated thread
+                        resp_text = await run_sync(automator.generate_content, sys_instructions, processed_images, new_tab=False)
+                        txt = resp_text
+                        
+                        first_page_processed = True
+                        
+                        # Cleanup JSON markdown if present
+                        cleaned_text = resp_text.strip()
+                        if cleaned_text.startswith("```json"):
+                            cleaned_text = cleaned_text[7:]
+                        elif cleaned_text.startswith("```"):
+                            cleaned_text = cleaned_text[3:]
+                        if cleaned_text.endswith("```"):
+                            cleaned_text = cleaned_text[:-3]
+                        cleaned_text = cleaned_text.strip()
 
-                except Exception as e:
-                    logger.error(f"Manual Web Automation Error on page {pn}: {e}")
+                        # Parse JSON
+                        try:
+                            import re
+                            # First try direct load of cleaned text
+                            try:
+                                data = json.loads(cleaned_text)
+                            except json.JSONDecodeError:
+                                # Fallback to regex extraction if direct load fails
+                                json_match = re.search(r"(\{[\s\S]*\})", cleaned_text)
+                                if json_match:
+                                    inner_text = json_match.group(1)
+                                    data = json.loads(inner_text)
+                                else:
+                                    raise ValueError("No JSON object found")
+                            
+                            # If we got here, parsing succeeded. Break the retry loop.
+                            break
+                        except Exception as e:
+                            logger.error(f"Failed to parse Manual Web JSON (attempt {attempt+1}): {e} | Text: {resp_text[:100]}...")
+                            data = None
+                            # Continue to next attempt
+
+                    except Exception as e:
+                        logger.error(f"Manual Web Automation Error on page {pn} (attempt {attempt+1}): {e}")
+                        data = None
+                
+                # If data is still None after retries, assign blank narrations to avoid garbage fallback
+                if data is None:
+                    logger.warning(f"Manual Web failed for page {pn} after retries. Assigning blank narrations.")
+                    for i in range(1, len(panels) + 1):
+                        EditorDB.upsert_panel_narration(project_id, pn, i, "", is_manual=False)
+                    results.append({"page_number": pn, "panels": [], "error": "Manual Web failed to generate valid JSON"})
+                    continue
             
             # --- GROQ ---
             elif provider == "groq":
@@ -2503,7 +2533,11 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                         last_error = str(e)
                 
                 if not data:
-                    raise HTTPException(status_code=500, detail=f"Gemini failed: {last_error}")
+                    logger.warning(f"Gemini failed for page {pn}, saving empty narrations. Error: {last_error}")
+                    for i in range(1, len(panels) + 1):
+                         EditorDB.upsert_panel_narration(project_id, pn, i, "", is_manual=False)
+                    results.append({"page_number": pn, "panels": [], "error": f"Gemini failed: {last_error}"})
+                    continue
 
             # Expect { panels: [ {panel_index, text}, ... ] }
             if isinstance(data, dict) and isinstance(data.get("panels"), list):
@@ -2570,8 +2604,14 @@ async def api_narrate_sequential(project_id: str, payload: Dict[str, Any]):
                     EditorDB.conn().commit()
                 except Exception:
                     pass
-                accumulated_text += f"\nPage {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
+                # Current page context
+                page_context_str = f"Page {pn}: " + "; ".join([f"[{i['panel_index']}] {i['text']}" for i in page_out])
+                current_chapter_contexts.append(page_context_str)
                 results.append({"page_number": pn, "panels": page_out})
+
+                # Rebuild accumulated_text for next iteration (last 15 pages)
+                recent_context = "\n".join(current_chapter_contexts[-15:])
+                accumulated_text = previous_context + "\n" + recent_context if previous_context else recent_context
 
     except Exception as e:
         logger.error(f"Sequential narration wrapper failed: {e}")
@@ -4144,13 +4184,26 @@ async def api_delete_page(project_id: str, page_number: int):
         
         # Update database
         conn = EditorDB.conn()
+        
+        # FIX: Propagate deletion to panels table
+        # 1. Delete panels belonging to the deleted page
+        conn.execute(
+            "DELETE FROM panels WHERE project_id=? AND page_number=?",
+            (project_id, page_number)
+        )
+        # 2. Shift subsequent pages' panels down by 1 to match new page renumbering
+        conn.execute(
+            "UPDATE panels SET page_number = page_number - 1 WHERE project_id=? AND page_number > ?",
+            (project_id, page_number)
+        )
+        
         conn.execute(
             "UPDATE project_details SET pages_json=? WHERE id=?",
             (json.dumps(updated_pages), project_id)
         )
         conn.commit()
         
-        # Also delete panel data for this page and renumber metadata pages
+        # Also renumber metadata pages
         metadata = json.loads(proj.get("metadata") or "{}")
         if "pages" in metadata:
             # Remove deleted page from metadata
@@ -4809,6 +4862,11 @@ async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[
     if not image_paths:
          raise HTTPException(status_code=400, detail="Could not locate image files on disk")
 
+    # Limit to max 10 images for Gemini
+    if len(image_paths) > 10:
+        logger.warning(f"Truncating images from {len(image_paths)} to 10 due to Gemini limit.")
+        image_paths = image_paths[:10]
+
     final_image_paths = _number_images(image_paths)
 
     # 2. Build Prompt (Matching manual_web logic in api_narrate_single_page)
@@ -4827,6 +4885,7 @@ async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[
         "Use character names sparingly—after the first clear mention, prefer pronouns and varied sentence openings unless a name is needed for clarity. "
         "After a character is introduced (full name allowed once if helpful), do NOT use their full name again; use only their first name (e.g., 'FirstName' not 'FirstName Lastname') or a pronoun. "
         "CRITICAL: Keep narration EXTREMELY CONCISE. Maximum 50 words (approx 300 characters) per panel. "
+        f"CRITICAL: You MUST provide a narration for EVERY panel from 1 to {panel_count}. Do not skip any panel. If a panel seems empty, describe the atmosphere. "
         "OUTPUT FORMAT: STRICT VALID JSON ONLY. No markdown. No formatting. "
         f"Structure: {{\"panels\": [{{\"panel_index\": 1, \"text\": \"...\"}} ... up to {panel_count}]}}"
     )
@@ -4838,40 +4897,54 @@ async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[
             + character_list
         )
 
-    # 3. Call Automator
-    try:
-        automator = GeminiAutomator()
-        # Use sync Playwright via asyncio.to_thread to avoid Windows loop issues
-        # Use the NUMBERED images
-        response_text = await asyncio.to_thread(automator.generate_content, prompt, final_image_paths)
-        logger.info(f"Automator response: {response_text[:100]}...")
-    except Exception as e:
-        logger.error(f"Automation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Automation failed: {str(e)}")
+    # 3. Call Automator with Retry Logic
+    max_retries = 2
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Narration attempt {attempt+1}/{max_retries} for page {page_number}...")
+            
+            automator = GeminiAutomator()
+            # Use sync Playwright via asyncio.to_thread to avoid Windows loop issues
+            # Use the NUMBERED images
+            response_text = await asyncio.to_thread(automator.generate_content, prompt, final_image_paths)
+            logger.info(f"Automator response: {response_text[:100]}...")
+            
+            # 4. Parse Response (Robust extraction)
+            clean_text = response_text.strip()
+            
+            # Try to find the JSON object boundaries
+            start_idx = clean_text.find('{')
+            end_idx = clean_text.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1:
+                clean_text = clean_text[start_idx : end_idx + 1]
+            else:
+                # Fallback cleanup
+                clean_text = clean_text.replace("```json", "").replace("```", "").replace("JSON", "").strip()
+            
+            data = json.loads(clean_text)
+            new_panels = data.get("panels", [])
+            
+            # VALIDATION
+            if len(new_panels) != panel_count:
+                logger.warning(f"Attendance mismatch: Expected {panel_count} panels, got {len(new_panels)}. Retrying...")
+                continue
+                
+            if any(not p.get("text", "").strip() for p in new_panels):
+                 logger.warning("Found empty narration text. Retrying...")
+                 continue
+            
+            # 5. Save Results
+            EditorDB.save_manual_narration(project_id, page_number, new_panels)
+            return {"ok": True, "panels": new_panels}
 
-    # 4. Parse Response (Robust extraction)
-    clean_text = response_text.strip()
-    
-    # Try to find the JSON object boundaries
-    start_idx = clean_text.find('{')
-    end_idx = clean_text.rfind('}')
-    
-    if start_idx != -1 and end_idx != -1:
-        clean_text = clean_text[start_idx : end_idx + 1]
-    else:
-        # Fallback cleanup
-        clean_text = clean_text.replace("```json", "").replace("```", "").replace("JSON", "").strip()
-    
-    try:
-        data = json.loads(clean_text)
-        new_panels = data.get("panels", [])
-        
-        # 5. Save Results
-        if new_panels:
-             EditorDB.save_manual_narration(project_id, page_number, new_panels)
-             return {"ok": True, "panels": new_panels}
-        else:
-             raise ValueError("No 'panels' key in response")
-             
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse JSON response: {e}. raw: {clean_text[:50]}...")
+        except Exception as e:
+            logger.error(f"Automation attempt {attempt+1} failed: {e}")
+            last_error = e
+            # Wait a bit before retry
+            await asyncio.sleep(2)
+            
+    # If we get here, all retries failed
+    raise HTTPException(status_code=500, detail=f"Failed to generate valid narration after {max_retries} attempts. Last error: {str(last_error)}")

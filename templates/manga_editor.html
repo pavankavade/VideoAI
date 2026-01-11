@@ -58,6 +58,7 @@
         </div>
         <div class="row">
           <button id="btnCreatePanels" class="btn">Create Panels</button>
+          <button id="btnCreatePanelsContinue" class="btn secondary">Create Panels (Continue)</button>
           <button id="btnOpenViewer" class="btn" disabled>View Panels</button>
         </div>
       </div>
@@ -224,26 +225,41 @@
       const txt = document.getElementById('panelsProgressText');
       const bar = document.getElementById('panelsBar');
       const bCreate = document.getElementById('btnCreatePanels');
+      const bCreateCont = document.getElementById('btnCreatePanelsContinue');
       const bView = document.getElementById('btnOpenViewer');
       if(isBusy){
         if(txt) txt.textContent = msg || 'Detecting panels…';
         pr?.classList.remove('hidden');
-        bCreate.disabled = true; bView.disabled = true;
+        bCreate.disabled = true; 
+        if(bCreateCont) bCreateCont.disabled = true;
+        bView.disabled = true;
         if(typeof pct === 'number' && bar){ bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
       }else{
         pr?.classList.add('hidden');
-        bCreate.disabled = false; bView.disabled = !allPanelsReady;
+        bCreate.disabled = false; 
+        if(bCreateCont) bCreateCont.disabled = false;
+        bView.disabled = !allPanelsReady;
         if(bar){ bar.style.width = '0%'; }
       }
     }
 
-    async function createPanelsWithProgress(){
+    async function createPanelsWithProgress(skipExisting=false){
       // Build page list from summary
       const pagesToProcess = (pages||[]);
       if(!pagesToProcess.length){ alert('No pages to process'); return; }
       setPanelsBusy(true, `Starting panel detection for ${pagesToProcess.length} page(s)…`, 0);
       for(let i=0;i<pagesToProcess.length;i++){
         const pg = pagesToProcess[i];
+        
+        // Skip existing check
+        if(skipExisting && (pg.panels && pg.panels.length > 0)) {
+           console.log(`Skipping page ${pg.page_number} (already has panels)`);
+           // Show progress anyway so it feels responsive
+           setPanelsBusy(true, `Skipping Page ${pg.page_number} (already done)…`, (i/pagesToProcess.length)*100);
+           await new Promise(r => setTimeout(r, 50)); // Tiny delay for UI update
+           continue; 
+        }
+
         const label = `Page ${i+1}/${pagesToProcess.length} (Page ${pg.page_number})…`;
         setPanelsBusy(true, label, (i/pagesToProcess.length)*100);
         try{
@@ -850,7 +866,15 @@ Panel 2 narration' style="min-height:150px;font-family:monospace;font-size:13px;
     if(btnCreatePanels) {
         btnCreatePanels.addEventListener('click', async ()=>{
             if(!confirm('Create panels for all pages now?')) return;
-            await createPanelsWithProgress();
+            await createPanelsWithProgress(false);
+        });
+    }
+
+    const btnCreatePanelsContinue = document.getElementById('btnCreatePanelsContinue');
+    if(btnCreatePanelsContinue) {
+        btnCreatePanelsContinue.addEventListener('click', async ()=>{
+            if(!confirm('Create panels for remaining pages (skipping pages with existing panels)?')) return;
+            await createPanelsWithProgress(true);
         });
     }
 

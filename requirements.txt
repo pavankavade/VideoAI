@@ -25,3 +25,4 @@ pytorch_metric_learning
 shapely
 groq
 openai
+matplotlib>=3.8.0

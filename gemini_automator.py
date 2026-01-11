@@ -142,6 +142,17 @@ class GeminiAutomator:
         except:
             raise Exception("Please Log In to Gemini in the Chrome window.")
 
+        # Wait for previous generation to complete.
+        # Check if "Stop response" button is hidden. 
+        # We cannot just wait for "Send message" to be visible because it might be hidden if input is empty.
+        logger.info("Waiting for previous generation to complete (Stop button hidden)...")
+        try:
+            # Wait for "Stop response" to NOT be visible.
+            # state="hidden" means either detached from DOM or display:none/visibility:hidden
+            page.wait_for_selector("button[aria-label='Stop response']", state="hidden", timeout=120000)
+        except Exception as e:
+            logger.error(f"Timed out waiting for Stop button to disappear: {e}") 
+        
         # Upload Images
         if image_paths:
             logger.info(f"Uploading {len(image_paths)} images...")
@@ -188,8 +199,12 @@ class GeminiAutomator:
         time.sleep(1)
         
         # Send
-        send_button = page.query_selector("button[aria-label*='Send'], button[class*='send-button']")
+        # Send
+        # strictly target the send button, not the stop button
+        send_button = page.query_selector("button[aria-label='Send message']")
         if not send_button:
+             # Fallback or try enter
+             logger.info("Send button not found (or not ready), trying Enter key...")
              input_box.press("Enter")
         else:
             send_button.click()

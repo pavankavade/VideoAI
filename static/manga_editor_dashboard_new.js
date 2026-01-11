@@ -604,34 +604,74 @@ async function synthesizeProject(projectId) {
   }
 }
 
-async function renderSeries(seriesId, seriesName) {
-  if (!confirm(`Start background rendering for ALL chapters in "${seriesName}"?\n\nThis will run in the background. Check server logs for detailed progress.`)) return;
-
+async function renderSeries(seriesId, seriesName, buttonElement) {
+  // Check override flag
+  const override = isOverrideEnabled(seriesId);
   const skipError = document.getElementById(`skip-error-${seriesId}`)?.checked || false;
-  const overridePlan = document.getElementById(`override-${seriesId}`)?.checked || false;
 
+  console.log(`Render Series - Override: ${override}, Skip Error: ${skipError}`);
+
+  // Fetch series data to get chapters
   try {
-    const r = await fetch(`/editor/api/series/${encodeURIComponent(seriesId)}/render`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skip_error: skipError, override_plan: overridePlan })
-    });
+    const seriesCard = document.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+    if (!seriesCard) { throw new Error('Could not find series data'); }
 
-    if (!r.ok) {
-      const txt = await r.text();
-      throw new Error(txt);
-    }
+    const chaptersJson = seriesCard.getAttribute('data-chapters');
+    const chapters = JSON.parse(chaptersJson);
 
-    const data = await r.json();
-    showNotification(`Started rendering series "${seriesName}"`, 'success');
-    console.log('Series render job started:', data.job_id);
+    // Map for modal
+    const batchItems = chapters.map(ch => ({
+      id: ch.id,
+      title: `Chapter ${ch.chapter_number}: ${ch.title}`,
+      pageCount: ch.page_count || ch.chapter_pages_count || 0,
+      createdAt: ch.created_at
+    }));
 
-    // Poll for status
-    pollSeriesRenderStatus(data.job_id, seriesName);
+    openBatchModal(
+      batchItems,
+      { provider: 'none', override: override, mode: 'render' },
+      async (selectedIds, modalProvider, modalOverride) => {
+        if (selectedIds.length === 0) return;
+
+        const notificationId = `notification-render-${seriesId}`;
+        showNotification(`Starting render for ${selectedIds.length} chapters...`, 'info', 0, notificationId);
+
+        try {
+          const r = await fetch(`/editor/api/series/${encodeURIComponent(seriesId)}/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              skip_error: skipError,
+              override_plan: modalOverride,
+              chapter_ids: selectedIds
+            })
+          });
+
+          if (!r.ok) {
+            const txt = await r.text();
+            throw new Error(txt);
+          }
+
+          const data = await r.json();
+          removeNotification(notificationId);
+          showNotification(`Started background rendering for "${seriesName}"`, 'success');
+          console.log('Series render job started:', data.job_id);
+
+          // Poll for status
+          pollSeriesRenderStatus(data.job_id, seriesName);
+
+        } catch (e) {
+          console.error('Render series error:', e);
+          removeNotification(notificationId);
+          alert('Failed to start render: ' + e.message);
+        }
+      },
+      batchItems.map(i => i.id) // Select all by default
+    );
 
   } catch (e) {
-    console.error('Render series error:', e);
-    alert('Failed to start render: ' + e.message);
+    console.error(e);
+    alert('Failed to open render modal: ' + e.message);
   }
 }
 
@@ -1762,14 +1802,16 @@ function openBatchModal(items, options, onConfirm, initialSelectedIds = []) {
   const modalTitle = document.getElementById('batchModalTitle');
 
   // Configure Mode
-  const mode = options.mode || 'narration'; // 'narration' | 'audio'
-  modalTitle.textContent = mode === 'audio' ? 'Batch Audio Synthesis' : 'Batch Narration Generation';
+  const mode = options.mode || 'narration'; // 'narration' | 'audio' | 'render'
 
   if (mode === 'audio') {
-    // Audio doesn't need provider selection (uses configured TTS URL), so hide it?
-    // Or if you have audio providers later. For now, hide provider select for audio.
+    modalTitle.textContent = 'Batch Audio Synthesis';
+    providerSelect.parentElement.style.display = 'none';
+  } else if (mode === 'render') {
+    modalTitle.textContent = 'Batch Video Render';
     providerSelect.parentElement.style.display = 'none';
   } else {
+    modalTitle.textContent = 'Batch Narration Generation';
     providerSelect.parentElement.style.display = 'block';
   }
 
@@ -1791,6 +1833,10 @@ function openBatchModal(items, options, onConfirm, initialSelectedIds = []) {
           `<span class="status-pill ok">AUDIO READY</span>` :
           `<span class="status-pill warn">NO AUDIO</span>`;
         statusHtml = status;
+      } else if (mode === 'render') {
+        // For render, maybe show if video exists? But we don't track video status per chapter easily yet without deeper check.
+        // For now, just show page count as status or nothing.
+        statusHtml = `<span class="status-pill ok">${item.pageCount || 0} PAGES</span>`;
       } else {
         const status = item.has_narration ?
           `<span class="status-pill ok">NARRATED</span>` :
