@@ -26,3 +26,4 @@ shapely
 groq
 openai
 matplotlib>=3.8.0
+edge-tts>=6.1.0

@@ -1,7 +1,57 @@
+// TTS Settings Helper
+function getTTSSettings() {
+  return {
+    tts_provider: localStorage.getItem('tts_provider') || 'external',
+    edge_voice: localStorage.getItem('tts_edge_voice') || 'en-US-AndrewNeural'
+  };
+}
+
 // Manga Editor Dashboard - Series Support
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   bindModals();
   loadData();
+  
+  // TTS Settings UI Init
+  const providerSelect = document.getElementById('globalTTSProvider');
+  const voiceSelect = document.getElementById('globalEdgeVoice');
+  
+  if (providerSelect && voiceSelect) {
+    const savedProvider = localStorage.getItem('tts_provider') || 'external';
+    providerSelect.value = savedProvider;
+    if (savedProvider === 'edge') {
+      voiceSelect.style.display = 'block';
+    }
+    
+    try {
+      const res = await fetch('/editor/api/tts/voices');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.voices && data.voices.length > 0) {
+          voiceSelect.innerHTML = data.voices.map(v => 
+            `<option value="${v.ShortName}">${v.FriendlyName} (${v.Locale})</option>`
+          ).join('');
+          const savedVoice = localStorage.getItem('tts_edge_voice');
+          if (savedVoice) voiceSelect.value = savedVoice;
+        } else {
+          voiceSelect.innerHTML = `<option value="">Error loading voices</option>`;
+        }
+      } else {
+        voiceSelect.innerHTML = `<option value="">Error loading voices</option>`;
+      }
+    } catch(e) { 
+      console.error('Failed to load TTS voices', e); 
+      voiceSelect.innerHTML = `<option value="">Error loading voices</option>`;
+    }
+    
+    providerSelect.addEventListener('change', () => {
+      localStorage.setItem('tts_provider', providerSelect.value);
+      voiceSelect.style.display = providerSelect.value === 'edge' ? 'block' : 'none';
+    });
+    
+    voiceSelect.addEventListener('change', () => {
+      localStorage.setItem('tts_edge_voice', voiceSelect.value);
+    });
+  }
 });
 
 let currentSeriesId = null;
@@ -584,9 +634,17 @@ async function synthesizeProject(projectId) {
   document.body.appendChild(modal);
 
   try {
+    const ttsConf = getTTSSettings();
     const response = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/all`, {
       method: 'POST',
-      headers: { 'ngrok-skip-browser-warning': 'true' }
+      headers: { 
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true' 
+      },
+      body: JSON.stringify({
+        tts_provider: ttsConf.tts_provider,
+        edge_voice: ttsConf.edge_voice
+      })
     });
 
     if (!response.ok) {
@@ -1441,9 +1499,17 @@ async function synthesizeAllSeries() {
       updateProgressModal(modal, `Processing: ${project.title}`, `Project ${completed + 1} of ${total}`, Math.round((completed / total) * 100));
 
       try {
+        const ttsConf = getTTSSettings();
         const response = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/all`, {
           method: 'POST',
-          headers: { 'ngrok-skip-browser-warning': 'true' }
+          headers: { 
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true' 
+          },
+          body: JSON.stringify({
+            tts_provider: ttsConf.tts_provider,
+            edge_voice: ttsConf.edge_voice
+          })
         });
 
         if (response.ok) {
@@ -1580,12 +1646,17 @@ async function synthesizeSeries(seriesId, seriesName, buttonElement) {
 
     try {
       // Synthesize audio for this chapter
+      const ttsConf = getTTSSettings();
       const response = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/tts/synthesize/all`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'ngrok-skip-browser-warning': 'true'
-        }
+        },
+        body: JSON.stringify({
+          tts_provider: ttsConf.tts_provider,
+          edge_voice: ttsConf.edge_voice
+        })
       });
 
       if (!response.ok) {
@@ -1985,13 +2056,18 @@ async function openAudioBatchModal(seriesId, seriesName, buttonElement) {
 
           try {
             // Call synthesize all for this chapter project
+            const ttsConf = getTTSSettings();
             const resp = await fetch(`/editor/api/project/${encodeURIComponent(ch.id)}/tts/synthesize/all`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'ngrok-skip-browser-warning': 'true'
               },
-              body: JSON.stringify({ overwrite: modalOverride })
+              body: JSON.stringify({ 
+                overwrite: modalOverride,
+                tts_provider: ttsConf.tts_provider,
+                edge_voice: ttsConf.edge_voice
+              })
             });
 
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

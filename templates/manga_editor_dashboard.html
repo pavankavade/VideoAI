@@ -64,6 +64,17 @@
           <p style="color:#94a3b8;font-size:14px;margin:0">Manage your manga series and chapters</p>
         </div>
         <div class="flex gap-3 items-center" style="flex-shrink:0;margin-left:40px">
+          <!-- TTS Settings UI -->
+          <div style="display:flex;align-items:center;gap:8px;background:rgba(15,23,42,0.5);padding:4px 12px;border-radius:8px;border:1px solid rgba(59,130,246,0.2)">
+            <label style="color:#94a3b8;font-size:12px;font-weight:600">TTS:</label>
+            <select id="globalTTSProvider" class="select" style="font-size:12px;padding:4px 8px;min-width:110px;height:28px">
+              <option value="external">External API</option>
+              <option value="edge">Edge TTS (Free)</option>
+            </select>
+            <select id="globalEdgeVoice" class="select" style="font-size:12px;padding:4px 8px;max-width:140px;height:28px;display:none">
+              <option value="en-US-AndrewNeural">Loading voices...</option>
+            </select>
+          </div>
           <div style="display:flex;align-items:center;gap:8px;background:rgba(15,23,42,0.5);padding:4px 12px;border-radius:8px;border:1px solid rgba(59,130,246,0.2)">
              <div id="modelStatus" style="font-size:12px;color:#94a3b8">Model: Checking...</div>
              <button id="loadModelBtn" class="btn secondary" style="padding:6px 12px;font-size:12px;display:none">Load Model</button>

@@ -62,6 +62,9 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/editor", tags=["manga-editor"])
 logger = logging.getLogger("mangaeditor")
 
+# Global counter for automated Gemini calls
+GEMINI_AUTO_CALL_COUNT = 0
+
 
 # --- Global Helper for Numbering Images ---
 def _number_images(paths: List[str]) -> List[str]:
@@ -4286,13 +4289,42 @@ async def api_reorder_pages(project_id: str, payload: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Failed to reorder pages: {str(e)}")
 
 
+# ---------------------------- Edge TTS helper ----------------------------
+async def synthesize_edge_tts(text: str, output_path: str, voice: str = "en-US-AndrewNeural") -> bool:
+    """Synthesize speech using Microsoft Edge TTS (free, no API key).
+    Saves audio as MP3 to output_path. Returns True on success."""
+    try:
+        import edge_tts
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(output_path)
+        return True
+    except Exception as e:
+        logger.exception("Edge TTS synthesis failed: %s", e)
+        return False
+
+
+@router.get("/api/tts/voices")
+async def api_tts_voices():
+    """Return available Edge TTS voices."""
+    try:
+        import edge_tts
+        voices = await edge_tts.list_voices()
+        return {"ok": True, "voices": voices}
+    except Exception as e:
+        logger.exception("Failed to list Edge TTS voices: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---------------------------- TTS synthesis (DB-backed) ----------------------------
 @router.post("/api/project/{project_id:path}/tts/synthesize/page/{page_number}")
 async def api_tts_synthesize_page(project_id: str, page_number: int, payload: Dict[str, Any] = Body(default={})):
     """Synthesize TTS for all panels on a page.
-    Payload: { overwrite: bool }
+    Payload: { overwrite: bool, tts_provider: 'external'|'edge', edge_voice: str }
     """
-    if not TTS_API_URL:
+    tts_provider = str(payload.get("tts_provider", "external")).strip().lower()
+    edge_voice = str(payload.get("edge_voice", "en-US-AndrewNeural")).strip()
+
+    if tts_provider != "edge" and not TTS_API_URL:
         raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
 
     overwrite = bool(payload.get("overwrite", False))
@@ -4342,48 +4374,63 @@ async def api_tts_synthesize_page(project_id: str, page_number: int, payload: Di
             continue
 
         try:
-            tts_payload = {
-                "text": text,
-                "exaggeration": "0.5",
-                "cfg_weight": "0.5",
-                "temperature": "0.8",
-            }
-            # Allow optional API key header for TTS provider
-            tts_headers = {}
-            tts_key = os.environ.get("TTS_API_KEY", "").strip()
-            tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
-            if tts_key:
-                # If header is Authorization and value doesn't start with Bearer, prefix it
-                if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
-                    tts_headers[tts_key_header] = f"Bearer {tts_key}"
-                else:
-                    tts_headers[tts_key_header] = tts_key
-
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(TTS_API_URL, data=tts_payload, headers=tts_headers or None)
-            if r.status_code != 200:
-                # Log provider response for easier debugging (trim to 2k chars)
-                try:
-                    body = r.text
-                except Exception:
-                    body = "<unreadable>"
-                logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, idx, (body[:2000] if body else ""))
-                results.append({
-                    "panel_index": idx,
+            if tts_provider == "edge":
+                # --- Edge TTS path ---
+                fname = f"tts_page_{int(page_number)}_panel_{idx}.mp3"
+                abs_path = os.path.join(out_dir, fname)
+                ok = await synthesize_edge_tts(text, abs_path, voice=edge_voice)
+                if not ok:
+                    results.append({
+                        "panel_index": idx,
+                        "text": text,
+                        "audio_url": None,
+                        "status": "error:edge_tts_failed"
+                    })
+                    continue
+                url = f"/manga_projects/{project_id}/tts/{fname}"
+            else:
+                # --- External API path ---
+                tts_payload = {
                     "text": text,
-                    "audio_url": None,
-                    "status": f"error:{r.status_code}"
-                })
-                continue
+                    "exaggeration": "0.5",
+                    "cfg_weight": "0.5",
+                    "temperature": "0.8",
+                }
+                # Allow optional API key header for TTS provider
+                tts_headers = {}
+                tts_key = os.environ.get("TTS_API_KEY", "").strip()
+                tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
+                if tts_key:
+                    # If header is Authorization and value doesn't start with Bearer, prefix it
+                    if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
+                        tts_headers[tts_key_header] = f"Bearer {tts_key}"
+                    else:
+                        tts_headers[tts_key_header] = tts_key
 
-            # Save audio
-            fname = f"tts_page_{int(page_number)}_panel_{idx}.wav"
-            abs_path = os.path.join(out_dir, fname)
-            with open(abs_path, "wb") as wf:
-                wf.write(r.content)
-            url = f"/manga_projects/{project_id}/tts/{fname}"
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    r = await client.post(TTS_API_URL, data=tts_payload, headers=tts_headers or None)
+                if r.status_code != 200:
+                    try:
+                        body = r.text
+                    except Exception:
+                        body = "<unreadable>"
+                    logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, idx, (body[:2000] if body else ""))
+                    results.append({
+                        "panel_index": idx,
+                        "text": text,
+                        "audio_url": None,
+                        "status": f"error:{r.status_code}"
+                    })
+                    continue
 
-            # Persist to DB (store URL string in audio_b64 column)
+                # Save audio
+                fname = f"tts_page_{int(page_number)}_panel_{idx}.wav"
+                abs_path = os.path.join(out_dir, fname)
+                with open(abs_path, "wb") as wf:
+                    wf.write(r.content)
+                url = f"/manga_projects/{project_id}/tts/{fname}"
+
+            # Persist to DB (store URL string in audio_url column)
             EditorDB.set_panel_audio(project_id, int(page_number), idx, url)
 
             created += 1
@@ -4411,12 +4458,16 @@ async def api_tts_synthesize_page(project_id: str, page_number: int, payload: Di
 
 
 @router.post("/api/project/{project_id:path}/tts/synthesize/page/{page_number}/panel/{panel_index}")
-async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_index: int):
+async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_index: int, payload: Dict[str, Any] = Body(default={})):
     """Synthesize TTS for a single panel on a page using narration_text stored in DB.
     Saves audio file under /manga_projects/{project_id}/tts and updates panel audio URL in DB.
+    Payload: { tts_provider: 'external'|'edge', edge_voice: str }
     Returns the single panel result for UI convenience.
     """
-    if not TTS_API_URL:
+    tts_provider = str(payload.get("tts_provider", "external")).strip().lower()
+    edge_voice = str(payload.get("edge_voice", "en-US-AndrewNeural")).strip()
+
+    if tts_provider != "edge" and not TTS_API_URL:
         raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
 
     proj = EditorDB.get_project(project_id)
@@ -4469,38 +4520,48 @@ async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_inde
         }
 
     try:
-        payload = {
-            "text": text,
-            "exaggeration": "0.5",
-            "cfg_weight": "0.5",
-            "temperature": "0.8",
-        }
-        # Optional API key header support for TTS provider
-        tts_headers = {}
-        tts_key = os.environ.get("TTS_API_KEY", "").strip()
-        tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
-        if tts_key:
-            if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
-                tts_headers[tts_key_header] = f"Bearer {tts_key}"
-            else:
-                tts_headers[tts_key_header] = tts_key
+        if tts_provider == "edge":
+            # --- Edge TTS path ---
+            fname = f"tts_page_{int(page_number)}_panel_{int(panel_index)}.mp3"
+            abs_path = os.path.join(out_dir, fname)
+            ok = await synthesize_edge_tts(text, abs_path, voice=edge_voice)
+            if not ok:
+                raise HTTPException(status_code=500, detail="Edge TTS synthesis failed")
+            url = f"/manga_projects/{project_id}/tts/{fname}"
+        else:
+            # --- External API path ---
+            ext_payload = {
+                "text": text,
+                "exaggeration": "0.5",
+                "cfg_weight": "0.5",
+                "temperature": "0.8",
+            }
+            # Optional API key header support for TTS provider
+            tts_headers = {}
+            tts_key = os.environ.get("TTS_API_KEY", "").strip()
+            tts_key_header = os.environ.get("TTS_API_KEY_HEADER", "Authorization").strip()
+            if tts_key:
+                if tts_key_header.lower() == "authorization" and not tts_key.lower().startswith("bearer "):
+                    tts_headers[tts_key_header] = f"Bearer {tts_key}"
+                else:
+                    tts_headers[tts_key_header] = tts_key
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(TTS_API_URL, data=payload, headers=tts_headers or None)
-        if r.status_code != 200:
-            try:
-                body = r.text
-            except Exception:
-                body = "<unreadable>"
-            logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, panel_index, (body[:2000] if body else ""))
-            raise HTTPException(status_code=502, detail=f"TTS provider error: {r.status_code}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(TTS_API_URL, data=ext_payload, headers=tts_headers or None)
+            if r.status_code != 200:
+                try:
+                    body = r.text
+                except Exception:
+                    body = "<unreadable>"
+                logger.warning("TTS provider returned %s for project %s page %s panel %s: %s", r.status_code, project_id, page_number, panel_index, (body[:2000] if body else ""))
+                raise HTTPException(status_code=502, detail=f"TTS provider error: {r.status_code}")
 
-        # Save audio
-        fname = f"tts_page_{int(page_number)}_panel_{int(panel_index)}.wav"
-        abs_path = os.path.join(out_dir, fname)
-        with open(abs_path, "wb") as wf:
-            wf.write(r.content)
-        url = f"/manga_projects/{project_id}/tts/{fname}"
+            # Save audio
+            fname = f"tts_page_{int(page_number)}_panel_{int(panel_index)}.wav"
+            abs_path = os.path.join(out_dir, fname)
+            with open(abs_path, "wb") as wf:
+                wf.write(r.content)
+            url = f"/manga_projects/{project_id}/tts/{fname}"
 
         # Persist to DB
         EditorDB.set_panel_audio(project_id, int(page_number), int(panel_index), url)
@@ -4525,9 +4586,10 @@ async def api_tts_synthesize_panel(project_id: str, page_number: int, panel_inde
 @router.post("/api/project/{project_id:path}/tts/synthesize/all")
 async def api_tts_synthesize_all(project_id: str, payload: Dict[str, Any] = Body(default={})):
     """Synthesize TTS for all pages in the project sequentially.
-    Payload: { overwrite: bool }
+    Payload: { overwrite: bool, tts_provider: 'external'|'edge', edge_voice: str }
     """
-    if not TTS_API_URL:
+    tts_provider = str(payload.get("tts_provider", "external")).strip().lower()
+    if tts_provider != "edge" and not TTS_API_URL:
         raise HTTPException(status_code=503, detail="TTS API not configured (TTS_API_URL)")
 
     proj = EditorDB.get_project(project_id)
@@ -4538,7 +4600,7 @@ async def api_tts_synthesize_all(project_id: str, payload: Dict[str, Any] = Body
     if not pages:
         raise HTTPException(status_code=400, detail="Project has no pages")
     
-    # We pass the same payload (overwrite flag) to the page endpoint
+    # We pass the same payload (overwrite flag + provider settings) to the page endpoint
     pass_payload = payload or {}
 
     total_created = 0
@@ -4901,16 +4963,39 @@ async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[
     max_retries = 2
     last_error = None
     
+    # Check global counter for new tab logic
+    global GEMINI_AUTO_CALL_COUNT
+    GEMINI_AUTO_CALL_COUNT += 1
+    use_new_tab = False
+    
+    if GEMINI_AUTO_CALL_COUNT > 10:
+        logger.info(f"Gemini call count {GEMINI_AUTO_CALL_COUNT} > 10. Opening new tab to clear history.")
+        use_new_tab = True
+        GEMINI_AUTO_CALL_COUNT = 0 # Reset counter (or 1?) Reset to 1 since this is the first call of new batch
+        GEMINI_AUTO_CALL_COUNT = 1
+    
     for attempt in range(max_retries):
         try:
-            logger.info(f"Narration attempt {attempt+1}/{max_retries} for page {page_number}...")
+            logger.info(f"Narration attempt {attempt+1}/{max_retries} for page {page_number} (New Tab: {use_new_tab})...")
             
             automator = GeminiAutomator()
             # Use sync Playwright via asyncio.to_thread to avoid Windows loop issues
             # Use the NUMBERED images
-            response_text = await asyncio.to_thread(automator.generate_content, prompt, final_image_paths)
+            response_text = await asyncio.to_thread(automator.generate_content, prompt, final_image_paths, new_tab=use_new_tab)
             logger.info(f"Automator response: {response_text[:100]}...")
             
+            # Check for refusal/error
+            error_phrases = ["I cannot", "I'm sorry", "I am unable", "I can't", "content safety"]
+            if any(phrase.lower() in response_text.lower() for phrase in error_phrases) and len(response_text) < 200:
+                 logger.warning(f"AI refusal detected: {response_text}")
+                 last_error = f"AI Refusal: {response_text}"
+                 # If likely a policy block, maybe don't retry? But sometimes it's flaky. Let's retry once.
+                 if attempt < max_retries - 1:
+                     await asyncio.sleep(2)
+                     continue
+                 else:
+                     raise Exception(f"AI refused to generate content: {response_text}")
+
             # 4. Parse Response (Robust extraction)
             clean_text = response_text.strip()
             
@@ -4924,7 +5009,17 @@ async def api_narrate_auto_web(project_id: str, page_number: int, payload: Dict[
                 # Fallback cleanup
                 clean_text = clean_text.replace("```json", "").replace("```", "").replace("JSON", "").strip()
             
-            data = json.loads(clean_text)
+            # Handle empty response
+            if not clean_text:
+                raise Exception("Received empty response from Gemini")
+
+            try:
+                data = json.loads(clean_text)
+            except json.JSONDecodeError:
+                # If we got text but it's not JSON, maybe it's just raw text?
+                # The user really wants JSON.
+                raise Exception(f"Failed to parse JSON. Raw text start: {clean_text[:50]}")
+
             new_panels = data.get("panels", [])
             
             # VALIDATION

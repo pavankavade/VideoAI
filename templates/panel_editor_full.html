@@ -107,6 +107,13 @@
     let currentIndex = 0;
     let selectedPages = new Set(); // Track selected pages for deletion
 
+    function getTTSSettings() {
+      return {
+        tts_provider: localStorage.getItem('tts_provider') || 'external',
+        edge_voice: localStorage.getItem('tts_edge_voice') || 'en-US-AndrewNeural'
+      };
+    }
+
     async function fetchSummary(){
       const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}`, { headers:{'ngrok-skip-browser-warning':'true'} });
       if(!r.ok) throw new Error('Failed to load project');
@@ -668,7 +675,18 @@
         for(const pg of pagesToProcess){
           const pn = pg.page_number;
           progressEl.textContent = `Synthesizing Page ${pn}…`;
-          const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/page/${encodeURIComponent(pn)}`, { method:'POST', headers:{'ngrok-skip-browser-warning':'true'} });
+          const ttsConf = getTTSSettings();
+          const r = await fetch(`/editor/api/project/${encodeURIComponent(project.id)}/tts/synthesize/page/${encodeURIComponent(pn)}`, { 
+            method:'POST', 
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning':'true'
+            },
+            body: JSON.stringify({
+              tts_provider: ttsConf.tts_provider,
+              edge_voice: ttsConf.edge_voice
+            })
+          });
           if(!r.ok){
             console.warn('Page synth failed', pn, r.status);
           }else{
@@ -769,8 +787,17 @@
     // Synthesize a single panel via backend and return the audio URL (or null)
     async function synthPanel(projectId, pageNumber, panelIndex){
       // Use the dedicated single-panel endpoint which forces regeneration (no overwrite flag needed)
+      const ttsConf = getTTSSettings();
       const resp = await fetch(`/editor/api/project/${encodeURIComponent(projectId)}/tts/synthesize/page/${encodeURIComponent(pageNumber)}/panel/${encodeURIComponent(panelIndex)}`, {
-        method: 'POST', headers: {'ngrok-skip-browser-warning':'true'}
+        method: 'POST', 
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning':'true'
+        },
+        body: JSON.stringify({
+          tts_provider: ttsConf.tts_provider,
+          edge_voice: ttsConf.edge_voice
+        })
       });
       if(!resp.ok){
         console.warn('Panel synth failed', pageNumber, panelIndex, resp.status);

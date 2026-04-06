@@ -134,120 +134,128 @@ class GeminiAutomator:
 
     def _run_generation_on_page(self, page: Page, prompt: str, image_paths: List[str]) -> str:
         """Internal worker logic to run prompt on a specific page object."""
+        # Selector for the rich input editor
         input_selector = "div[contenteditable='true'][role='textbox']"
         
-        # Check for login
+        # 1. Check for login / Wait for Input
         try:
             page.wait_for_selector(input_selector, timeout=15000)
         except:
             raise Exception("Please Log In to Gemini in the Chrome window.")
 
-        # Wait for previous generation to complete.
-        # Check if "Stop response" button is hidden. 
-        # We cannot just wait for "Send message" to be visible because it might be hidden if input is empty.
-        logger.info("Waiting for previous generation to complete (Stop button hidden)...")
+        # 2. Ensure we are ready (Wait for ANY previous generation to finish)
+        logger.info("Waiting for previous generation to complete...")
         try:
-            # Wait for "Stop response" to NOT be visible.
-            # state="hidden" means either detached from DOM or display:none/visibility:hidden
-            page.wait_for_selector("button[aria-label='Stop response']", state="hidden", timeout=120000)
+            # "Stop response" button should be hidden/detached when idle.
+            page.wait_for_selector("button[aria-label='Stop response']", state="hidden", timeout=30000)
         except Exception as e:
-            logger.error(f"Timed out waiting for Stop button to disappear: {e}") 
+            logger.warning(f"Stop button still visible? potentially stuck. Proceeding anyway, but this is risky: {e}") 
         
-        # Upload Images
+        # 3. Clear Input (Critical to avoid appending to failed retries)
+        logger.info("Clearing input...")
+        input_box = page.wait_for_selector(input_selector)
+        input_box.click()
+        # Select all and delete to be sure
+        page.keyboard.press("Control+A")
+        time.sleep(0.5)
+        page.keyboard.press("Backspace")
+        time.sleep(0.5)
+
+        # 4. Fill Prompt TEXT FIRST
+        # Why? Because .fill() clears the element. If we pasted images first, .fill() would delete them!
+        logger.info("Entering prompt...")
+        input_box.fill(prompt)
+        time.sleep(1)
+        
+        # 5. Upload Images (Clipboard Paste)
         if image_paths:
             logger.info(f"Uploading {len(image_paths)} images...")
             import subprocess
             
-            input_box = page.wait_for_selector(input_selector)
-            input_box.click()
+            # Ensure focus is back on input (at the end of text)
+            input_box.focus()
+            page.keyboard.press("End") 
             
             for i, img_path in enumerate(image_paths):
                 try:
                     abs_path = os.path.abspath(img_path)
-                    # PowerShell copy
+                    # PowerShell to set clipboard
+                    # Note: Add-Type approach is standard for Windows
                     ps_script = f"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile('{abs_path}'))"
                     subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True)
                     
-                    input_box.focus()
+                    # Focus and Paste
+                    input_box.focus() 
+                    time.sleep(0.5)
                     page.keyboard.press("Control+V")
-                    time.sleep(3) 
+                    
+                    # Wait for image thumbnail to potentially appear or just give it a moment
+                    # We can't easily detect the thumbnail upload progress without complex selectors, 
+                    # so a fixed sleep is safer than nothing.
+                    time.sleep(2.5) 
                 except Exception as e:
                     logger.error(f"Failed to paste image {img_path}: {e}")
-                    # Fallback
+                    # Fallback method
                     try:
                         subprocess.run(["powershell", "-Command", f"Set-Clipboard -Path '{abs_path}'"], check=True)
                         input_box.focus()
                         page.keyboard.press("Control+V")
-                        time.sleep(3)
+                        time.sleep(2.5)
                     except:
                         pass
-            time.sleep(2)
-
-        # Enter Prompt
-        logger.info("Entering prompt...")
         
-        # Count existing
+        # 6. Capture State Before Sending
         existing_responses_count = 0
         try:
             existing = page.query_selector_all(".markdown")
             existing_responses_count = len(existing) if existing else 0
         except:
             pass
-        
-        input_box = page.wait_for_selector(input_selector)
-        input_box.fill(prompt)
-        time.sleep(1)
-        
-        # Send
-        # Send
-        # strictly target the send button, not the stop button
+
+        # 7. Send Request
+        logger.info("Sending message...")
         send_button = page.query_selector("button[aria-label='Send message']")
-        if not send_button:
-             # Fallback or try enter
-             logger.info("Send button not found (or not ready), trying Enter key...")
-             input_box.press("Enter")
-        else:
+        if send_button:
             send_button.click()
-        
-        logger.info("Waiting for new response...")
-        
-        # Wait for new
-        max_wait_start = 60
-        new_response_found = False
-        for _ in range(max_wait_start):
-            time.sleep(1)
-            current_responses = page.query_selector_all(".markdown")
-            if len(current_responses) > existing_responses_count:
-                new_response_found = True
-                break
-        
-        if not new_response_found:
-            logger.warning("No new response detected? Trying to capture last element anyway...")
-
-        logger.info("Stabilizing response...")
-
-        # Stabilize
-        last_text = ""
-        stable_count = 0
-        max_retries = 120 
-        
-        for i in range(max_retries):
-            time.sleep(1)
-            responses = page.query_selector_all(".markdown")
-            if not responses: continue
-                
-            current_text = responses[-1].inner_text()
-            if not current_text: continue
+        else:
+            logger.info("Send button not found, using Enter...")
+            input_box.focus()
+            page.keyboard.press("Enter")
             
-            if current_text == last_text and len(current_text) > 10:
-                stable_count += 1
-                if stable_count >= 3:
-                    return current_text
-            else:
-                stable_count = 0
-                last_text = current_text
+        # 8. Smart Wait for Completion
+        logger.info("Waiting for response generation...")
         
-        return last_text
+        # Phase A: Wait for "Stop response" to APPEAR (Generation started)
+        # This confirms the click worked.
+        # Give it up to 10 seconds to start.
+        try:
+            page.wait_for_selector("button[aria-label='Stop response']", state="visible", timeout=10000)
+            logger.info("Generation started (Stop button visible).")
+        except:
+            logger.warning("Stop button did NOT appear. Request might have failed or finished instantly.")
+
+        # Phase B: Wait for "Stop response" to DISAPPEAR (Generation finished)
+        # Give it a long timeout (e.g., 3-5 minutes for long image analysis)
+        try:
+            page.wait_for_selector("button[aria-label='Stop response']", state="hidden", timeout=300000) # 5 minutes
+            logger.info("Generation finished (Stop button hidden).")
+        except Exception as e:
+            logger.error(f"Timed out waiting for generation to finish: {e}")
+            # We continue and try to scrape whatever is there
+
+        # Phase C: Scrape the latest response
+        # We wait a moment for DOM to settle
+        time.sleep(2)
+        
+        responses = page.query_selector_all(".markdown")
+        if not responses:
+             logger.warning("No .markdown elements found!")
+             return ""
+             
+        # Return the last one
+        last_response = responses[-1]
+        text = last_response.inner_text()
+        return text
 
 if __name__ == "__main__":
     # Test stub
